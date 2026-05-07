@@ -82,8 +82,8 @@ async function checkKick(client) {
 				? server.selfRoleId ? `<@&${server.selfRoleId}> ` : ''
 				: server.affiliateRoleId ? `<@&${server.affiliateRoleId}> ` : '';
 
-			if (!streamInfo || !chan.kickNotif) {
-				await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+			if (streamInfo.stream.is_live === false && chan.kickIsLive == true) {
+				await Channels.update({ kickIsLive: streamInfo.stream.is_live }, { where: { id: chan.id } });
 				return; // nothing else to do for offline stream
 			}
 
