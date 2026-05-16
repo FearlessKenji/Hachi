@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require(`discord.js`);
 const ST = new Date(); // Start time
 
 // Function to calculate the elapsed time
@@ -18,8 +18,8 @@ function calculateUptime() {
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('uptime')
-		.setDescription('Replies with the runtime.')
+		.setName(`uptime`)
+		.setDescription(`Replies with the runtime.`)
 		.setDefaultMemberPermissions(0), // Restrict to admins or bot owner
 
 	async execute(interaction) {

@@ -1,14 +1,14 @@
-const { SlashCommandBuilder, MessageFlags } = require('discord.js');
-const config = require('../../../config.json');
-const path = require('node:path');
+const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
+const config = require(`../../../config.json`);
+const path = require(`node:path`);
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('reload')
-		.setDescription('Reloads a command.')
+		.setName(`reload`)
+		.setDescription(`Reloads a command.`)
 		.addStringOption(option =>
-			option.setName('command')
-				.setDescription('The command to reload.')
+			option.setName(`command`)
+				.setDescription(`The command to reload.`)
 				.setRequired(true),
 		)
 		.setDefaultMemberPermissions(0),
@@ -16,12 +16,12 @@ module.exports = {
 	async execute(interaction) {
 		if (interaction.user.id !== config.botOwner) {
 			return interaction.reply({
-				content: 'You do not have permission to use this command.',
+				content: `You do not have permission to use this command.`,
 				flags: MessageFlags.Ephemeral,
 			});
 		}
 
-		const commandName = interaction.options.getString('command', true).toLowerCase();
+		const commandName = interaction.options.getString(`command`, true).toLowerCase();
 		const command = interaction.client.commands.get(commandName);
 
 		if (!command) {
@@ -36,7 +36,7 @@ module.exports = {
 		try {
 			const globalPath = path.resolve(
 				__dirname,
-				'../../globalCommands/utility',
+				`../../globalCommands/utility`,
 				`${command.data.name}.js`,
 			);
 
@@ -47,7 +47,7 @@ module.exports = {
 			try {
 				const guildPath = path.resolve(
 					__dirname,
-					'../../guildCommands/utility',
+					`../../guildCommands/utility`,
 					`${command.data.name}.js`,
 				);
 

@@ -1,4 +1,4 @@
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder } = require(`discord.js`);
 
 function epochTime() {
 	const epoch = Math.floor(Date.now() / 1000);
@@ -7,8 +7,8 @@ function epochTime() {
 
 module.exports = {
 	data: new SlashCommandBuilder()
-		.setName('time')
-		.setDescription('Replies with the current time and date.')
+		.setName(`time`)
+		.setDescription(`Replies with the current time and date.`)
 		.setDefaultMemberPermissions(0), // Restrict to admins or bot owner
 
 	async execute(interaction) {

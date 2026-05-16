@@ -7,7 +7,9 @@
     "sqlite3": "^6.0.1"
   },
   "devDependencies": {
-    "eslint": "^9.39.2"
+    "@eslint/js": "^10.0.1",
+    "eslint": "^9.39.4",
+    "globals": "^17.6.0"
   },
   "name": "kenjib0t",
   "description": "This Discord bot will automatically send a message and tag the assigned role whenever a streamer went live.\r The notifications will update every 10 minutes(default) while the streamer is live.",

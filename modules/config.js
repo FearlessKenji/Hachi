@@ -1,8 +1,8 @@
-const path = require('node:path');
-const fs = require('node:fs');
+const path = require(`node:path`);
+const fs = require(`node:fs`);
 
 const isPM2 = process.env.pm_id !== undefined;
-const configPath = path.join(process.cwd(), 'config.json');
+const configPath = path.join(process.cwd(), `config.json`);
 
 function pauseAndExit(code = 1) {
 	if (isPM2) {
@@ -10,8 +10,8 @@ function pauseAndExit(code = 1) {
 	}
 
 	process.stdin.resume();
-	console.error('\nPress Enter to exit...');
-	process.stdin.once('data', () => process.exit(code));
+	console.error(`\nPress Enter to exit...`);
+	process.stdin.once(`data`, () => process.exit(code));
 }
 
 function fatal(message) {
@@ -22,17 +22,17 @@ function fatal(message) {
 /* ---------- file existence ---------- */
 
 if (!fs.existsSync(configPath)) {
-	fatal('\nMissing config.json\nCopy blank_config.json to config.json and fill in REQUIRED fields.');
+	fatal(`\nMissing config.json\nCopy blank_config.json to config.json and fill in REQUIRED fields.`);
 }
 
 /* ---------- JSON parsing ---------- */
 
 let config;
 try {
-	config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+	config = JSON.parse(fs.readFileSync(configPath, `utf8`));
 }
 catch (err) {
-	console.error('\nconfig.json is not valid JSON\n');
+	console.error(`\nconfig.json is not valid JSON\n`);
 	console.error(err.message);
 	pauseAndExit(1);
 }
@@ -41,47 +41,47 @@ catch (err) {
 
 // Must exist AND be filled in
 const REQUIRED_STRICT = [
-	'token',
-	'twitchClientId',
-	'twitchSecret',
-	'kickClientId',
-	'kickSecret',
-	'botOwner',
-	'clientId',
-	'guildId',
+	`token`,
+	`twitchClientId`,
+	`twitchSecret`,
+	`kickClientId`,
+	`kickSecret`,
+	`botOwner`,
+	`clientId`,
+	`guildId`,
 ];
 
 // Must exist, defaults allowed
 const REQUIRED_WITH_DEFAULTS = [
-	'redditCron',
-	'twitchCron',
-	'statusCron',
-	'authCron',
+	`redditCron`,
+	`twitchCron`,
+	`statusCron`,
+	`authCron`,
 ];
 
 const missingStrict = REQUIRED_STRICT.filter(
 	key =>
 		!config[key] ||
-		config[key] === '(REQUIRED)' ||
-		config[key].toString().trim() === '',
+		config[key] === `(REQUIRED)` ||
+		config[key].toString().trim() === ``,
 );
 
 const missingDefaults = REQUIRED_WITH_DEFAULTS.filter(
 	key =>
 		!(key in config) ||
-		config[key].toString().trim() === '',
+		config[key].toString().trim() === ``,
 );
 
 if (missingStrict.length || missingDefaults.length) {
-	console.error('\nconfig.json is invalid\n');
+	console.error(`\nconfig.json is invalid\n`);
 
 	if (missingStrict.length) {
-		console.error('\nMissing or invalid REQUIRED fields:');
+		console.error(`\nMissing or invalid REQUIRED fields:`);
 		missingStrict.forEach(key => console.error(`  - ${key}`));
 	}
 
 	if (missingDefaults.length) {
-		console.error('\nMissing required cron fields:');
+		console.error(`\nMissing required cron fields:`);
 		missingDefaults.forEach(key => console.error(`  - ${key}`));
 	}
 
