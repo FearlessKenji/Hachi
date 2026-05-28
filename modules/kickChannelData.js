@@ -1,4 +1,4 @@
-const { writeLog } = require('./writeLog');
+const { writeLog } = require(`./writeLog`);
 
 async function getData(channelName, clientID, authKey) {
 	try {
@@ -26,9 +26,8 @@ async function getData(channelName, clientID, authKey) {
 		);
 
 		return channel || false;
-	}
-	catch (err) {
-		console.error(writeLog('Error fetching Kick channel data:', err));
+	} catch (err) {
+		console.error(writeLog(`Error fetching Kick channel data:`, err));
 		return false;
 	}
 }

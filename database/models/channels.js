@@ -16,7 +16,7 @@
  */
 
 module.exports = (sequelize, DataTypes) => {
-	return sequelize.define('channels', {
+	return sequelize.define(`channels`, {
 		id: {
 			type: DataTypes.INTEGER,
 			primaryKey: true,
@@ -73,8 +73,8 @@ module.exports = (sequelize, DataTypes) => {
 		indexes: [
 			{
 				unique: true,
-				fields: ['channelName', 'guildId'], // Composite unique index
-				name: 'compositeIndex',
+				fields: [`channelName`, `guildId`], // Composite unique index
+				name: `compositeIndex`,
 			},
 		],
 	});

@@ -1,6 +1,6 @@
-const { Servers } = require('../database/dbObjects.js');
-const { writeLog } = require('../modules/writeLog.js');
-const { Events } = require('discord.js');
+const { Servers } = require(`../database/dbObjects.js`);
+const { writeLog } = require(`../modules/writeLog.js`);
+const { Events } = require(`discord.js`);
 
 module.exports = {
 	name: Events.GuildCreate,
@@ -9,9 +9,8 @@ module.exports = {
 			await Servers.upsert({ guildId: guild.id });
 			const owner = await guild.fetchOwner();
 			console.log(writeLog(`Added to new server: ${guild.name}) | ID: ${guild.id}\nOwner: ${owner} | OwnerUsername: ${owner.user.username}.`));
-		}
-		catch (error) {
-			console.error(writeLog('Failed to update server table upon arrival.', error));
+		} catch (error) {
+			console.error(writeLog(`Failed to update server table upon arrival.`, error));
 		}
 	},
 };

@@ -1,9 +1,8 @@
-const { Servers, Channels } = require('../database/dbObjects.js');
-const channelData = require('./kickChannelData.js');
-const userData = require('./getKickUserData.js');
-const { EmbedBuilder } = require('discord.js');
-const { writeLog } = require('./writeLog.js');
-const fs = require('node:fs');
+const { Servers, Channels } = require(`../database/dbObjects.js`);
+const userData = require(`./getKickUserData.js`);
+const { EmbedBuilder } = require(`discord.js`);
+const { writeLog } = require(`./writeLog.js`);
+const fs = require(`node:fs`);
 
 /**
  * Fetch Kick stream info for multiple channels in parallel.
@@ -20,8 +19,8 @@ async function getKickDataBatch(channelNames, clientID, authKey) {
 						headers: {
 							'Client-ID': clientID,
 							'Authorization': `Bearer ${authKey}`,
-						}
-					}
+						},
+					},
 				);
 
 				if (!res.ok) {
@@ -32,12 +31,11 @@ async function getKickDataBatch(channelNames, clientID, authKey) {
 				const data = await res.json();
 
 				return { name, data: data.data?.[0] ?? null };
-			}
-			catch (err) {
+			} catch (err) {
 				console.error(writeLog(`Failed to fetch Kick data for ${name}:`, err));
 				return { name, data: null };
 			}
-		})
+		}),
 	);
 
 	// IMPORTANT: normalize into lookup object for O(1)
@@ -56,22 +54,21 @@ async function checkKick(client) {
 	// Load config
 	let config;
 	try {
-		config = JSON.parse(fs.readFileSync('./config.json', 'utf-8'));
-	}
-	catch (err) {
-		console.error(writeLog('Failed to read config.json:', err));
+		config = JSON.parse(fs.readFileSync(`./config.json`, `utf-8`));
+	} catch (err) {
+		console.error(writeLog(`Failed to read config.json:`, err));
 		return;
 	}
 
 	// Fetch all db data
 	const [servers, channels] = await Promise.all([
 		Servers.findAll({ raw: true }),
-		Channels.findAll({ raw: true })
+		Channels.findAll({ raw: true }),
 	]);
 
 	// Remove invalid or malformed channel names
 	const validChannels = channels.filter(
-		c => c.channelName && /^[a-z0-9_]+$/.test(c.channelName)
+		c => c.channelName && /^[a-z0-9_]+$/.test(c.channelName),
 	);
 
 	// Group channels by guildId for fast lookup (removes per-server filtering)
@@ -107,9 +104,9 @@ async function checkKick(client) {
 			}
 
 			// Determine which Discord channel to post in
-			const discordChannelId = chan.isSelf
-				? server.selfKickChannelId
-				: server.affiliateChannelId;
+			const discordChannelId = chan.isSelf ?
+				server.selfKickChannelId :
+				server.affiliateChannelId;
 
 			const discordChannel = client.channels.cache.get(discordChannelId);
 
@@ -119,15 +116,15 @@ async function checkKick(client) {
 			}
 
 			// Mention the appropriate role if available
-			const roleMention = chan.isSelf
-				? server.selfKickRoleId
-					? `<@&${server.selfKickRoleId}> `
-					: ''
-				: server.affiliateRoleId
-					? `<@&${server.affiliateRoleId}> `
-					: '';
+			const roleMention = chan.isSelf ?
+				server.selfKickRoleId ?
+					`<@&${server.selfKickRoleId}> ` :
+					`` :
+				server.affiliateRoleId ?
+					`<@&${server.affiliateRoleId}> ` :
+					``;
 
-			const userID = streamInfo.broadcaster_user_id
+			const userID = streamInfo.broadcaster_user_id;
 			const kickUser = await userData.getData(
 				userID,
 				chan.channelName,
@@ -139,11 +136,28 @@ async function checkKick(client) {
 
 			// Build embed fields
 			const fields = [
-				{ name: 'Playing', value: streamInfo.category.name, inline: true },
-				{ name: 'Viewers', value: streamInfo.stream.viewer_count.toString(), inline: true },
-				{ name: 'Kick', value: `[Watch stream](https://www.kick.com/${streamInfo.slug})` },
+				{
+					name: `Playing`,
+					value: streamInfo.category.name,
+					inline: true,
+				},
+				{
+					name: `Viewers`,
+					value: streamInfo.stream.viewer_count.toString(),
+					inline: true,
+				},
+				{
+					name: `Kick`,
+					value: `[Watch stream](https://www.kick.com/${streamInfo.slug})`,
+				},
 			];
-			if (chan.discordUrl) fields.push({ name: 'Discord Server', value: `[Join here](${chan.discordUrl})`, inline: true });
+			if (chan.discordUrl) {
+				fields.push({
+					name: `Discord Server`,
+					value: `[Join here](${chan.discordUrl})`,
+					inline: true,
+				});
+			}
 
 			const sendEmbed = new EmbedBuilder()
 				.setTitle(`${kickUser.name} is now live`)
@@ -155,13 +169,13 @@ async function checkKick(client) {
 				.setThumbnail(kickUser.profile_picture)
 				.setImage(`${streamInfo.stream.thumbnail}?cacheBypass=${Math.random()}`);
 
-			const content = chan.isSelf
-				? `${roleMention}I just went live on Kick! I'm streaming ${streamInfo.category.name}!`
-				: `${roleMention}An affiliate has gone live on Kick! They're streaming ${streamInfo.category.name}!`;
+			const content = chan.isSelf ?
+				`${roleMention}I just went live on Kick! I'm streaming ${streamInfo.category.name}!` :
+				`${roleMention}An affiliate has gone live on Kick! They're streaming ${streamInfo.category.name}!`;
 
 			// Send or edit Discord message
 			try {
-				let existingMessage = null
+				let existingMessage = null;
 				if (chan.kickMessageId) {
 					// Edit existing live message
 					existingMessage =
@@ -177,8 +191,7 @@ async function checkKick(client) {
 				const message = await discordChannel.send({ content, embeds: [sendEmbed] });
 				// Update DB with new messageId
 				await Channels.update({ kickMessageId: message.id, kickIsLive: streamInfo?.stream?.is_live }, { where: { id: chan.id } });
-			}
-			catch (err) {
+			} catch (err) {
 				console.error(writeLog(`Failed to send/edit kick message for ${chan.channelName}:`, err));
 			}
 		});

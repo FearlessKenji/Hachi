@@ -1,8 +1,8 @@
-const { Servers, Channels } = require('../database/dbObjects.js');
-const { EmbedBuilder } = require('discord.js');
-const { writeLog } = require('./writeLog.js');
-const channelData = require('./twitchChannelData.js');
-const fs = require('node:fs');
+const { Servers, Channels } = require(`../database/dbObjects.js`);
+const { EmbedBuilder } = require(`discord.js`);
+const { writeLog } = require(`./writeLog.js`);
+const channelData = require(`./twitchChannelData.js`);
+const fs = require(`node:fs`);
 
 /**
  * Fetch Twitch stream info for multiple channels in parallel.
@@ -18,8 +18,8 @@ async function getTwitchDataBatch(channelNames, clientID, authKey) {
 					{
 						headers: {
 							'Client-ID': clientID,
-							'Authorization': `Bearer ${authKey}`
-						}
+							'Authorization': `Bearer ${authKey}`,
+						},
 					});
 
 				if (!res.ok) {
@@ -29,12 +29,11 @@ async function getTwitchDataBatch(channelNames, clientID, authKey) {
 
 				const data = await res.json();
 				return { name, data: data.data[0] ?? null }; // null if offline
-			}
-			catch (err) {
+			} catch (err) {
 				console.error(writeLog(`Failed to fetch Twitch data for ${name}:`, err));
 				return { name, data: null };
 			}
-		})
+		}),
 	);
 
 	// Convert array of tuples into lookup object for O(1) access
@@ -53,22 +52,21 @@ async function checkTwitch(client) {
 	// Load config
 	let config;
 	try {
-		config = JSON.parse(fs.readFileSync('./config.json', 'utf-8'));
-	}
-	catch (err) {
-		console.error(writeLog('Failed to read config.json:', err));
+		config = JSON.parse(fs.readFileSync(`./config.json`, `utf-8`));
+	} catch (err) {
+		console.error(writeLog(`Failed to read config.json:`, err));
 		return;
 	}
 
 	// Fetch all db data
 	const [servers, channels] = await Promise.all([
 		Servers.findAll({ raw: true }),
-		Channels.findAll({ raw: true })
+		Channels.findAll({ raw: true }),
 	]);
 
 	// Remove invalid or malformed channel names
 	const validChannels = channels.filter(
-		c => c.channelName && /^[a-z0-9_]+$/.test(c.channelName)
+		c => c.channelName && /^[a-z0-9_]+$/.test(c.channelName),
 	);
 
 	// Group channels by guildId for fast lookup (removes per-server filtering)
@@ -98,12 +96,14 @@ async function checkTwitch(client) {
 			const streamInfo = streamsData[chan.channelName];
 
 			// Skip if offline or notifications disabled
-			if (!streamInfo || !chan.twitchNotif) return;
+			if (!streamInfo || !chan.twitchNotif) {
+				return;
+			}
 
 			// Determine which Discord channel to post in
-			const discordChannelId = chan.isSelf
-				? server.selfTwitchChannelId
-				: server.affiliateChannelId;
+			const discordChannelId = chan.isSelf ?
+				server.selfTwitchChannelId :
+				server.affiliateChannelId;
 
 			const discordChannel = client.channels.cache.get(discordChannelId);
 
@@ -113,31 +113,49 @@ async function checkTwitch(client) {
 			}
 
 			// Mention the appropriate role if available
-			const roleMention = chan.isSelf
-				? server.selfTwitchRoleId
-					? `<@&${server.selfTwitchRoleId}> `
-					: ''
-				: server.affiliateRoleId
-					? `<@&${server.affiliateRoleId}> `
-					: '';
+			const roleMention = chan.isSelf ?
+				server.selfTwitchRoleId ?
+					`<@&${server.selfTwitchRoleId}> ` :
+					`` :
+				server.affiliateRoleId ?
+					`<@&${server.affiliateRoleId}> ` :
+					``;
 
 			const twitchChannel = await channelData.getData(
 				chan.channelName,
 				config.twitchClientId,
 				config.twitchAuthToken);
 
-			if (!twitchChannel) return;
+			if (!twitchChannel) {
+				return;
+			}
 			const startTime = new Date(streamInfo.started_at).toLocaleString();
 			const editTime = new Date().toLocaleString();
 
 			// Build embed fields
 			const fields = [
-				{ name: 'Playing', value: twitchChannel.game_name, inline: true },
-				{ name: 'Viewers', value: streamInfo.viewer_count.toString(), inline: true },
-				{ name: 'Twitch', value: `[Watch stream](https://www.twitch.tv/${twitchChannel.broadcaster_login})` },
+				{
+					name: `Playing`,
+					value: twitchChannel.game_name,
+					inline: true,
+				},
+				{
+					name: `Viewers`,
+					value: streamInfo.viewer_count.toString(),
+					inline: true,
+				},
+				{
+					name: `Twitch`,
+					value: `[Watch stream](https://www.twitch.tv/${twitchChannel.broadcaster_login})`,
+				},
 			];
 
-			if (chan.discordUrl) fields.push({ name: 'Discord Server', value: `[Join here](${chan.discordUrl})` });
+			if (chan.discordUrl) {
+				fields.push({
+					name: `Discord Server`,
+					value: `[Join here](${chan.discordUrl})`,
+				});
+			}
 
 			const sendEmbed = new EmbedBuilder()
 				.setTitle(`${twitchChannel.display_name} is now live`)
@@ -149,13 +167,13 @@ async function checkTwitch(client) {
 				.setThumbnail(twitchChannel.thumbnail_url)
 				.setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${twitchChannel.broadcaster_login}-640x360.jpg?cacheBypass=${Math.random()}`);
 
-			const content = chan.isSelf
-				? `${roleMention}I just went live on Twitch! I'm streaming ${twitchChannel.game_name}!`
-				: `${roleMention}An affiliate has gone live on Twitch! They're streaming ${twitchChannel.game_name}!`;
+			const content = chan.isSelf ?
+				`${roleMention}I just went live on Twitch! I'm streaming ${twitchChannel.game_name}!` :
+				`${roleMention}An affiliate has gone live on Twitch! They're streaming ${twitchChannel.game_name}!`;
 
 			// Send or edit Discord message
 			try {
-				let existingMessage = null
+				let existingMessage = null;
 				if (chan.twitchMessageId) {
 					// Edit existing live message
 					existingMessage =
@@ -170,9 +188,7 @@ async function checkTwitch(client) {
 				const message = await discordChannel.send({ content, embeds: [sendEmbed] });
 				// Update DB with new messageId
 				await Channels.update({ twitchMessageId: message.id, twitchStreamId: streamInfo.id }, { where: { id: chan.id } });
-			}
-
-			catch (err) {
+			} catch (err) {
 				console.error(writeLog(`Failed to send/edit Twitch message for ${chan.channelName}:`, err));
 			}
 		});

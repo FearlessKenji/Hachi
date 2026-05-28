@@ -1,64 +1,97 @@
-const js = require('@eslint/js');
+const js = require(`@eslint/js`);
 
 module.exports = [
 	js.configs.recommended,
+
 	{
 		languageOptions: {
-			ecmaVersion: 2021,
-			sourceType: 'script',
+			ecmaVersion: `latest`,
+			sourceType: `commonjs`,
+
 			globals: {
-				process: 'readonly',
-				module: 'readonly',
-				require: 'readonly',
-				__dirname: 'readonly',
-				console: 'readonly',
-				fetch: 'readonly',
-				setTimeout: 'readonly', // <-- add this
-				clearTimeout: 'readonly', // good practice too
-				setInterval: 'readonly',
-				clearInterval: 'readonly',
+				clearInterval: `readonly`,
+				clearTimeout: `readonly`,
+				console: `readonly`,
+				fetch: `readonly`,
+				module: `readonly`,
+				process: `readonly`,
+				require: `readonly`,
+				setInterval: `readonly`,
+				setTimeout: `readonly`,
+				__dirname: `readonly`,
 			},
 		},
+
 		rules: {
-			'arrow-spacing': ['warn', { before: true, after: true }],
-			'brace-style': ['error', 'stroustrup', { allowSingleLine: true }],
-			'comma-dangle': ['error', 'always-multiline'],
-			'comma-spacing': 'error',
-			'comma-style': 'error',
-			curly: ['error', 'multi-line', 'consistent'],
-			'dot-location': ['error', 'property'],
-			'handle-callback-err': 'off',
-			indent: ['error', 'tab'],
-			'keyword-spacing': 'error',
-			'max-nested-callbacks': ['error', { max: 4 }],
-			'max-statements-per-line': ['error', { max: 2 }],
-			'no-console': 'off',
-			'no-empty-function': 'error',
-			'no-floating-decimal': 'error',
-			'no-lonely-if': 'error',
-			'no-multi-spaces': 'error',
-			'no-multiple-empty-lines': ['error', { max: 2, maxEOF: 1, maxBOF: 0 }],
-			'no-shadow': ['error', { allow: ['err', 'resolve', 'reject'] }],
-			'no-trailing-spaces': 'error',
-			'no-var': 'error',
-			'object-curly-spacing': ['error', 'always'],
-			'prefer-const': 'error',
-			quotes: ['error', 'single'],
-			semi: ['error', 'always'],
-			'space-before-blocks': 'error',
+			// =========================================================
+			// CORE SAFETY (prevent real runtime bugs)
+			// =========================================================
+
+			'eqeqeq': [`error`, `always`],
+			'no-async-promise-executor': `error`,
+			'no-else-return': `error`,
+			'no-empty-function': `error`,
+			'no-eval': `error`,
+			'no-implicit-globals': `error`,
+			'no-implied-eval': `error`,
+			'no-lonely-if': `error`,
+			'no-param-reassign': `error`,
+			'no-promise-executor-return': `error`,
+			'no-return-await': `error`,
+			'no-undef': `error`,
+			'no-unused-vars': [`error`, { argsIgnorePattern: `^_` }],
+			'no-useless-return': `error`,
+			'no-var': `error`,
+			'prefer-const': `error`,
+			'require-atomic-updates': `error`,
+
+			// =========================================================
+			// DEBUGGING CONTROL
+			// =========================================================
+
+			'no-console': `off`,
+			'no-shadow': [`error`, { allow: [`err`, `resolve`, `reject`] }],
+
+			// =========================================================
+			// STYLE ENFORCEMENT (CONSISTENT CODE BASE)
+			// =========================================================
+
+			'arrow-spacing': [`error`, { before: true, after: true }],
+			'brace-style': [`error`, `1tbs`, { allowSingleLine: true }],
+			'comma-dangle': [`error`, `always-multiline`],
+			'comma-spacing': [`error`, { before: false, after: true }],
+			'comma-style': [`error`, `last`],
+			'curly': [`error`, `all`],
+			'dot-location': [`error`, `property`],
+			'indent': [`error`, `tab`],
+			'keyword-spacing': [`error`],
+			'linebreak-style': [`error`, `unix`],
+			'max-len': [`error`, { code: 200, ignoreUrls: true }],
+			'max-statements-per-line': [`error`, { max: 1 }],
+			'multiline-ternary': [`error`, `always-multiline`],
+			'no-multi-spaces': `error`,
+			'no-multiple-empty-lines': [`error`, { max: 1, maxEOF: 0 }],
+			'no-trailing-spaces': `error`,
+			'object-curly-spacing': [`error`, `always`],
+			'operator-linebreak': [`error`, `after`],
+			'quotes': [`error`, `backtick`, { avoidEscape: true }],
+			'semi': [`error`, `always`],
+			'space-before-blocks': `error`,
 			'space-before-function-paren': [
-				'error',
+				`error`,
 				{
-					anonymous: 'always',
-					named: 'never',
-					asyncArrow: 'always',
+					anonymous: `never`,
+					named: `never`,
+					asyncArrow: `always`,
 				},
 			],
-			'space-in-parens': 'error',
-			'space-infix-ops': 'error',
-			'space-unary-ops': 'error',
-			'spaced-comment': 'error',
-			yoda: 'error',
+
+			'space-in-parens': [`error`, `never`],
+			'space-infix-ops': `error`,
+			'spaced-comment': [`error`, `always`],
+			'template-curly-spacing': [`error`, `never`],
+			'yoda': `error`,
+
 		},
 	},
 ];

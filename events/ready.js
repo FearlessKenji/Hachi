@@ -1,6 +1,6 @@
-const { Events, ActivityType } = require('discord.js');
-const { writeLog } = require('../modules/writeLog.js');
-const { dbInit } = require('../modules/dbInit.js');
+const { Events, ActivityType } = require(`discord.js`);
+const { writeLog } = require(`../modules/writeLog.js`);
+const { dbInit } = require(`../modules/dbInit.js`);
 
 module.exports = {
 	name: Events.ClientReady,
@@ -19,7 +19,7 @@ module.exports = {
 
 		// Optional initial status
 		client.user.setActivity({
-			name: 'Initializing...',
+			name: `Initializing...`,
 			type: ActivityType.Playing,
 		});
 	},
