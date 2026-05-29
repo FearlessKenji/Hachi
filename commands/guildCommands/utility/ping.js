@@ -7,7 +7,7 @@ module.exports = {
 		.setDefaultMemberPermissions(0), // Restrict to admins or bot owner
 
 	async execute(interaction) {
-		const sent = await interaction.reply({ content: `Pinging...`, fetchReply: true });
-		interaction.editReply(`Roundtrip latency: ${sent.createdTimestamp - interaction.createdTimestamp}ms`);
+		const sent = await interaction.reply({ content: `Pinging...`, withResponse: true });
+		interaction.editReply(`Roundtrip latency: ${sent.resource.message.createdTimestamp - interaction.createdTimestamp}ms`);
 	},
 };

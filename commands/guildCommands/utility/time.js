@@ -14,6 +14,6 @@ module.exports = {
 	async execute(interaction) {
 		const discordTime = `<t:${epochTime()}:t>`;
 		const discordDate = `<t:${epochTime()}:d>`;
-		await interaction.reply({ content: `It is currently ${discordTime}, ${discordDate}.`, fetchReply: true });
+		await interaction.reply({ content: `It is currently ${discordTime}, ${discordDate}.` });
 	},
 };

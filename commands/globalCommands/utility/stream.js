@@ -25,20 +25,20 @@ module.exports = {
 				)
 				.addBooleanOption(option =>
 					option.setName(`twitch`)
-						.setDescription(`Optional. Default true. Set to false if you do not want Twitch notifications.`),
+						.setDescription(`Default false. Set to true if you want Twitch notifications.`),
 				)
 				.addBooleanOption(option =>
 					option.setName(`kick`)
-						.setDescription(`Optional. Default true. Set to false if you do not want Kick notifications.`),
+						.setDescription(`Default false. Set to true if you want Kick notifications.`),
 				),
 		)
 		.addSubcommand(subcommand =>
 			subcommand
-				.setName(`delete`)
-				.setDescription(`Delete a channel from the list.`)
+				.setName(`remove`)
+				.setDescription(`Remove a channel from the list.`)
 				.addStringOption(option =>
 					option.setName(`name`)
-						.setDescription(`Username to delete.`)
+						.setDescription(`Username to remove.`)
 						.setRequired(true),
 				),
 		)
@@ -117,9 +117,9 @@ module.exports = {
 				await interaction.reply({ content: `Failed to update server settings.`, flags: MessageFlags.Ephemeral });
 			}
 		} else if (subcommand === `add`) {
-			const twitchNotif = interaction.options.getBoolean(`twitch`) ?? true;
+			const twitchNotif = interaction.options.getBoolean(`twitch`) ?? false;
 			const discordUrl = interaction.options.getString(`discord`) || null;
-			const kickNotif = interaction.options.getBoolean(`kick`) ?? true;
+			const kickNotif = interaction.options.getBoolean(`kick`) ?? false;
 			const isSelf = interaction.options.getBoolean(`self`) ?? false;
 			const channelName = interaction.options.getString(`name`).toLowerCase().trim();
 
@@ -145,15 +145,15 @@ module.exports = {
 					flags: MessageFlags.Ephemeral,
 				});
 			}
-		} else if (subcommand === `delete`) {
+		} else if (subcommand === `remove`) {
 			const channelName = interaction.options.getString(`name`).toLowerCase().trim();
 
 			try {
-				const deleted = await Channels.destroy({
+				const removed = await Channels.destroy({
 					where: { channelName, guildId },
 				});
 
-				if (!deleted) {
+				if (!removed) {
 					return interaction.reply({
 						content: `Channel **${channelName}** not found in database.`,
 						flags: MessageFlags.Ephemeral,
@@ -161,13 +161,13 @@ module.exports = {
 				}
 
 				await interaction.reply({
-					content: `Deleted **${channelName}** successfully.`,
+					content: `Removed **${channelName}** successfully.`,
 					flags: MessageFlags.Ephemeral,
 				});
 			} catch (error) {
-				console.error(writeLog(`Failed to delete ${channelName}:`, error));
+				console.error(writeLog(`Failed to remove ${channelName}:`, error));
 				await interaction.reply({
-					content: `Failed to delete **${channelName}**.`,
+					content: `Failed to remove **${channelName}**.`,
 					flags: MessageFlags.Ephemeral,
 				});
 			}

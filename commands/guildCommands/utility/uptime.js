@@ -23,6 +23,6 @@ module.exports = {
 		.setDefaultMemberPermissions(0), // Restrict to admins or bot owner
 
 	async execute(interaction) {
-		await interaction.reply({ content: calculateUptime(), fetchReply: true });
+		await interaction.reply({ content: calculateUptime() });
 	},
 };

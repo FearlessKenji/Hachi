@@ -7,9 +7,10 @@
 	"botOwner": "(REQUIRED)",
 	"clientId": "(REQUIRED)",
 	"guildId": "(REQUIRED)",
-	"redditCron": "*/1 * * * *",
 	"twitchCron": "*/1 * * * *",
+	"kickCron": "*/1 * * * *",
 	"statusCron": "*/10 * * * *",
 	"authCron": "0 * * * *",
-	"authToken": ""
+	"twitchAuthToken": "",
+	"kickAuthToken": ""
 }

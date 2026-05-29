@@ -52,7 +52,6 @@ const REQUIRED_STRICT = [
 
 // Must exist, defaults allowed
 const REQUIRED_WITH_DEFAULTS = [
-	`redditCron`,
 	`twitchCron`,
 	`statusCron`,
 	`authCron`,
