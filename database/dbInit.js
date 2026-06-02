@@ -1,5 +1,5 @@
 const { sequelize } = require(`../database/dbObjects`);
-const { writeLog } = require(`../modules/writeLog`);
+const { writeLog } = require(`../utils/writeLog`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
 

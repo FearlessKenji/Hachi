@@ -1,5 +1,5 @@
 const { Servers } = require(`../database/dbObjects.js`);
-const { writeLog } = require(`../modules/writeLog.js`);
+const { writeLog } = require(`../utils/writeLog.js`);
 const { Events } = require(`discord.js`);
 
 module.exports = {

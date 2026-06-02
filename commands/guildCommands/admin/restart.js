@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
-const { writeLog } = require(`../../../modules/writeLog.js`);
-const config = require(`../../../config.json`);
+const { writeLog } = require(`../../../utils/writeLog.js`);
+const config = require(`../../../config/config.json`);
 
 module.exports = {
 	data: new SlashCommandBuilder()

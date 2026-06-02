@@ -1,7 +1,8 @@
 {
   "dependencies": {
     "cron": "^3.1.6",
-    "discord.js": "^14.14.1",
+    "discord.js": "^14.26.4",
+    "dotenv": "^17.4.2",
     "he": "^1.2.0",
     "sequelize": "^6.37.8",
     "sqlite3": "^6.0.1"
@@ -12,13 +13,14 @@
   "devDependencies": {
     "eslint": "^9.39.4"
   },
-  "name": "kenjib0t",
+  "name": "Kenjibot",
   "description": "This Discord bot will automatically send a message and tag the assigned role whenever a streamer went live.\r The notifications will update every 10 minutes(default) while the streamer is live.",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node .",
-    "lint": "eslint ."
+    "lint": "eslint . --config config/eslint.config.js",
+    "lint:fix": "eslint . --config config/eslint.config.js --fix"
   },
   "repository": {
     "type": "git",

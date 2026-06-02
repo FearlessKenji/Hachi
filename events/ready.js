@@ -1,8 +1,8 @@
 const { Events, ActivityType } = require(`discord.js`);
-const { writeLog } = require(`../modules/writeLog.js`);
-const { dbInit } = require(`../modules/dbInit.js`);
-const twitchAuth = require(`../modules/updateTwitchAuthConfig.js`);
-const kickAuth = require(`../modules/updateKickAuthConfig.js`);
+const { writeLog } = require(`../utils/writeLog.js`);
+const { dbInit } = require(`../database/dbInit.js`);
+const twitchAuth = require(`../auth/updateTwitchAuthConfig.js`);
+const kickAuth = require(`../auth/updateKickAuthConfig.js`);
 
 module.exports = {
 	name: Events.ClientReady,

@@ -1,4 +1,4 @@
-const { writeLog } = require(`./writeLog`);
+const { writeLog } = require(`../utils/writeLog`);
 
 async function getData(id, user, clientID, authKey) {
 	try {

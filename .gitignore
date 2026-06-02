@@ -7,11 +7,10 @@ node_modules/
 
 # PM2 / runtime config (machine-specific)
 ecosystem.config.js
-ecosystem.config.cjs
 
 # Local runtime config
 config.json
-auth/
+*.env
 
 # Local databases
 *.sqlite

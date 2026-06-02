@@ -1,9 +1,11 @@
+require(`dotenv/config`);
+require(`./config/configCheck.js`);
 const { Client, Collection, GatewayIntentBits, Partials } = require(`discord.js`);
-const { writeLog } = require(`./modules/writeLog.js`);
-const createCronJobs = require(`./modules/crons.js`);
-const config = require(`./modules/config.js`);
+const { writeLog } = require(`./utils/writeLog.js`);
+const createCronJobs = require(`./utils/crons.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
+
 
 // =======================
 // Create Discord client
@@ -68,7 +70,7 @@ process.on(`uncaughtException`, err => {
 // =======================
 // Login
 // =======================
-client.login(config.token);
+client.login(process.env.TOKEN);
 
 // =======================
 // Shutdown logic

@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
-const config = require(`../../../config.json`);
+const config = require(`../../../config/config.json`);
 const path = require(`node:path`);
 
 module.exports = {

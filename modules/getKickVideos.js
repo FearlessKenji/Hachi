@@ -1,4 +1,4 @@
-const { writeLog } = require(`./writeLog.js`);
+const { writeLog } = require(`../utils/writeLog`);
 
 async function getLatestVod(channelName) {
 	try {

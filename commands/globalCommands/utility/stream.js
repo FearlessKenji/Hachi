@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, MessageFlags, InteractionContextType } = require(`discord.js`);
 const { Servers, Channels } = require(`../../../database/dbObjects.js`);
-const { writeLog } = require(`../../../modules/writeLog.js`);
+const { writeLog } = require(`../../../utils/writeLog.js`);
 
 module.exports = {
 	data: new SlashCommandBuilder()

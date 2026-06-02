@@ -2,10 +2,10 @@ const { Servers, Channels } = require(`../database/dbObjects.js`);
 const userData = require(`./getKickUserData.js`);
 const kickData = require(`./getKickDataBatch.js`);
 const kickVideos = require(`./getKickVideos.js`);
-const authTokens = require(`./authTokens.js`);
+const authTokens = require(`../auth/authTokens.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { writeLog } = require(`./writeLog.js`);
-const fs = require(`node:fs`);
+const { writeLog } = require(`../utils/writeLog.js`);
+const kickClientId = process.env.kickClientId;
 
 function buildOfflineEmbed(existingEmbed, vod) {
 	const embed = EmbedBuilder.from(existingEmbed);
@@ -87,15 +87,8 @@ async function updateOfflineKickMessage(chan, server, guild, client) {
  * - Processes Discord updates per server
  */
 async function checkKick(client) {
-	// Load config
-	let config;
-	try {
-		config = JSON.parse(fs.readFileSync(`./config.json`, `utf-8`));
-		config = { ...config, ...authTokens.getAuthTokens() };
-	} catch (err) {
-		console.error(writeLog(`Failed to read config.json:`, err));
-		return;
-	}
+	const auth = authTokens.getAuthTokens();
+	const kickAuthToken = auth.kickAuthToken;
 
 	// Fetch all db data
 	const [servers, channels] = await Promise.all([
@@ -121,7 +114,11 @@ async function checkKick(client) {
 
 	// Build list of all usernames for Kick batch request
 	const channelNames = validChannels.map(c => c.channelName);
-	const streamsData = await kickData.getKickDataBatch(channelNames, config.kickClientId, config.kickAuthToken);
+	const streamsData = await kickData.getKickDataBatch(
+		channelNames,
+		kickClientId,
+		kickAuthToken
+	);
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
@@ -177,8 +174,9 @@ async function checkKick(client) {
 			const kickUser = await userData.getData(
 				userID,
 				chan.channelName,
-				config.kickClientId,
-				config.kickAuthToken);
+				kickClientId,
+				kickAuthToken
+			);
 
 			if (!kickUser) {
 				return;
@@ -220,7 +218,7 @@ async function checkKick(client) {
 				.setFields(fields)
 				.setFooter({ text: `Started ${startTime}. Last edited ${editTime}.` })
 				.setThumbnail(kickUser.profile_picture)
-				.setImage(`${streamInfo.stream.thumbnail}?cacheBypass=${Math.random()}`);
+				.setImage(`${streamInfo.stream.thumbnail}?cacheBypass=${Date.now()}`);
 
 			const content = chan.isSelf ?
 				`${roleMention}I just went live on Kick! I'm streaming ${streamInfo.category.name}!` :

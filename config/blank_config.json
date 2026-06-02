@@ -1,4 +1,9 @@
 {
+	"token": "(REQUIRED)",
+	"twitchClientId": "(REQUIRED)",
+	"twitchSecret": "(REQUIRED)",
+	"kickClientId": "(REQUIRED)",
+	"kickSecret": "(REQUIRED)",
 	"botOwner": "(REQUIRED)",
 	"clientId": "(REQUIRED)",
 	"guildId": "(REQUIRED)",

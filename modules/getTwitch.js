@@ -1,11 +1,11 @@
 const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { writeLog } = require(`./writeLog.js`);
+const { writeLog } = require(`../utils/writeLog.js`);
 const channelData = require(`./twitchChannelData.js`);
 const twitchData = require(`./getTwitchDataBatch.js`);
 const twitchVideos = require(`./getTwitchVideos.js`);
-const authTokens = require(`./authTokens.js`);
-const fs = require(`node:fs`);
+const authTokens = require(`../auth/authTokens.js`);
+const twitchClientId = process.env.twitchClientId
 
 function buildOfflineEmbed(existingEmbed, vod) {
 	const embed = EmbedBuilder.from(existingEmbed);
@@ -40,7 +40,9 @@ function buildOfflineEmbed(existingEmbed, vod) {
 	return embed;
 }
 
-async function updateOfflineTwitchMessage(chan, server, guild, client, config) {
+async function updateOfflineTwitchMessage(chan, server, guild, client) {
+	const twitchAuthToken = authTokens.getAuthTokens().twitchAuthToken
+	
 	if (!chan.twitchMessageId || !chan.twitchStreamId || !chan.twitchNotif) {
 		return;
 	}
@@ -57,8 +59,8 @@ async function updateOfflineTwitchMessage(chan, server, guild, client, config) {
 
 	const twitchChannel = await channelData.getData(
 		chan.channelName,
-		config.twitchClientId,
-		config.twitchAuthToken);
+		twitchClientId,
+		twitchAuthToken);
 
 	if (!twitchChannel) {
 		return;
@@ -67,8 +69,9 @@ async function updateOfflineTwitchMessage(chan, server, guild, client, config) {
 	const vod = await twitchVideos.getVodForStream(
 		twitchChannel.id,
 		chan.twitchStreamId,
-		config.twitchClientId,
-		config.twitchAuthToken);
+		twitchClientId,
+		twitchAuthToken
+	);
 
 	if (!vod?.url) {
 		return;
@@ -101,16 +104,7 @@ async function updateOfflineTwitchMessage(chan, server, guild, client, config) {
  * - Processes Discord updates per server
  */
 async function checkTwitch(client) {
-	// Load config
-	let config;
-	try {
-		config = JSON.parse(fs.readFileSync(`./config.json`, `utf-8`));
-		config = { ...config, ...authTokens.getAuthTokens() };
-	} catch (err) {
-		console.error(writeLog(`Failed to read config.json:`, err));
-		return;
-	}
-
+	const { twitchAuthToken } = authTokens.getAuthTokens();
 	// Fetch all db data
 	const [servers, channels] = await Promise.all([
 		Servers.findAll({ raw: true }),
@@ -135,7 +129,11 @@ async function checkTwitch(client) {
 
 	// Build list of all usernames for Twitch batch request
 	const channelNames = validChannels.map(c => c.channelName);
-	const streamsData = await twitchData.getTwitchDataBatch(channelNames, config.twitchClientId, config.twitchAuthToken);
+	const streamsData = await twitchData.getTwitchDataBatch(
+		channelNames, 
+		twitchClientId, 
+		twitchAuthToken
+	);
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
@@ -156,7 +154,7 @@ async function checkTwitch(client) {
 			// Skip if offline or notifications disabled
 			if (!streamInfo || !chan.twitchNotif) {
 				if (!streamInfo) {
-					await updateOfflineTwitchMessage(chan, server, guild, client, config);
+					await updateOfflineTwitchMessage(chan, server, guild, client);
 				}
 
 				return;
@@ -185,8 +183,8 @@ async function checkTwitch(client) {
 
 			const twitchChannel = await channelData.getData(
 				chan.channelName,
-				config.twitchClientId,
-				config.twitchAuthToken);
+				twitchClientId,
+				twitchAuthToken);
 
 			if (!twitchChannel) {
 				return;
@@ -227,7 +225,7 @@ async function checkTwitch(client) {
 				.setFields(fields)
 				.setFooter({ text: `Started ${startTime}. Last edited ${editTime}.` })
 				.setThumbnail(twitchChannel.thumbnail_url)
-				.setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${twitchChannel.broadcaster_login}-640x360.jpg?cacheBypass=${Math.random()}`);
+				.setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${twitchChannel.broadcaster_login}-640x360.jpg?cacheBypass=${Date.now()}`);
 
 			const content = chan.isSelf ?
 				`${roleMention}I just went live on Twitch! I'm streaming ${twitchChannel.game_name}!` :

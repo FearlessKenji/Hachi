@@ -1,10 +1,10 @@
 const { CronJob } = require(`cron`);
-const kick = require(`./getKick.js`);
-const twitch = require(`./getTwitch.js`);
-const config = require(`../config.json`);
+const kick = require(`../modules/getKick.js`);
+const twitch = require(`../modules/getTwitch.js`);
+const config = require(`../config/config.json`);
 const { ActivityType } = require(`discord.js`);
-const kickAuth = require(`./updateKickAuthConfig.js`);
-const twitchAuth = require(`./updateTwitchAuthConfig.js`);
+const kickAuth = require(`../auth/updateKickAuthConfig.js`);
+const twitchAuth = require(`../auth/updateTwitchAuthConfig.js`);
 
 module.exports = (client) => {
 	let activityIndex = -1;
