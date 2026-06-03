@@ -1,9 +1,0 @@
-{
-	"botOwner": "(REQUIRED)",
-	"clientId": "(REQUIRED)",
-	"guildId": "(REQUIRED)",
-	"twitchCron": "*/1 * * * *",
-	"kickCron": "*/1 * * * *",
-	"statusCron": "*/10 * * * *",
-	"authCron": "0 * * * *"
-}
