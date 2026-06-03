@@ -28,7 +28,7 @@ Create a `.env` file in the main project folder.
 - kickSecret - Enter the secret token generated on the Kick application page. Do not share this.
 
 ## Edit config/config.json
-Copy `blank_config.json` into the `config` folder and rename it to `config.json`.
+Edit `blank_config.json` in the `config` folder and rename it to `config.json`.
 
 - botOwner - Copy and paste your discord ID for top access commands.
 - clientId - Copy and paste your application ID. You need this to register commands.
