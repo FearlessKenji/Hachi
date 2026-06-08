@@ -68,15 +68,15 @@ ReactionRoleMessages.belongsTo(Servers, {
 
 // One reaction role message has many role items
 ReactionRoleMessages.hasMany(ReactionRoleItems, {
-	foreignKey: `messageId`,
-	sourceKey: `messageId`,
+	foreignKey: `reactionRoleMessageId`,
+	sourceKey: `id`,
 	onDelete: `CASCADE`,
 	onUpdate: `CASCADE`,
 });
 
 ReactionRoleItems.belongsTo(ReactionRoleMessages, {
-	foreignKey: `messageId`,
-	targetKey: `messageId`,
+	foreignKey: `reactionRoleMessageId`,
+	targetKey: `id`,
 	onDelete: `CASCADE`,
 	onUpdate: `CASCADE`,
 });
