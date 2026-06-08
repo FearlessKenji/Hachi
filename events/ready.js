@@ -1,5 +1,5 @@
 const { Events, ActivityType } = require(`discord.js`);
-const { writeLog } = require(`../utils/writeLog.js`);
+const { info, warn, error } = require(`../utils/writeLog.js`);
 const { dbInit } = require(`../database/dbInit.js`);
 const { updateTwitchAuth } = require(`../auth/updateTwitchAuth.js`);
 const { updateKickAuth } = require(`../auth/updateKickAuth.js`);
@@ -12,7 +12,7 @@ module.exports = {
 		await dbInit();
 
 		// Prime runtime auth tokens before stream checks begin.
-		writeLog(`[INFO] Priming auth tokens...`);
+		info(`Priming auth tokens...`);
 
 		await updateTwitchAuth();
 		await updateKickAuth();
@@ -20,7 +20,7 @@ module.exports = {
 		// Start all cron jobs
 		for (const [name, job] of Object.entries(client.cronJobs)) {
 			job.start();
-			writeLog(`[INFO] Started cron job: ${name}`);
+			info(`Started cron job: ${name}`);
 		}
 
 		// Optional initial status
@@ -29,6 +29,6 @@ module.exports = {
 			type: ActivityType.Playing,
 		});
 
-		writeLog(`[INFO] Ready! Logged into discord as ${client.user.tag}`);
+		info(`Ready! Logged into Discord as ${client.user.tag}`);
 	},
 };

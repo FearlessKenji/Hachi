@@ -1,6 +1,6 @@
 const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { writeLog } = require(`../utils/writeLog.js`);
+const { info, warn, error } = require(`../utils/writeLog.js`);
 const channelData = require(`./twitchChannelData.js`);
 const twitchData = require(`./getTwitchDataBatch.js`);
 const twitchVideos = require(`./getTwitchVideos.js`);
@@ -53,7 +53,7 @@ async function updateOfflineTwitchMessage(chan, server, guild, client) {
 	const discordChannel = client.channels.cache.get(discordChannelId);
 
 	if (!discordChannel) {
-		writeLog(`[WARNING] Twitch VoD update cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
+		warn(`Twitch VoD update cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 		return;
 	}
 
@@ -137,7 +137,7 @@ async function getTwitch(client) {
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
-		// writeLog(`[INFO] Checking channels for ${guild?.name ?? 'Unknown guild'} (ID: ${server.guildId})`);
+		// debug(`Checking channels for ${guild?.name ?? 'Unknown guild'} (ID: ${server.guildId})`);
 
 		// O(1) lookup instead of filtering entire dataset per server
 		const serverChannels = channelsByGuild.get(server.guildId) || [];
@@ -168,7 +168,7 @@ async function getTwitch(client) {
 			const discordChannel = client.channels.cache.get(discordChannelId);
 
 			if (!discordChannel) {
-				writeLog(`[WARNING] Twitch updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
+				warning(`Twitch updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 				return;
 			}
 
@@ -247,7 +247,7 @@ async function getTwitch(client) {
 				// Update DB with new messageId
 				await Channels.update({ twitchMessageId: message.id, twitchStreamId: streamInfo.id }, { where: { id: chan.id } });
 			} catch (err) {
-				writeLog(`[ERROR] Failed to send/edit Twitch message for ${chan.channelName}:`, err);
+				error(`Failed to send/edit Twitch message for ${chan.channelName}:`, err);
 			}
 		});
 

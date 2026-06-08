@@ -3,7 +3,6 @@ const { REST, Routes } = require(`discord.js`);
 const { clientId, guildId } = require(`./config/config.json`);
 const fs = require(`node:fs`);
 const path = require(`node:path`);
-const { writeLog } = require(`./utils/writeLog.js`)
 
 const commands = [];
 // Grab all the command folders from the commands directory you created earlier
@@ -21,7 +20,7 @@ for (const folder of commandFolders) {
 		if (`data` in command && `execute` in command) {
 			commands.push(command.data.toJSON());
 		} else {
-			writeLog(`[WARNING] The command at ${filePath} is missing a required "data" or "execute" property.`);
+			console.log(`The command at ${filePath} is missing a required "data" or "execute" property.`);
 		}
 	}
 }
@@ -31,10 +30,10 @@ const rest = new REST().setToken(process.env.TOKEN);
 
 // for guild-based commands
 rest.put(Routes.applicationGuildCommands(clientId, guildId), { body: [] })
-	.then(() => writeLog(`Successfully deleted all guild commands.`))
+	.then(() => console.log(`Successfully deleted all guild commands.`))
 	.catch(console.error);
 
 // for global commands
 rest.put(Routes.applicationCommands(clientId), { body: [] })
-	.then(() => writeLog(`Successfully deleted all application commands.`))
+	.then(() => console.log(`Successfully deleted all application commands.`))
 	.catch(console.error);

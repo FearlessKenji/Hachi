@@ -10,7 +10,7 @@ const {
 } = require(`discord.js`);
 
 const { Servers, Channels } = require(`../../../database/dbObjects.js`);
-const { writeLog } = require(`../../../utils/writeLog.js`);
+const { info, warn, error } = require(`../../../utils/writeLog.js`);
 
 const pendingAdds = new Map();
 
@@ -315,7 +315,7 @@ module.exports = {
 				await listChannels(interaction);
 			}
 		} catch (error) {
-			writeLog(`[ERROR] Failed to execute command ${subcommand}:`, error);
+			error(`Failed to execute command ${subcommand}:`, error);
 			await interaction.reply({
 				content: `Failed to execute command ${subcommand}.`,
 				flags: MessageFlags.Ephemeral,
@@ -329,7 +329,7 @@ module.exports = {
 		try {
 			await handleAddComponent(interaction, addId, action, field);
 		} catch (error) {
-			writeLog(`[ERROR] Failed to add stream settings:`, error);
+			error(`Failed to add stream settings:`, error);
 
 			if (interaction.replied || interaction.deferred) {
 				await interaction.followUp({ content: `Failed to add stream settings.`, flags: MessageFlags.Ephemeral });

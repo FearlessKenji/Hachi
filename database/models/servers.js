@@ -1,12 +1,3 @@
-/*
- * equivalent to: CREATE TABLE servers (
- * guildId VARCHAR(255) PRIMARY KEY,
- * selfChannelId VARCHAR(255),
- * affiliateChannelId VARCHAR(255),
- * selfRoleId VARCHAR(255),
- * affiliateRoleId VARCHAR(255)
- * );
- */
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`servers`, {
 		guildId: {

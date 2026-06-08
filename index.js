@@ -1,10 +1,16 @@
 require(`dotenv/config`);
 require(`./config/configCheck.js`);
 const { Client, Collection, GatewayIntentBits, Partials } = require(`discord.js`);
-const { writeLog } = require(`./utils/writeLog.js`);
+const { info, warn, error, initCrashHandlers } = require(`./utils/writeLog.js`);
 const createCronJobs = require(`./utils/crons.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
+
+// =======================
+// Initialize Crash Handlers
+// =======================
+
+initCrashHandlers();
 
 // =======================
 // Create Discord client
@@ -40,7 +46,7 @@ for (const scope of fs.readdirSync(commandsPath)) {
 			if (command.data && command.execute) {
 				client.commands.set(command.data.name, command);
 			} else {
-				writeLog(`[WARNING] ${file} missing data or execute`);
+				warn(`${file} missing data or execute`);
 			}
 		}
 	}
@@ -60,16 +66,6 @@ for (const file of fs.readdirSync(eventsPath).filter(f => f.endsWith(`.js`))) {
 }
 
 // =======================
-// Global error handling
-// =======================
-process.on('uncaughtException', (error) => {
-    writeLog(error);
-    writeLog(error.message);
-    writeLog(error.parent);
-    writeLog(error.original);
-});
-
-// =======================
 // Login
 // =======================
 client.login(process.env.TOKEN);
@@ -78,13 +74,13 @@ client.login(process.env.TOKEN);
 // Shutdown logic
 // =======================
 function shutdown() {
-	writeLog(`[INFO] Stopping bot...`);
+	info(`Stopping bot...`);
 
 	if (client.cronJobs) {
 		for (const [name, job] of Object.entries(client.cronJobs)) {
 			if (job.running) {
 				job.stop();
-				writeLog(`[INFO] ${name} cron stopped.`);
+				info(`${name} cron stopped.`);
 			}
 		}
 	}

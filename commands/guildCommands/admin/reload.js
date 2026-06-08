@@ -1,6 +1,6 @@
 const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
 const config = require(`../../../config/config.json`);
-const { writeLog } = require(`../../../utils/writeLog.js`)
+const { info, warn, error } = require(`../../../utils/writeLog.js`)
 const path = require(`node:path`);
 
 module.exports = {
@@ -54,7 +54,7 @@ module.exports = {
 				delete require.cache[require.resolve(guildPath)];
 				newCommand = require(guildPath);
 			} catch (err2) {
-				writeLog(err1, err2);
+				error(err1, err2);
 				return interaction.reply({
 					content: `There was an error while reloading \`${command.data.name}\`.`,
 					flags: MessageFlags.Ephemeral,

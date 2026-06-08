@@ -1,4 +1,4 @@
-const { writeLog } = require(`../utils/writeLog`);
+const { info, warn, error } = require(`../utils/writeLog`);
 
 async function getKey(clientID, clientSecret) {
 	try {
@@ -8,14 +8,14 @@ async function getKey(clientID, clientSecret) {
 		);
 
 		if (!res.ok) {
-			writeLog(`[WARNING] Twitch OAuth returned ${res.status}: ${res.statusText}`);
+			error(`[WARNING] Twitch OAuth returned ${res.status}: ${res.statusText}`);
 			return false;
 		}
 
 		const data = await res.json();
 		return data.access_token;
 	} catch (err) {
-		writeLog(`[ERROR] Error fetching Twitch OAuth token:`, err);
+		error(`[ERROR] Error fetching Twitch OAuth token:`, err);
 		return false;
 	}
 }

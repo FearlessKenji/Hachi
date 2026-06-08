@@ -1,5 +1,5 @@
 const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
-const { writeLog } = require(`../../../utils/writeLog.js`);
+const { info, warn, error } = require(`../../../utils/writeLog.js`);
 const config = require(`../../../config/config.json`);
 
 module.exports = {
@@ -11,7 +11,7 @@ module.exports = {
 	async execute(interaction) {
 		if (interaction.user.id === config.botOwner) {
 			await interaction.reply({ content: `Restarting...`, flags: MessageFlags.Ephemeral });
-			writeLog(`[INFO] Restart command used by ${interaction.user.username}.`, `Restarting...`);
+			info(`Restart command used by ${interaction.user.username}.`, `Restarting...`);
 			process.exit();
 		} else {
 			await interaction.reply({ content: `You are not authorized to use this command.`, flags: MessageFlags.Ephemeral });

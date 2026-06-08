@@ -1,4 +1,4 @@
-const { writeLog } = require(`../utils/writeLog.js`);
+const { info, warn, error } = require(`../utils/writeLog.js`);
 
 async function getLatestVod(channelName) {
 	try {
@@ -32,7 +32,7 @@ async function getLatestVod(channelName) {
 				(typeof livestream.video.thumbnail === `string` ? livestream.video.thumbnail : null),
 		};
 	} catch (err) {
-		writeLog(`[ERROR] Failed to fetch Kick VoD for ${channelName}:`, err);
+		error(`Failed to fetch Kick VoD for ${channelName}:`, err);
 		return null;
 	}
 }

@@ -4,7 +4,7 @@ const kickData = require(`./getKickDataBatch.js`);
 const kickVideos = require(`./getKickVideos.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { writeLog } = require(`../utils/writeLog.js`);
+const { info, warn, error } = require(`../utils/writeLog.js`);
 const kickClientId = process.env.kickClientId;
 
 function buildOfflineEmbed(existingEmbed, vod) {
@@ -50,7 +50,7 @@ async function updateOfflineKickMessage(chan, server, guild, client) {
 	const discordChannel = client.channels.cache.get(discordChannelId);
 
 	if (!discordChannel) {
-		writeLog(`[WARNING] Kick VoD update cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
+		warn(`Kick VoD update cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 		return;
 	}
 
@@ -122,7 +122,7 @@ async function getKick(client) {
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
-		// writeLog(`[INFO] Checking channels for ${guild?.name ?? 'Unknown guild'} (ID: ${server.guildId})`);
+		// debug(`Checking channels for ${guild?.name ?? 'Unknown guild'} (ID: ${server.guildId})`);
 
 		// O(1) lookup instead of filtering entire dataset per server
 		const serverChannels = channelsByGuild.get(server.guildId) || [];
@@ -157,7 +157,7 @@ async function getKick(client) {
 			const discordChannel = client.channels.cache.get(discordChannelId);
 
 			if (!discordChannel) {
-				writeLog(`[WARNING] Kick updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
+				warn(`Kick updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 				return;
 			}
 
@@ -241,7 +241,7 @@ async function getKick(client) {
 				// Update DB with new messageId
 				await Channels.update({ kickMessageId: message.id, kickIsLive: streamInfo?.stream?.is_live }, { where: { id: chan.id } });
 			} catch (err) {
-				writeLog(`[ERROR] Failed to send/edit kick message for ${chan.channelName}:`, err);
+				error(`Failed to send/edit kick message for ${chan.channelName}:`, err);
 			}
 		});
 

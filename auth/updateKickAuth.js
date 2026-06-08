@@ -1,11 +1,11 @@
 const auth = require(`./authKick.js`);
 const { updateAuthTokens } = require(`./authTokens.js`);
 const { kickClientId, kickSecret } = process.env;
-const { writeLog } = require(`../utils/writeLog.js`)
+// const { debug } = require(`../utils/writeLog.js`)
 
 // get a new authorization key and update the runtime auth cache
 async function updateKickAuth() {
-	// writeLog(`[INFO] Generating new Kick auth token...`)
+	// debug(`Generating new Kick auth token...`)
 	const authKey = await auth.getKey(
 		kickClientId,
 		kickSecret,
@@ -16,7 +16,7 @@ async function updateKickAuth() {
 	}
 
 	updateAuthTokens({ kickAuthToken: authKey });
-	// writeLog(`[INFO] New Kick auth token stored.`)
+	// debug(`New Kick auth token stored.`)
 }
 
 

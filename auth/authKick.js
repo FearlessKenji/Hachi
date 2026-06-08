@@ -1,4 +1,4 @@
-const { writeLog } = require(`../utils/writeLog`);
+const { info, warn, error } = require(`../utils/writeLog`);
 
 async function getKey(clientID, clientSecret) {
 	try {
@@ -8,14 +8,14 @@ async function getKey(clientID, clientSecret) {
 		);
 
 		if (!res.ok) {
-			writeLog(`[WARNING] Kick OAuth returned ${res.status}: ${res.statusText}`);
+			error(`Kick OAuth returned ${res.status}: ${res.statusText}`);
 			return false;
 		}
 
 		const data = await res.json();
 		return data.access_token;
 	} catch (err) {
-		writeLog(`[ERROR] Error fetching Kick OAuth token:`, err);
+		error(`[ERROR] Error fetching Kick OAuth token:`, err);
 		return false;
 	}
 }
