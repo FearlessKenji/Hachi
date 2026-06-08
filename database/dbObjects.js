@@ -10,11 +10,27 @@ const sequelize = new Sequelize(`database`, `username`, `password`, {
 	storage: dbPath,
 });
 
+
+// =======================
 // Models
+// =======================
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
 
-// Associations
+const ReactionRoleMessages = require(`./models/reactionRoleMessages.js`)(
+	sequelize,
+	Sequelize.DataTypes
+);
+
+const ReactionRoleItems = require(`./models/reactionRoleItems.js`)(
+	sequelize,
+	Sequelize.DataTypes
+);
+
+// =======================
+// Live Notification Associations
+// =======================
+
 Channels.belongsTo(Servers, {
 	foreignKey: `guildId`,
 	targetKey: `guildId`,
@@ -29,4 +45,46 @@ Servers.hasMany(Channels, {
 	onUpdate: `CASCADE`,
 });
 
-module.exports = { sequelize, Servers, Channels };
+
+// =======================
+// Reaction Role Associations
+// =======================
+
+// One guild has many reaction role messages
+Servers.hasMany(ReactionRoleMessages, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+ReactionRoleMessages.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+
+// One reaction role message has many role items
+ReactionRoleMessages.hasMany(ReactionRoleItems, {
+	foreignKey: `messageId`,
+	sourceKey: `messageId`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+ReactionRoleItems.belongsTo(ReactionRoleMessages, {
+	foreignKey: `messageId`,
+	targetKey: `messageId`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+module.exports = {
+	sequelize,
+	Servers,
+	Channels,
+	ReactionRoleMessages,
+	ReactionRoleItems,
+};
