@@ -1,8 +1,7 @@
 const { Events, ActivityType } = require(`discord.js`);
 const { info } = require(`../utils/writeLog.js`);
 const { dbInit } = require(`../database/dbInit.js`);
-const { updateTwitchAuth } = require(`../auth/updateTwitchAuth.js`);
-const { updateKickAuth } = require(`../auth/updateKickAuth.js`);
+const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
 
 module.exports = {
 	name: Events.ClientReady,
@@ -14,8 +13,8 @@ module.exports = {
 		// Prime runtime auth tokens before stream checks begin.
 		info(`Priming auth tokens...`);
 
-		await updateTwitchAuth();
-		await updateKickAuth();
+		await updateTwitch();
+		await updateKick();
 
 		// Start all cron jobs
 		for (const [name, job] of Object.entries(client.cronJobs)) {

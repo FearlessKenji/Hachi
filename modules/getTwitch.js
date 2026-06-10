@@ -1,87 +1,47 @@
-const { Servers, Channels } = require(`../database/dbObjects.js`);
-const { EmbedBuilder } = require(`discord.js`);
+const { Channels } = require(`../database/dbObjects.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
-const channelData = require(`./twitchChannelData.js`);
-const twitchData = require(`./getTwitchDataBatch.js`);
-const twitchVideos = require(`./getTwitchVideos.js`);
+const twitchChannel = require(`./twitchChannel.js`);
+const twitchStreams = require(`./twitchStreams.js`);
+const twitchVods = require(`./twitchVods.js`);
 const authTokens = require(`../auth/authTokens.js`);
+const {
+	fetchMessage,
+	liveEmbed,
+	loadState,
+	offlineEmbed,
+	roleMention,
+	syncMessage,
+	targetChannel,
+} = require(`./streamUtils.js`);
 const twitchClientId = process.env.twitchClientId;
-
-function buildOfflineEmbed(existingEmbed, vod) {
-	const embed = existingEmbed ?
-		EmbedBuilder.from(existingEmbed) :
-		new EmbedBuilder();
-
-	// Keep the original live embed intact, but replace the Twitch link with the VoD.
-	const existingFields = existingEmbed?.fields?.length ?
-		existingEmbed.fields :
-		[
-			{
-				name: `Twitch`,
-				value: `[Watch VoD](${vod.url})`,
-			},
-		];
-	const fields = existingFields.map(field => {
-		if (field.name === `Twitch`) {
-			return {
-				name: `Twitch`,
-				value: `[Watch VoD](${vod.url})`,
-				inline: field.inline,
-			};
-		}
-
-		return field;
-	});
-
-	const title = existingEmbed?.title ?
-		existingEmbed.title.replace(`is now live`, `was live`) :
-		`Twitch stream was live`;
-	const footerText = existingEmbed?.footer?.text ?
-		existingEmbed.footer.text.replace(`Last edited`, `Stream ended`) :
-		`Stream ended ${new Date().toLocaleString()}.`;
-	const imageUrl = vod.thumbnail_url ? vod.thumbnail_url.replace(`%{width}`, `640`).replace(`%{height}`, `360`) : null;
-
-	embed
-		.setTitle(title)
-		.setURL(vod.url)
-		.setFields(fields)
-		.setFooter({ text: footerText });
-
-	if (imageUrl) {
-		embed.setImage(imageUrl);
-	}
-
-	return embed;
-}
+const provider = `Twitch`;
 
 async function updateVodMessage(chan, server, guild, client) {
-	const twitchAuthToken = authTokens.getAuthTokens().twitchAuthToken;
+	const { twitchAuthToken } = authTokens.getAuthTokens();
 
 	if (!chan.twitchMessageId || !chan.twitchStreamId || !chan.twitchNotif) {
 		return;
 	}
 
-	const discordChannelId = chan.isSelf ?
-		server.selfTwitchChannelId :
-		server.affiliateChannelId;
-	const discordChannel = client.channels.cache.get(discordChannelId);
+	const { id: discordChannelId, discordChannel } = targetChannel(client, chan, server, `selfTwitchChannelId`);
 
 	if (!discordChannel) {
 		warn(`Twitch VoD update cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 		return;
 	}
 
-	const twitchChannel = await channelData.getData(
+	const channel = await twitchChannel.getChannel(
 		chan.channelName,
 		twitchClientId,
-		twitchAuthToken);
+		twitchAuthToken,
+	);
 
-	if (!twitchChannel) {
+	if (!channel) {
 		return;
 	}
 
-	const vod = await twitchVideos.getVodForStream(
-		twitchChannel.id,
+	const vod = await twitchVods.getForStream(
+		channel.id,
 		chan.twitchStreamId,
 		twitchClientId,
 		twitchAuthToken,
@@ -91,17 +51,23 @@ async function updateVodMessage(chan, server, guild, client) {
 		return;
 	}
 
-	// If the VOD exists, edit the original live message once and clear the live stream marker.
-	const existingMessage =
-		discordChannel.messages.cache.get(chan.twitchMessageId) ||
-		await discordChannel.messages.fetch(chan.twitchMessageId).catch(() => null);
+	const existingMessage = await fetchMessage(discordChannel, chan.twitchMessageId);
 
 	if (!existingMessage) {
 		await Channels.update({ twitchStreamId: null }, { where: { id: chan.id } });
 		return;
 	}
 
-	const embed = buildOfflineEmbed(existingMessage.embeds[0], vod);
+	const imageUrl = vod.thumbnail_url ?
+		vod.thumbnail_url.replace(`%{width}`, `640`).replace(`%{height}`, `360`) :
+		null;
+	const embed = offlineEmbed({
+		provider,
+		existingEmbed: existingMessage.embeds[0],
+		vodUrl: vod.url,
+		imageUrl,
+	});
+
 	await existingMessage.edit({
 		content: `The Twitch stream has ended.`,
 		embeds: [embed],
@@ -119,31 +85,9 @@ async function updateVodMessage(chan, server, guild, client) {
  */
 async function getTwitch(client) {
 	const { twitchAuthToken } = authTokens.getAuthTokens();
-	// Fetch all db data
-	const [servers, channels] = await Promise.all([
-		Servers.findAll({ raw: true }),
-		Channels.findAll({ raw: true }),
-	]);
-
-	// Remove invalid or malformed channel names
-	const validChannels = channels.filter(
-		c => c.channelName && /^[a-z0-9_]+$/.test(c.channelName),
-	);
-
-	// Group channels by guildId for fast lookup (removes per-server filtering)
-	const channelsByGuild = new Map();
-
-	for (const chan of validChannels) {
-		if (!channelsByGuild.has(chan.guildId)) {
-			channelsByGuild.set(chan.guildId, []);
-		}
-
-		channelsByGuild.get(chan.guildId).push(chan);
-	}
-
-	// Build list of all usernames for Twitch batch request
-	const channelNames = validChannels.map(c => c.channelName);
-	const streamsData = await twitchData.getTwitchDataBatch(
+	const { servers, channels, channelsByGuild } = await loadState();
+	const channelNames = channels.map(c => c.channelName);
+	const streamsData = await twitchStreams.getStreams(
 		channelNames,
 		twitchClientId,
 		twitchAuthToken,
@@ -152,8 +96,6 @@ async function getTwitch(client) {
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
 		const serverChannels = channelsByGuild.get(server.guildId) || [];
-
-		// Process each channel in the server
 		const channelPromises = serverChannels.map(async (chan) => {
 			const streamRecord = streamsData[chan.channelName];
 			const streamInfo = streamRecord?.data;
@@ -162,7 +104,6 @@ async function getTwitch(client) {
 				return;
 			}
 
-			// Skip if offline or notifications disabled
 			if (!streamInfo || !chan.twitchNotif) {
 				if (!streamInfo) {
 					await updateVodMessage(chan, server, guild, client);
@@ -171,98 +112,57 @@ async function getTwitch(client) {
 				return;
 			}
 
-			// Determine which Discord channel to post in
-			const discordChannelId = chan.isSelf ?
-				server.selfTwitchChannelId :
-				server.affiliateChannelId;
-
-			const discordChannel = client.channels.cache.get(discordChannelId);
+			const { id: discordChannelId, discordChannel } = targetChannel(client, chan, server, `selfTwitchChannelId`);
 
 			if (!discordChannel) {
 				warn(`Twitch updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 				return;
 			}
 
-			// Mention the appropriate role if available
-			const roleMention = chan.isSelf ?
-				server.selfTwitchRoleId ?
-					`<@&${server.selfTwitchRoleId}> ` :
-					`` :
-				server.affiliateRoleId ?
-					`<@&${server.affiliateRoleId}> ` :
-					``;
-
-			const twitchChannel = await channelData.getData(
+			const channel = await twitchChannel.getChannel(
 				chan.channelName,
 				twitchClientId,
-				twitchAuthToken);
+				twitchAuthToken,
+			);
 
-			if (!twitchChannel) {
+			if (!channel) {
 				return;
 			}
-			const startTime = new Date(streamInfo.started_at).toLocaleString();
-			const editTime = new Date().toLocaleString();
 
-			// Build embed fields
-			const fields = [
-				{
-					name: `Playing`,
-					value: twitchChannel.game_name,
-					inline: true,
-				},
-				{
-					name: `Viewers`,
-					value: streamInfo.viewer_count.toString(),
-					inline: true,
-				},
-				{
-					name: `Twitch`,
-					value: `[Watch stream](https://www.twitch.tv/${twitchChannel.broadcaster_login})`,
-				},
-			];
+			const streamUrl = `https://www.twitch.tv/${channel.broadcaster_login}`;
+			const sendEmbed = liveEmbed({
+				provider,
+				color: 0x9146FF,
+				name: channel.display_name,
+				title: channel.title,
+				url: streamUrl,
+				category: channel.game_name,
+				viewers: streamInfo.viewer_count,
+				thumbnail: channel.thumbnail_url,
+				image: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${channel.broadcaster_login}-640x360.jpg?cacheBypass=${Date.now()}`,
+				discordUrl: chan.discordUrl,
+				startedAt: streamInfo.started_at,
+			});
+			const roleText = roleMention(chan, server, `selfTwitchRoleId`);
+			const content = `${roleText}${channel.display_name} just went live on Twitch streaming ${channel.game_name}!`;
 
-			if (chan.discordUrl) {
-				fields.push({
-					name: `Discord Server`,
-					value: `[Join here](${chan.discordUrl})`,
-				});
-			}
-
-			const sendEmbed = new EmbedBuilder()
-				.setTitle(`${twitchChannel.display_name} is now live`)
-				.setDescription(twitchChannel.title)
-				.setURL(`https://www.twitch.tv/${twitchChannel.broadcaster_login}`)
-				.setColor(0x9146FF)
-				.setFields(fields)
-				.setFooter({ text: `Started ${startTime}. Last edited ${editTime}.` })
-				.setThumbnail(twitchChannel.thumbnail_url)
-				.setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${twitchChannel.broadcaster_login}-640x360.jpg?cacheBypass=${Date.now()}`);
-
-			const content = `${roleMention}${twitchChannel.display_name} just went live on Twitch streaming ${twitchChannel.game_name}!`;
-
-			// Send or edit Discord message
 			try {
-				let existingMessage = null;
-				if (chan.twitchMessageId) {
-					// Edit existing live message
-					existingMessage =
-						discordChannel.messages.cache.get(chan.twitchMessageId) ||
-						await discordChannel.messages.fetch(chan.twitchMessageId).catch(() => null);
-				}
-				if (existingMessage && chan.twitchStreamId === streamInfo.id) {
-					await existingMessage.edit({ content, embeds: [sendEmbed] });
-					return;
-				}
-				// Send new live message
-				const message = await discordChannel.send({ content, embeds: [sendEmbed] });
-				// Update DB with new messageId
-				await Channels.update({ twitchMessageId: message.id, twitchStreamId: streamInfo.id }, { where: { id: chan.id } });
+				await syncMessage({
+					discordChannel,
+					messageId: chan.twitchMessageId,
+					shouldEdit: chan.twitchStreamId === streamInfo.id,
+					content,
+					embed: sendEmbed,
+					onSend: message => Channels.update(
+						{ twitchMessageId: message.id, twitchStreamId: streamInfo.id },
+						{ where: { id: chan.id } },
+					),
+				});
 			} catch (err) {
 				error(`Failed to send/edit Twitch message for ${chan.channelName}:`, err);
 			}
 		});
 
-		// Process all channels for this server concurrently
 		await Promise.allSettled(channelPromises);
 	}
 }

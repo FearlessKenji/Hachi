@@ -1,6 +1,6 @@
 const { error } = require(`../utils/writeLog.js`);
 
-async function getVodForStream(userId, streamId, clientID, authKey) {
+async function getForStream(userId, streamId, clientID, authKey) {
 	try {
 		const res = await fetch(
 			`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=5`,
@@ -26,4 +26,4 @@ async function getVodForStream(userId, streamId, clientID, authKey) {
 	}
 }
 
-module.exports = { getVodForStream };
+module.exports = { getForStream };

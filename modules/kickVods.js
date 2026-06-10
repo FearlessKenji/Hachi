@@ -1,6 +1,6 @@
 const { error } = require(`../utils/writeLog.js`);
 
-async function getLatestVod(channelName) {
+async function getLatest(channelName) {
 	try {
 		const res = await fetch(
 			`https://kick.com/api/v1/channels/${channelName}`,
@@ -37,4 +37,4 @@ async function getLatestVod(channelName) {
 	}
 }
 
-module.exports = { getLatestVod };
+module.exports = { getLatest };

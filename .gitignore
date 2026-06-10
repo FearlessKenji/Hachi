@@ -5,12 +5,21 @@ logs/
 # Dependencies
 node_modules/
 
-# PM2 / runtime config (machine-specific)
-ecosystem.config.js
+# Generated launcher binaries
+*.exe
+!KenjiBot.exe
+
+# Local launcher build inputs
+run-bot.ps1
+icon.ico
+
+# PM2 runtime state
+.pm2/
 
 # Local runtime config
 config.json
 *.env
+!blank.env
 
 # Local databases
 *.sqlite

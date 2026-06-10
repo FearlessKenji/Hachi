@@ -1,6 +1,6 @@
 const { warn, error } = require(`../utils/writeLog.js`);
 
-async function getData(channelName, clientID, authKey) {
+async function getChannel(channelName, clientID, authKey) {
 	try {
 		const res = await fetch(
 			`https://api.twitch.tv/helix/search/channels?query=${channelName}`,
@@ -31,4 +31,4 @@ async function getData(channelName, clientID, authKey) {
 		return false;
 	}
 }
-module.exports = { getData };
+module.exports = { getChannel };

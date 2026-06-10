@@ -7,19 +7,21 @@ This Discord bot uses [The Official Twitch API](https://dev.twitch.tv/docs/api/)
 
 
 ## Installation
-First you will have to clone the project.
+First you will have to download or clone the project.
 ```console
-$ git clone https://github.com/FearlessKenji/KenjiB0t
+$ git clone https://github.com/FearlessKenji/KenjiBot
 ```
 
 ## Dependencies
-After installing, in order for the bot to work properly you will have to install the required node packages outlined in package.json. Use the following command to install the dependencies.
+If you use `KenjiBot.exe`, dependencies are installed automatically. If you run the bot manually, install the required node packages outlined in package.json with:
 ```console
 $ npm install
 ```
 
 ## Edit .env
-Create a `.env` file in the main project folder.
+If you use `KenjiBot.exe`, the launcher will create or update `.env` during guided setup.
+
+If you run the bot manually, copy `blank.env` to `.env` and fill in the required fields.
 
 - TOKEN - Enter your [Discord bot token](https://discord.com/developers/applications) here.
 - twitchClientId - Enter the Twitch application client ID generated here: ([Twitch Developer Console](https://dev.twitch.tv/console/apps)).
@@ -28,7 +30,9 @@ Create a `.env` file in the main project folder.
 - kickSecret - Enter the secret token generated on the Kick application page. Do not share this.
 
 ## Edit config/config.json
-Edit `blank_config.json` in the `config` folder and rename it to `config.json`.
+If you use `KenjiBot.exe`, the launcher will create or update `config/config.json` during guided setup.
+
+If you run the bot manually, copy `config/blank.json` to `config/config.json` and fill in the required fields.
 
 - botOwner - Copy and paste your discord ID for top access commands.
 - clientId - Copy and paste your application ID. You need this to register commands.
@@ -44,7 +48,9 @@ All of these fields are required.
 Check [Cron Guru](https://crontab.guru/) for help setting up crons. Crons will always fire at a specific clock time regardless of startup time.
 
 ## Register Slash Commands
-Before you can use the commands, you need to run 
+If you use `KenjiBot.exe`, slash commands are registered automatically during startup.
+
+If you run the bot manually, register commands with:
 ```console
 $ node deploy-global-commands.js
 ```
@@ -57,8 +63,18 @@ The global commands will be available in all servers. The guild commands will on
 
 
 ## Run the bot
-After you updated `.env` and `config/config.json`, installed the dependencies, and registered the commands, you can run the final command.
-Use the command in the same directory as the index.js file.
+After you update `.env` and `config/config.json`, Windows users can run:
+```console
+KenjiBot.exe
+```
+
+Keep `KenjiBot.exe` in the project folder so it uses the config files you edited.
+
+The launcher checks for Node.js, Git, and PM2, walks you through missing setup values, installs dependencies, registers slash commands, and starts KenjiBot through PM2.
+
+If the launcher detects local Git changes, it skips automatic updates so your work is not overwritten.
+
+To run the bot manually, use the command in the same directory as the index.js file:
 ```console
 $ node index.js
 ```
@@ -66,8 +82,6 @@ or
 ```console
 $ npm run start
 ```
-
-Alternatively, there is an executable provided that will run the second command with additional parameters to make running it easier.
 
 ## Setup notifications
 Use `/setup` to configure the Discord channels and roles used for stream notifications.

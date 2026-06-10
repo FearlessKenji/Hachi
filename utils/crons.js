@@ -3,8 +3,7 @@ const { getKick } = require(`../modules/getKick.js`);
 const { getTwitch } = require(`../modules/getTwitch.js`);
 const config = require(`../config/config.json`);
 const { ActivityType } = require(`discord.js`);
-const { updateKickAuth } = require(`../auth/updateKickAuth.js`);
-const { updateTwitchAuth } = require(`../auth/updateTwitchAuth.js`);
+const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
 const { checkBirthdays } = require(`./birthdays.js`);
 
 module.exports = (client) => {
@@ -46,9 +45,11 @@ module.exports = (client) => {
 			client.user.setActivity(activities[activityIndex]);
 		}),
 
-		Auth: new CronJob(config.authCron, () => {
-			updateTwitchAuth();
-			updateKickAuth();
+		Auth: new CronJob(config.authCron, async () => {
+			await Promise.all([
+				updateTwitch(),
+				updateKick(),
+			]);
 		}),
 	};
 };

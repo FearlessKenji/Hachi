@@ -1,9 +1,9 @@
-const { warn, error } = require(`../utils/writeLog.js`);
+const { error } = require(`../utils/writeLog.js`);
 
-async function getData(channelName, clientID, authKey) {
+async function getUser(id, user, clientID, authKey) {
 	try {
 		const res = await fetch(
-			`https://api.kick.com/public/v1/channels?slug=${channelName}`,
+			`https://api.kick.com/public/v1/users?id=${id}`,
 			{
 				headers: {
 					'Client-ID': clientID,
@@ -13,7 +13,7 @@ async function getData(channelName, clientID, authKey) {
 		);
 
 		if (!res.ok) {
-			warn(`Kick API returned ${res.status}: ${res.statusText}`);
+			error(`Kick API returned ${res.status}: ${res.statusText}`);
 			return false;
 		}
 
@@ -22,13 +22,13 @@ async function getData(channelName, clientID, authKey) {
 
 		// Look for exact match (case-insensitive)
 		const channel = channels.find(
-			c => c.slug.toLowerCase() === channelName.toLowerCase(),
+			c => c.user_id === id,
 		);
 
 		return channel || false;
 	} catch (err) {
-		error(`Error fetching Kick channel data:`, err);
+		error(`Error fetching Kick user data for ${user}:`, err);
 		return false;
 	}
 }
-module.exports = { getData };
+module.exports = { getUser };
