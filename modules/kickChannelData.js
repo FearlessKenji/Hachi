@@ -1,4 +1,4 @@
-const { info, warn, error } = require(`../utils/writeLog.js`);
+const { warn, error } = require(`../utils/writeLog.js`);
 
 async function getData(channelName, clientID, authKey) {
 	try {

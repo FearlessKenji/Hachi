@@ -19,6 +19,4 @@ async function updateKickAuth() {
 	// debug(`New Kick auth token stored.`)
 }
 
-
-
 module.exports = { updateKickAuth };

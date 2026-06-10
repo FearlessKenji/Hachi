@@ -9,7 +9,7 @@ const { ActionRowBuilder,
 	SlashCommandBuilder,
 } = require(`discord.js`);
 const { Servers } = require(`../../../database/dbObjects.js`);
-const { info, warn, error } = require(`../../../utils/writeLog.js`);
+const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const textChannelTypes = [
 	ChannelType.GuildText,
@@ -314,8 +314,8 @@ module.exports = {
 				components: buildHomeComponents(setupId),
 				flags: MessageFlags.Ephemeral,
 			});
-		} catch (error) {
-			error(`Failed to open setup panel:`, error);
+		} catch (err) {
+			logError(`Failed to open setup panel:`, err);
 			await interaction.reply({ content: `Failed to open setup panel.`, flags: MessageFlags.Ephemeral });
 		}
 	},
@@ -335,8 +335,8 @@ module.exports = {
 			} else {
 				await handleSelect(interaction, setupId, pendingSetup, group, field);
 			}
-		} catch (error) {
-			error(`Failed to update setup settings:`, error);
+		} catch (err) {
+			logError(`Failed to update setup settings:`, err);
 
 			if (interaction.replied || interaction.deferred) {
 				await interaction.followUp({ content: `Failed to update setup settings.`, flags: MessageFlags.Ephemeral });

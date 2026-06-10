@@ -43,7 +43,7 @@
   },
   "homepage": "https://github.com/FearlessKenji/KenjiB0t#readme",
   "engines": {
-    "node": ">=16.9.0"
+    "node": ">=18.18.0"
   },
   "type": "commonjs"
 }

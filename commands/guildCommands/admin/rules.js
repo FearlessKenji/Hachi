@@ -1,4 +1,4 @@
-const { SlashCommandBuilder, MessageFlags, EmbedBuilder } = require(`discord.js`);
+const { SlashCommandBuilder, MessageFlags, EmbedBuilder, ChannelType } = require(`discord.js`);
 
 module.exports = {
 	data: new SlashCommandBuilder()
@@ -8,7 +8,8 @@ module.exports = {
 			option
 				.setName(`channel`)
 				.setDescription(`Select your rules channel`)
-				.setRequired(true),
+				.setRequired(true)
+				.addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
 		)
 		.setDefaultMemberPermissions(0), // Restrict to admins or bot owner,
 

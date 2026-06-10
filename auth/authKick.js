@@ -1,4 +1,4 @@
-const { info, warn, error } = require(`../utils/writeLog`);
+const { warn, error } = require(`../utils/writeLog`);
 
 async function getKey(clientID, clientSecret) {
 	try {
@@ -8,7 +8,7 @@ async function getKey(clientID, clientSecret) {
 		);
 
 		if (!res.ok) {
-			error(`Kick OAuth returned ${res.status}: ${res.statusText}`);
+			warn(`Kick OAuth returned ${res.status}: ${res.statusText}`);
 			return false;
 		}
 

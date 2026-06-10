@@ -1,4 +1,4 @@
-const { info, warn, error } = require(`../utils/writeLog`);
+const { warn, error } = require(`../utils/writeLog`);
 
 async function getKey(clientID, clientSecret) {
 	try {
@@ -8,7 +8,7 @@ async function getKey(clientID, clientSecret) {
 		);
 
 		if (!res.ok) {
-			error(`[WARNING] Twitch OAuth returned ${res.status}: ${res.statusText}`);
+			warn(`Twitch OAuth returned ${res.status}: ${res.statusText}`);
 			return false;
 		}
 

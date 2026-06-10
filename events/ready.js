@@ -1,5 +1,5 @@
 const { Events, ActivityType } = require(`discord.js`);
-const { info, warn, error } = require(`../utils/writeLog.js`);
+const { info } = require(`../utils/writeLog.js`);
 const { dbInit } = require(`../database/dbInit.js`);
 const { updateTwitchAuth } = require(`../auth/updateTwitchAuth.js`);
 const { updateKickAuth } = require(`../auth/updateKickAuth.js`);

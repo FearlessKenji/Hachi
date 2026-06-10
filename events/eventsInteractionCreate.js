@@ -1,5 +1,5 @@
 const { Events, MessageFlags } = require(`discord.js`);
-const { info, warn, error } = require(`../utils/writeLog.js`);
+const { warn, error } = require(`../utils/writeLog.js`);
 const { TIMEZONES } = require(`../utils/timezones.js`);
 
 module.exports = {
@@ -45,6 +45,26 @@ module.exports = {
 		}
 
 		// =========================
+		// MESSAGE CONTEXT MENUS
+		// =========================
+		if (interaction.isMessageContextMenuCommand()) {
+			const command = interaction.client.commands.get(interaction.commandName);
+
+			if (!command) {
+				warn(`No context command matching ${interaction.commandName} was found.`);
+				return;
+			}
+
+			try {
+				await command.execute(interaction);
+			} catch (err) {
+				error(`Error executing ${interaction.commandName}`, err);
+			}
+
+			return;
+		}
+
+		// =========================
 		// COMPONENTS (BUTTONS, MENUS)
 		// =========================
 		if (
@@ -57,7 +77,9 @@ module.exports = {
 
 			const command = interaction.client.commands.get(commandName);
 
-			if (!command?.handleComponent) return;
+			if (!command?.handleComponent) {
+				return;
+			}
 
 			try {
 				await command.handleComponent(interaction);

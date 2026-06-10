@@ -1,6 +1,6 @@
 const path = require(`node:path`);
 const fs = require(`node:fs`);
-const { info, warn, error } = require(`../utils/writeLog.js`)
+const { info, error } = require(`../utils/writeLog.js`);
 
 const isPM2 = process.env.pm_id !== undefined;
 const configPath = path.join(process.cwd(), `config`, `config.json`);

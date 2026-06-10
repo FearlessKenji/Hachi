@@ -1,6 +1,6 @@
 const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { info, warn, error } = require(`../utils/writeLog.js`);
+const { warn, error } = require(`../utils/writeLog.js`);
 const channelData = require(`./twitchChannelData.js`);
 const twitchData = require(`./getTwitchDataBatch.js`);
 const twitchVideos = require(`./getTwitchVideos.js`);
@@ -8,10 +8,20 @@ const authTokens = require(`../auth/authTokens.js`);
 const twitchClientId = process.env.twitchClientId;
 
 function buildOfflineEmbed(existingEmbed, vod) {
-	const embed = EmbedBuilder.from(existingEmbed);
+	const embed = existingEmbed ?
+		EmbedBuilder.from(existingEmbed) :
+		new EmbedBuilder();
 
 	// Keep the original live embed intact, but replace the Twitch link with the VoD.
-	const fields = existingEmbed.fields.map(field => {
+	const existingFields = existingEmbed?.fields?.length ?
+		existingEmbed.fields :
+		[
+			{
+				name: `Twitch`,
+				value: `[Watch VoD](${vod.url})`,
+			},
+		];
+	const fields = existingFields.map(field => {
 		if (field.name === `Twitch`) {
 			return {
 				name: `Twitch`,
@@ -23,8 +33,12 @@ function buildOfflineEmbed(existingEmbed, vod) {
 		return field;
 	});
 
-	const title = existingEmbed.title.replace(`is now live`, `was live`);
-	const footerText = existingEmbed.footer.text.replace(`Last edited`, `Stream ended`);
+	const title = existingEmbed?.title ?
+		existingEmbed.title.replace(`is now live`, `was live`) :
+		`Twitch stream was live`;
+	const footerText = existingEmbed?.footer?.text ?
+		existingEmbed.footer.text.replace(`Last edited`, `Stream ended`) :
+		`Stream ended ${new Date().toLocaleString()}.`;
 	const imageUrl = vod.thumbnail_url ? vod.thumbnail_url.replace(`%{width}`, `640`).replace(`%{height}`, `360`) : null;
 
 	embed
@@ -168,7 +182,7 @@ async function getTwitch(client) {
 			const discordChannel = client.channels.cache.get(discordChannelId);
 
 			if (!discordChannel) {
-				warning(`Twitch updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
+				warn(`Twitch updates cannot be sent to ${discordChannelId} channel in server ${guild?.name} (ID: ${server.guildId}). Channel not found.`);
 				return;
 			}
 
@@ -227,7 +241,7 @@ async function getTwitch(client) {
 				.setThumbnail(twitchChannel.thumbnail_url)
 				.setImage(`https://static-cdn.jtvnw.net/previews-ttv/live_user_${twitchChannel.broadcaster_login}-640x360.jpg?cacheBypass=${Date.now()}`);
 
-			const content = `${roleMention}${twitchChannel.display_name} just went live on Twitch streaming ${twitchChannel.game_name}!`
+			const content = `${roleMention}${twitchChannel.display_name} just went live on Twitch streaming ${twitchChannel.game_name}!`;
 
 			// Send or edit Discord message
 			try {

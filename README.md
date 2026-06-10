@@ -101,4 +101,19 @@ Use `/stream list` to check which streamers are configured, whether they are lab
 
 Use `/stream remove name: streamername` to remove a streamer from the database.
 
+## Reaction roles
+Use `/reaction roles add` to create a reaction-role panel. The setup flow asks for a target channel and title. You can optionally provide a message for the embed body; otherwise the bot uses a default message. The command then opens a public editor where you can add assignable roles.
+
+Reaction-role embeds use a fixed yellow color.
+
+Converting existing messages requires the Message Content intent to be enabled for the bot in code and in the Discord Developer Portal.
+
+The editor uses a searchable role selector for adding roles. The setup message is public so the admin who started it can react to the message to assign emojis to roles in order. Removing one of those reactions updates the preview and shifts the remaining emoji order. Custom emoji must belong to the server where the command is being used.
+
+When a panel needs multiple messages, continuation messages are created automatically and only show the role list.
+
+Administrators can right-click an existing reaction-role panel and use `Edit Reaction Roles` to open the same setup editor with the current roles and emojis loaded.
+
+Administrators can also use the `Convert to Reaction Roles` message context menu to parse an existing message into a bot-owned reaction-role embed. The converter keeps the leading message text, turns perceived category headings into embed fields, matches emoji lines to assignable server roles, supports common `:emoji_name:` shortcodes, and adds the matched reactions.
+
 Congratulations! You have successfully setup the bot.

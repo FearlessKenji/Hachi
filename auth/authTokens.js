@@ -1,5 +1,3 @@
-const { writeLog } = require(`../utils/writeLog.js`)
-
 let authTokens = {
 	twitchAuthToken: null,
 	kickAuthToken: null,

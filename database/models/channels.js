@@ -25,17 +25,16 @@ module.exports = (sequelize, DataTypes) => {
 		twitchMessageId: {
 			type: DataTypes.STRING,
 			allowNull: true,
-			unique: true, // Ensure globally unique
+			unique: true,
 		},
 		twitchNotif: {
 			type: DataTypes.BOOLEAN,
 			allowNull: false,
-			defaultValue: false,
 		},
 		kickMessageId: {
 			type: DataTypes.STRING,
 			allowNull: true,
-			unique: true, // Ensure globally unique
+			unique: true,
 		},
 		kickIsLive: {
 			type: DataTypes.BOOLEAN,
@@ -45,7 +44,6 @@ module.exports = (sequelize, DataTypes) => {
 		kickNotif: {
 			type: DataTypes.BOOLEAN,
 			allowNull: false,
-			defaultValue: false,
 		},
 		guildId: {
 			type: DataTypes.STRING,

@@ -1,8 +1,9 @@
 require(`dotenv/config`);
 require(`./config/configCheck.js`);
 const { Client, Collection, GatewayIntentBits, Partials } = require(`discord.js`);
-const { info, warn, error, initCrashHandlers } = require(`./utils/writeLog.js`);
+const { info, warn, initCrashHandlers, startLogCleanup, stopLogCleanup } = require(`./utils/writeLog.js`);
 const createCronJobs = require(`./utils/crons.js`);
+const { getCommandFiles, loadCommand } = require(`./utils/commandLoader.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
 
@@ -11,6 +12,7 @@ const fs = require(`node:fs`);
 // =======================
 
 initCrashHandlers();
+startLogCleanup({ runImmediately: true });
 
 // =======================
 // Create Discord client
@@ -21,6 +23,7 @@ const client = new Client({
 		GatewayIntentBits.GuildMessages,
 		GatewayIntentBits.GuildMembers,
 		GatewayIntentBits.GuildMessageReactions,
+		GatewayIntentBits.MessageContent,
 	],
 	partials: [
 		Partials.Message,
@@ -35,20 +38,13 @@ client.cronJobs = createCronJobs(client);
 // Command handler
 // =======================
 client.commands = new Collection();
-const commandsPath = path.join(__dirname, `commands`);
 
-for (const scope of fs.readdirSync(commandsPath)) {
-	const scopePath = path.join(commandsPath, scope);
-	for (const folder of fs.readdirSync(scopePath)) {
-		const folderPath = path.join(scopePath, folder);
-		for (const file of fs.readdirSync(folderPath).filter(f => f.endsWith(`.js`))) {
-			const command = require(path.join(folderPath, file));
-			if (command.data && command.execute) {
-				client.commands.set(command.data.name, command);
-			} else {
-				warn(`${file} missing data or execute`);
-			}
-		}
+for (const filePath of getCommandFiles()) {
+	try {
+		const command = loadCommand(filePath);
+		client.commands.set(command.data.name, command);
+	} catch (err) {
+		warn(`Failed to load command ${filePath}: ${err.message}`);
 	}
 }
 
@@ -85,6 +81,7 @@ function shutdown() {
 		}
 	}
 
+	stopLogCleanup();
 	client.destroy();
 	process.exit(0);
 }

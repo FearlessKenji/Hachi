@@ -10,7 +10,7 @@ const {
 } = require(`discord.js`);
 
 const { Servers, Channels } = require(`../../../database/dbObjects.js`);
-const { info, warn, error } = require(`../../../utils/writeLog.js`);
+const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const pendingAdds = new Map();
 
@@ -28,9 +28,9 @@ function formatDiscord(value) {
 
 function buildAddContent(pendingAdd) {
 	const submitMessage = pendingAdd.needsSelections ? `\n### Select every option before submitting.` : ``;
-	const title = pendingAdd.isEditing
-		? `## Edit Stream`
-		: `## Add Stream`;
+	const title = pendingAdd.isEditing ?
+		`## Edit Stream` :
+		`## Add Stream`;
 
 	return `${title}
 - Name: **${pendingAdd.channelName}**
@@ -154,15 +154,15 @@ async function startAdd(interaction) {
 	});
 
 	const addId = interaction.id;
-	const pendingAdd = existingChannel
-		? {
+	const pendingAdd = existingChannel ?
+		{
 			...existingChannel,
 			userId: interaction.user.id,
 			guildId: interaction.guild.id,
 			needsSelections: false,
 			isEditing: true,
-		}
-		: {
+		} :
+		{
 			...buildPendingAdd(interaction),
 			isEditing: false,
 		};
@@ -314,8 +314,8 @@ module.exports = {
 			} else if (subcommand === `list`) {
 				await listChannels(interaction);
 			}
-		} catch (error) {
-			error(`Failed to execute command ${subcommand}:`, error);
+		} catch (err) {
+			logError(`Failed to execute command ${subcommand}:`, err);
 			await interaction.reply({
 				content: `Failed to execute command ${subcommand}.`,
 				flags: MessageFlags.Ephemeral,
@@ -328,8 +328,8 @@ module.exports = {
 
 		try {
 			await handleAddComponent(interaction, addId, action, field);
-		} catch (error) {
-			error(`Failed to add stream settings:`, error);
+		} catch (err) {
+			logError(`Failed to add stream settings:`, err);
 
 			if (interaction.replied || interaction.deferred) {
 				await interaction.followUp({ content: `Failed to add stream settings.`, flags: MessageFlags.Ephemeral });

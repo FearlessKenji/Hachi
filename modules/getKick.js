@@ -4,14 +4,24 @@ const kickData = require(`./getKickDataBatch.js`);
 const kickVideos = require(`./getKickVideos.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const { EmbedBuilder } = require(`discord.js`);
-const { info, warn, error } = require(`../utils/writeLog.js`);
+const { warn, error } = require(`../utils/writeLog.js`);
 const kickClientId = process.env.kickClientId;
 
 function buildOfflineEmbed(existingEmbed, vod) {
-	const embed = EmbedBuilder.from(existingEmbed);
+	const embed = existingEmbed ?
+		EmbedBuilder.from(existingEmbed) :
+		new EmbedBuilder();
 
 	// Keep the original live embed intact, but replace the Kick link with the VoD.
-	const fields = existingEmbed.fields.map(field => {
+	const existingFields = existingEmbed?.fields?.length ?
+		existingEmbed.fields :
+		[
+			{
+				name: `Kick`,
+				value: `[Watch VoD](${vod.url})`,
+			},
+		];
+	const fields = existingFields.map(field => {
 		if (field.name === `Kick`) {
 			return {
 				name: `Kick`,
@@ -23,8 +33,12 @@ function buildOfflineEmbed(existingEmbed, vod) {
 		return field;
 	});
 
-	const title = existingEmbed.title.replace(`is now live`, `was live`);
-	const footerText = existingEmbed.footer.text.replace(`Last edited`, `Stream ended`);
+	const title = existingEmbed?.title ?
+		existingEmbed.title.replace(`is now live`, `was live`) :
+		`Kick stream was live`;
+	const footerText = existingEmbed?.footer?.text ?
+		existingEmbed.footer.text.replace(`Last edited`, `Stream ended`) :
+		`Stream ended ${new Date().toLocaleString()}.`;
 
 	embed
 		.setTitle(title)
@@ -220,7 +234,7 @@ async function getKick(client) {
 				.setThumbnail(kickUser.profile_picture)
 				.setImage(`${streamInfo.stream.thumbnail}?cacheBypass=${Date.now()}`);
 
-			const content = `${roleMention}${kickUser.name} just went live on Kick streaming ${streamInfo.category.name}!`
+			const content = `${roleMention}${kickUser.name} just went live on Kick streaming ${streamInfo.category.name}!`;
 
 			// Send or edit Discord message
 			try {

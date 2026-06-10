@@ -29,7 +29,7 @@ module.exports = (sequelize, DataTypes) => {
 			allowNull: true,
 		},
 	},
-		{
-			timestamps: false,
-		});
+	{
+		timestamps: false,
+	});
 };
