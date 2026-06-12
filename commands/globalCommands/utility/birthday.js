@@ -24,7 +24,7 @@ async function setBirthday(interaction) {
 
 	if (!parsed) {
 		await interaction.reply({
-			content: `I couldn't understand that birthday. Try something like \`1/1\`, \`01/01\`, or \`January 1\`.`,
+			content: `I couldn't understand that birthday. Try something like \`12/25\`, \`12-25\`, or \`December 25\`.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
@@ -209,7 +209,7 @@ module.exports = {
 				.addStringOption(option =>
 					option
 						.setName(`date`)
-						.setDescription(`Your birthday, such as 1/1 or January 1.`)
+						.setDescription(`Your birthday in MM/DD format, such as 12/25 or December 25.`)
 						.setRequired(true),
 				),
 		)

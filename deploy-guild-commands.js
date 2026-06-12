@@ -1,6 +1,8 @@
 require(`dotenv/config`);
-const { clientId, guildId } = require(`./config/config.json`);
+const { guildId } = require(`./config/config.json`);
 const { getCommandData, redeployCommands } = require(`./utils/commandLoader.js`);
+
+const clientId = process.env.clientId;
 
 async function main() {
 	try {

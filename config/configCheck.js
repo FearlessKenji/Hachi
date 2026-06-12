@@ -22,9 +22,10 @@ function isEmpty(value) {
 }
 
 // Environment validation
-// Secrets stay in .env so they are not committed with the rest of the bot config.
+// Install-specific credentials and app IDs stay in .env with the rest of the bot identity.
 const REQUIRED_ENV = [
 	`TOKEN`,
+	`clientId`,
 	`twitchClientId`,
 	`twitchSecret`,
 	`kickClientId`,
@@ -65,7 +66,6 @@ try {
 // changing a scheduler should be an intentional config edit.
 const REQUIRED_STRICT = [
 	`botOwner`,
-	`clientId`,
 	`guildId`,
 ];
 
