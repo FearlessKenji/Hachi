@@ -1,4 +1,4 @@
-# Twitch and Kick Discord Bot
+## Twitch and Kick Discord Bot
 
 This Discord bot will automatically send a message and tag the assigned role whenever a streamer goes live on Twitch or Kick.
 The notifications update every minute by default while the streamer is live.
@@ -24,22 +24,21 @@ This Discord bot uses [The Official Twitch API](https://dev.twitch.tv/docs/api/)
 
 | Command | Description |
 | --- | --- |
-| `Stream Commands` |
 | `/setup` | Configure stream notification channels and roles. |
 | `/stream add` | Add or edit a Twitch/Kick streamer entry. |
 | `/stream list` | List streamers configured for the server. |
 | `/stream remove` | Remove a streamer entry. |
-| `Birthday Commands` |
+| | |
 | `/birthday set` | Store your birthday for the current server. Numeric dates use American `MM/DD` format, such as `12/25`. |
 | `/birthday view` | View a member's stored birthday. |
 | `/birthday list` | List birthdays for a month, grouped by day. |
 | `/birthday remove` | Remove your stored birthday from the current server. |
 | `/birthday setup` | Configure birthday channels, roles, posting hour, and timezone. |
-| `/Reaction Roles` |
+| | |
 | `/reaction roles add` | Create a reaction-role panel. |
 | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
-| `Miscellanious` |
+| | |
 | `/roll` | Roll dice using RPG notation. |
 | `/timestamp` | Convert a date and time into Discord timestamp tags. |
 
@@ -62,7 +61,7 @@ Global command updates can take time to appear in Discord. Guild commands are de
 
 ## Installation
 First you will have to download or clone the project.
-```powershell
+```console
 $ git clone https://github.com/FearlessKenji/KenjiBot
 ```
 ## Executable
@@ -105,11 +104,11 @@ Check [Cron Guru](https://crontab.guru/) for help setting up crons. Crons will a
 If you use `KenjiBot.exe`, slash commands are registered automatically during startup.
 
 If you run the bot manually, register commands with:
-```powershell
+```console
 $ node deploy-global-commands.js
 ```
 and/or
-```powershell
+```console
 $ node deploy-guild-commands.js
 ```
 
@@ -133,9 +132,12 @@ $ npm run start
 ```
 
 ## Logs
-This project creates logs in the logs folder and dates them. Logs of previous days are compressed.
+This project creates logs in the logs folder and dates them. Logs of previous days are compressed. The `logs` folder and subsequent files are ignored by Git.
+Logs may include startup events, server join or leave events, owner-control actions, and error details used for debugging.
 
-## Setup notifications
+## Command detail
+
+### Setup notifications
 Use `/setup` to configure the Discord channels and roles used for stream notifications.
 
 The setup command opens an ephemeral panel with buttons for:
@@ -145,7 +147,7 @@ The setup command opens an ephemeral panel with buttons for:
 
 Changes made in the panel are pending until you press Submit. Selecting channels, selecting roles, or clearing settings will update the panel, but nothing is written to the database until Submit is pressed.
 
-## Add streamers
+### Add streamers
 Use the `/stream` slash command to add users to the database. Usage:
 ```console
 /stream add name: FearlessKenji discord: https://discord.gg/FearlessKenji
@@ -167,7 +169,7 @@ All of these options are available at once. Each selection updates the panel, bu
 Use `/stream list` to check which streamers are configured, whether they are labeled as self or affiliate, and which notification types are enabled.
 Use `/stream remove name: streamername` to remove a streamer from the database.
 
-## Birthdays
+### Birthdays
 Use `/birthday set` to store your birthday for the current server. The bot accepts flexible month/day input such as:
 ```console
 /birthday set date: 12/25
@@ -190,11 +192,11 @@ Administrators can configure automatic birthday posts with:
 - week_role - Optional role to ping one week before a birthday.
 - day_role - Optional role to ping on the birthday.
 - hour - Whole-hour local posting time such as `12pm`, `noon`, or `13`.
-- timezone - IANA timezone used for the server's birthday schedule.
+- timezone - IANA timezone used for the server's birthday schedule. Has autocompletes.
 
 The bot posts one reminder seven days before a birthday and one birthday message on the day itself. February 29 birthdays are celebrated on February 28 during non-leap years.
 
-## Reaction roles
+### Reaction roles
 Use `/reaction roles add` to create a reaction-role panel. The setup flow asks for a target channel and title. You can optionally provide a message for the embed body; otherwise the bot uses a default message. The command then opens a public editor where you can add assignable roles.
 
 Reaction-role embeds use a fixed yellow color.
