@@ -1,5 +1,6 @@
 const { Events } = require(`discord.js`);
 const { handleReactionRoleReaction } = require(`../utils/reactionRoles.js`);
+const { handleRulesVerificationReaction } = require(`../utils/rulesVerification.js`);
 const { error } = require(`../utils/writeLog.js`);
 const fallbackReactionCommand = require(`../commands/globalCommands/utility/reaction.js`);
 
@@ -15,6 +16,10 @@ module.exports = {
 			const reactionCommand = getReactionCommand(reaction.client);
 
 			if (await reactionCommand.handleSetupReaction(reaction, user, false)) {
+				return;
+			}
+
+			if (await handleRulesVerificationReaction(reaction, user, false)) {
 				return;
 			}
 

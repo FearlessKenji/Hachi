@@ -82,5 +82,34 @@ module.exports = {
 				}
 			}
 		}
+
+		// Modal submissions route by the first customId segment, which matches the
+		// command name that opened the modal.
+		if (interaction.isModalSubmit()) {
+			const [commandName] = interaction.customId.split(`:`);
+
+			const command = interaction.client.commands.get(commandName);
+
+			if (!command?.handleModalSubmit) {
+				return;
+			}
+
+			try {
+				await command.handleModalSubmit(interaction);
+			} catch (err) {
+				error(`Error handling modal submit:`, err);
+
+				const payload = {
+					content: `Something went wrong.`,
+					flags: MessageFlags.Ephemeral,
+				};
+
+				if (interaction.replied || interaction.deferred) {
+					await interaction.followUp(payload);
+				} else {
+					await interaction.reply(payload);
+				}
+			}
+		}
 	},
 };

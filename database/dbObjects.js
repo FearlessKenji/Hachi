@@ -30,6 +30,10 @@ const ReactionRoleItems = require(`./models/reactionRoleItems.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
+const RulesVerificationMessages = require(`./models/rulesVerificationMessages.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
 const BirthdayUsers = require(`./models/birthdayUsers.js`)(
 	sequelize,
 	Sequelize.DataTypes,
@@ -87,6 +91,23 @@ ReactionRoleItems.belongsTo(ReactionRoleMessages, {
 	onUpdate: `CASCADE`,
 });
 
+// Rules Verification Associations
+// Rules verification rows are lightweight reaction gates for a guild's rules
+// message. They are deleted when no longer valid rather than soft-disabled.
+Servers.hasMany(RulesVerificationMessages, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+RulesVerificationMessages.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
 // Birthday Associations
 // Birthday user rows and posting config are guild-scoped. They intentionally
 // share the same restricted server relationship used by the other guild data.
@@ -125,6 +146,7 @@ module.exports = {
 	SchemaMigrations,
 	ReactionRoleMessages,
 	ReactionRoleItems,
+	RulesVerificationMessages,
 	BirthdayUsers,
 	BirthdayConfigs,
 };

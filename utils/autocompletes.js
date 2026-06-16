@@ -1,3 +1,5 @@
+const { colorAutocompletes } = require(`./colors.js`);
+
 const MONTHS = [
 	{ aliases: [`1`, `jan`], name: `January`, value: `January` },
 	{ aliases: [`2`, `feb`], name: `February`, value: `February` },
@@ -90,6 +92,10 @@ function autocompletes(interaction) {
 
 	if (focusedOption.name === `timezone`) {
 		return timezoneAutocompletes(focused);
+	}
+
+	if (interaction.commandName === `rules` && focusedOption.name === `color`) {
+		return colorAutocompletes(focused);
 	}
 
 	return [];

@@ -40,6 +40,7 @@ This Discord bot uses [The Official Twitch API](https://dev.twitch.tv/docs/api/)
 | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
 | | |
+| `/rules` | Post a custom rules embed with optional reaction verification. |
 | `/roll` | Roll dice using RPG notation. |
 | `/timestamp` | Convert a date and time into Discord timestamp tags. |
 
@@ -51,7 +52,6 @@ This Discord bot uses [The Official Twitch API](https://dev.twitch.tv/docs/api/)
 | `/time` | Reply with the current Discord-formatted time. |
 | `/uptime` | Reply with the current bot uptime. |
 | `/restart` | Restart the bot. |
-| `/rules` | Post the configured rules embed. |
 
 Global command updates can take time to appear in Discord. Guild commands are deployed only to the server matched by `guildId` in `config/config.json`, and usually appear much faster for testing.
 
@@ -211,6 +211,17 @@ When a panel needs multiple messages, continuation messages are created automati
 Administrators can right-click an existing reaction-role panel and use `Edit Reaction Roles` to open the same setup editor with the current roles and emojis loaded.
 
 Administrators can also use the `Convert to Reaction Roles` message context menu to parse an existing message into a bot-owned reaction-role embed. The converter keeps the leading message text, turns perceived category headings into embed fields, matches emoji lines to assignable server roles, supports common `:emoji_name:` shortcodes, and adds the matched reactions.
+
+### Rules
+Use `/rules` to post a custom rules embed. The command asks for a target channel and optional color and verification role, then opens a modal where you can enter the rules title and body.
+
+```console
+/rules channel:#rules color:green verification:@Member
+```
+
+The color option accepts common color names such as red, orange, yellow, green, blue, purple, cyan, magenta, pink, black, white, and gray. It also accepts hex colors such as `#ff0000`, `ff0000`, `0xff0000`, and short hex values such as `#f00`.
+
+If a verification role is selected, the bot adds a second embed asking members to react with ✅. Adding the reaction grants the selected role; removing the reaction removes it. Posting a new rules verification message replaces the previous verification mapping for that server.
 
 ## GitHub Pages
 The `docs` folder contains the public legal pages for GitHub Pages:
