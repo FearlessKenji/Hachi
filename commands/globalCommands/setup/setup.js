@@ -83,20 +83,6 @@ function buildHomeContent(server) {
 function buildHomeComponents(setupId) {
 	const components = [
 		new ActionRowBuilder().addComponents(
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:self`)
-				.setLabel(`My Stream`)
-				.setStyle(ButtonStyle.Primary),
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:affiliate`)
-				.setLabel(`Affiliate Streams`)
-				.setStyle(ButtonStyle.Secondary),
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:submit`)
-				.setLabel(`Submit`)
-				.setStyle(ButtonStyle.Success),
-		),
-		new ActionRowBuilder().addComponents(
 			new StringSelectMenuBuilder()
 				.setCustomId(`setup:${setupId}:monitoring:enabled`)
 				.setPlaceholder(`Monitor commands?`)
@@ -114,6 +100,23 @@ function buildHomeComponents(setupId) {
 	return components;
 }
 
+function buildHomeButtonComponent(setupId) {
+	return new ActionRowBuilder().addComponents(
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:self`)
+			.setLabel(`My Stream`)
+			.setStyle(ButtonStyle.Primary),
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:affiliate`)
+			.setLabel(`Affiliate Streams`)
+			.setStyle(ButtonStyle.Secondary),
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:submit`)
+			.setLabel(`Submit`)
+			.setStyle(ButtonStyle.Success),
+	);
+}
+
 function buildMonitoringChannelComponent(setupId) {
 	return new ActionRowBuilder().addComponents(
 		new ChannelSelectMenuBuilder()
@@ -129,6 +132,8 @@ function buildHomeComponentsForSetup(setupId, pendingSetup) {
 	if (pendingSetup.commandMonitoringEnabled) {
 		components.push(buildMonitoringChannelComponent(setupId));
 	}
+
+	components.push(buildHomeButtonComponent(setupId));
 
 	return components;
 }
