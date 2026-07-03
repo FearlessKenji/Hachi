@@ -7,6 +7,8 @@ const { ActionRowBuilder,
 	MessageFlags,
 	RoleSelectMenuBuilder,
 	SlashCommandBuilder,
+	StringSelectMenuBuilder,
+	StringSelectMenuOptionBuilder,
 } = require(`discord.js`);
 const { Servers } = require(`../../../database/dbObjects.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
@@ -32,6 +34,8 @@ async function getServerSettings(guildId) {
 		selfTwitchRoleId: null,
 		selfKickRoleId: null,
 		affiliateRoleId: null,
+		commandMonitoringEnabled: false,
+		commandMonitoringChannelId: null,
 	};
 }
 
@@ -58,6 +62,8 @@ function formatRole(id) {
 }
 
 function buildHomeContent(server) {
+	const status = server.statusMessage ? `\n### ${server.statusMessage}` : ``;
+
 	return `## Notification Setup
 ### When you go live
 - Twitch Role: ${formatRole(server.selfTwitchRoleId)}
@@ -67,11 +73,15 @@ function buildHomeContent(server) {
 
 ### When someone you know goes live
 - Role: ${formatRole(server.affiliateRoleId)}
-- Channel: ${formatChannel(server.affiliateChannelId)}`;
+- Channel: ${formatChannel(server.affiliateChannelId)}
+
+### Command Monitoring
+- Monitor Commands: ${server.commandMonitoringEnabled ? `Yes` : `No`}
+- Monitoring Channel: ${formatChannel(server.commandMonitoringChannelId)}${status}`;
 }
 
 function buildHomeComponents(setupId) {
-	return [
+	const components = [
 		new ActionRowBuilder().addComponents(
 			new ButtonBuilder()
 				.setCustomId(`setup:${setupId}:self`)
@@ -86,7 +96,41 @@ function buildHomeComponents(setupId) {
 				.setLabel(`Submit`)
 				.setStyle(ButtonStyle.Success),
 		),
+		new ActionRowBuilder().addComponents(
+			new StringSelectMenuBuilder()
+				.setCustomId(`setup:${setupId}:monitoring:enabled`)
+				.setPlaceholder(`Monitor commands?`)
+				.addOptions(
+					new StringSelectMenuOptionBuilder()
+						.setLabel(`Yes`)
+						.setValue(`yes`),
+					new StringSelectMenuOptionBuilder()
+						.setLabel(`No`)
+						.setValue(`no`),
+				),
+		),
 	];
+
+	return components;
+}
+
+function buildMonitoringChannelComponent(setupId) {
+	return new ActionRowBuilder().addComponents(
+		new ChannelSelectMenuBuilder()
+			.setCustomId(`setup:${setupId}:monitoring:channel`)
+			.setPlaceholder(`Monitoring channel:`)
+			.setChannelTypes(textChannelTypes),
+	);
+}
+
+function buildHomeComponentsForSetup(setupId, pendingSetup) {
+	const components = buildHomeComponents(setupId);
+
+	if (pendingSetup.commandMonitoringEnabled) {
+		components.push(buildMonitoringChannelComponent(setupId));
+	}
+
+	return components;
 }
 
 function buildSelfComponents(setupId) {
@@ -183,7 +227,7 @@ async function showPage(interaction, setupId, pendingSetup, contentBuilder, comp
 	await updatePanel(
 		interaction,
 		contentBuilder(pendingSetup),
-		componentBuilder(setupId),
+		componentBuilder(setupId, pendingSetup),
 	);
 }
 
@@ -193,7 +237,7 @@ async function showHome(interaction, setupId, pendingSetup) {
 		setupId,
 		pendingSetup,
 		buildHomeContent,
-		buildHomeComponents,
+		buildHomeComponentsForSetup,
 	);
 }
 
@@ -218,6 +262,14 @@ async function showAffiliate(interaction, setupId, pendingSetup) {
 }
 
 async function showSubmission(interaction, setupId, pendingSetup) {
+	if (pendingSetup.commandMonitoringEnabled && !pendingSetup.commandMonitoringChannelId) {
+		pendingSetup.statusMessage = `Select a monitoring channel before submitting.`;
+		await showHome(interaction, setupId, pendingSetup);
+		return;
+	}
+
+	pendingSetup.statusMessage = null;
+
 	await Servers.upsert({
 		guildId: pendingSetup.guildId,
 		selfTwitchChannelId: pendingSetup.selfTwitchChannelId,
@@ -226,6 +278,8 @@ async function showSubmission(interaction, setupId, pendingSetup) {
 		selfTwitchRoleId: pendingSetup.selfTwitchRoleId,
 		selfKickRoleId: pendingSetup.selfKickRoleId,
 		affiliateRoleId: pendingSetup.affiliateRoleId,
+		commandMonitoringEnabled: pendingSetup.commandMonitoringEnabled,
+		commandMonitoringChannelId: pendingSetup.commandMonitoringChannelId,
 	});
 
 	pendingSetups.delete(setupId);
@@ -284,6 +338,20 @@ async function handleSelect(interaction, setupId, pendingSetup, group, field) {
 
 		Object.assign(pendingSetup, settings[field]);
 		await showAffiliate(interaction, setupId, pendingSetup);
+	} else if (group === `monitoring`) {
+		pendingSetup.statusMessage = null;
+
+		if (field === `enabled`) {
+			pendingSetup.commandMonitoringEnabled = selectedId === `yes`;
+
+			if (!pendingSetup.commandMonitoringEnabled) {
+				pendingSetup.commandMonitoringChannelId = null;
+			}
+		} else if (field === `channel`) {
+			pendingSetup.commandMonitoringChannelId = selectedId;
+		}
+
+		await showHome(interaction, setupId, pendingSetup);
 	}
 }
 
@@ -307,7 +375,7 @@ module.exports = {
 
 			await interaction.reply({
 				content: buildHomeContent(pendingSetup),
-				components: buildHomeComponents(setupId),
+				components: buildHomeComponentsForSetup(setupId, pendingSetup),
 				flags: MessageFlags.Ephemeral,
 			});
 		} catch (err) {

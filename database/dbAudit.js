@@ -21,6 +21,8 @@ const EXPECTED_SCHEMA = [
 			column(`selfTwitchRoleId`, `VARCHAR(255)`, { nullable: true }),
 			column(`selfKickRoleId`, `VARCHAR(255)`, { nullable: true }),
 			column(`affiliateRoleId`, `VARCHAR(255)`, { nullable: true }),
+			column(`commandMonitoringEnabled`, `TINYINT(1)`, { defaultValue: `0` }),
+			column(`commandMonitoringChannelId`, `VARCHAR(255)`, { nullable: true }),
 		],
 		indexes: [],
 	},

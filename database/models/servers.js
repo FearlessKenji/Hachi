@@ -28,6 +28,15 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.STRING,
 			allowNull: true,
 		},
+		commandMonitoringEnabled: {
+			type: DataTypes.BOOLEAN,
+			allowNull: false,
+			defaultValue: false,
+		},
+		commandMonitoringChannelId: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
 	},
 	{
 		timestamps: false,
