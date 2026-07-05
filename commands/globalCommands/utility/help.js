@@ -191,7 +191,7 @@ module.exports = {
 	},
 
 	async execute(interaction) {
-		const catalog = buildHelpCatalog(interaction.client.commands);
+		const catalog = buildHelpCatalog(interaction.client.commands, { guildId: interaction.guildId || interaction.guild.id });
 		const publicResponse = interaction.options.getBoolean(`public`) || false;
 
 		if (publicResponse) {

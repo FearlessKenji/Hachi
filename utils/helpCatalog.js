@@ -1,4 +1,5 @@
 const { PermissionFlagsBits } = require(`discord.js`);
+const { guildId: configuredGuildId } = require(`../config/config.json`);
 
 const DEFAULT_CATEGORY = {
 	description: `Commands available in this server.`,
@@ -136,6 +137,14 @@ function normalizeCommandHelp(command) {
 	}));
 }
 
+function commandAvailableInGuild(command, guildId) {
+	if (command.commandScope !== `guild`) {
+		return true;
+	}
+
+	return Boolean(configuredGuildId && guildId && String(guildId) === String(configuredGuildId));
+}
+
 function canUsePermissions(memberPermissions, permissions) {
 	const normalized = normalizePermissions(permissions);
 
@@ -159,11 +168,16 @@ function categoryDetails(categoryId) {
 	};
 }
 
-function buildHelpCatalog(commands) {
+function buildHelpCatalog(commands, options = {}) {
 	const categories = new Map();
+	const guildId = options.guildId || null;
 
 	for (const command of commands.values()) {
 		if (command.help?.hidden) {
+			continue;
+		}
+
+		if (!commandAvailableInGuild(command, guildId)) {
 			continue;
 		}
 
