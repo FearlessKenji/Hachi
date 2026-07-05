@@ -496,6 +496,20 @@ module.exports = {
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles | PermissionFlagsBits.ManageGuild)
 		.setContexts(InteractionContextType.Guild),
 
+	help: {
+		category: `management`,
+		permissions: [
+			PermissionFlagsBits.ManageGuild,
+			PermissionFlagsBits.ManageRoles,
+		],
+		entries: [
+			{
+				command: `Convert to Reaction Roles`,
+				description: `message context menu for converting role-list messages into reaction-role panels.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		try {
 			if (!canManageReactionRoles(interaction)) {

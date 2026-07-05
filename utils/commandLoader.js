@@ -1,8 +1,12 @@
-const { REST, Routes } = require(`discord.js`);
+const { ApplicationIntegrationType, REST, Routes } = require(`discord.js`);
 const fs = require(`node:fs`);
 const path = require(`node:path`);
 
 const commandsRoot = path.join(__dirname, `../commands`);
+const USER_INSTALL_COMMANDS = new Set([
+	`roll`,
+	`timestamp`,
+]);
 const scopeDirectoryByName = {
 	global: `globalCommands`,
 	guild: `guildCommands`,
@@ -94,8 +98,38 @@ function findCommandFile(commandName) {
 	return null;
 }
 
+function getAllowedIntegrationTypes(commandName, scope) {
+	if (scope !== `global`) {
+		return null;
+	}
+
+	if (USER_INSTALL_COMMANDS.has(commandName)) {
+		return [
+			ApplicationIntegrationType.GuildInstall,
+			ApplicationIntegrationType.UserInstall,
+		];
+	}
+
+	return [ApplicationIntegrationType.GuildInstall];
+}
+
+function normalizeCommandDataForDeploy(commandData, scope) {
+	const integrationTypes = getAllowedIntegrationTypes(commandData.name, scope);
+
+	if (!integrationTypes) {
+		return commandData;
+	}
+
+	return {
+		...commandData,
+		integration_types: integrationTypes,
+	};
+}
+
 function getCommandData(scope) {
-	return getCommandFiles(scope).map(filePath => loadCommand(filePath, { fresh: true }).data.toJSON());
+	return getCommandFiles(scope).map(filePath =>
+		normalizeCommandDataForDeploy(loadCommand(filePath, { fresh: true }).data.toJSON(), scope),
+	);
 }
 
 async function redeployCommands(scope, { clientId, commands = null, guildId, token }) {
@@ -111,7 +145,8 @@ async function redeployCommands(scope, { clientId, commands = null, guildId, tok
 		throw new Error(`guildId is required to redeploy guild commands.`);
 	}
 
-	const commandData = commands || getCommandData(scope);
+	const commandData = (commands || getCommandData(scope))
+		.map(command => normalizeCommandDataForDeploy(command, scope));
 	const rest = new REST().setToken(token);
 	const route = scope === `global` ?
 		Routes.applicationCommands(clientId) :
@@ -139,14 +174,15 @@ async function redeployCommand(scope, commandData, { clientId, guildId, token })
 		throw new Error(`guildId is required to redeploy guild commands.`);
 	}
 
+	const normalizedCommandData = normalizeCommandDataForDeploy(commandData, scope);
 	const rest = new REST().setToken(token);
 	const route = scope === `global` ?
 		Routes.applicationCommands(clientId) :
 		Routes.applicationGuildCommands(clientId, guildId);
-	const data = await rest.post(route, { body: commandData });
+	const data = await rest.post(route, { body: normalizedCommandData });
 
 	return {
-		command: commandData,
+		command: normalizedCommandData,
 		data,
 		scope,
 	};

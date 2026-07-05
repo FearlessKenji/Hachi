@@ -38,6 +38,30 @@ const BirthdayConfigs = require(`./models/birthdayConfigs.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
+const CommandMonitorWhitelists = require(`./models/commandMonitorWhitelists.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const RaidConfigs = require(`./models/raidConfigs.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const RaidIncidents = require(`./models/raidIncidents.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const RaidIncidentUsers = require(`./models/raidIncidentUsers.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const RaidIncidentMessages = require(`./models/raidIncidentMessages.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const RaidIncidentFiles = require(`./models/raidIncidentFiles.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
 
 // Live Notification Associations
 // Channel rows are tied to a server record, but server deletion is restricted so
@@ -135,6 +159,95 @@ BirthdayConfigs.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+// Command Monitoring Associations
+// Whitelist rows are guild-scoped and suppress only command-monitoring reports.
+Servers.hasMany(CommandMonitorWhitelists, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+CommandMonitorWhitelists.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+// Raid Protection Associations
+// Configuration is guild-scoped, while incidents own their captured users,
+// messages, and archived attachment records.
+Servers.hasOne(RaidConfigs, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+RaidConfigs.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+Servers.hasMany(RaidIncidents, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidents.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidents.hasMany(RaidIncidentUsers, {
+	foreignKey: `incidentId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidentUsers.belongsTo(RaidIncidents, {
+	foreignKey: `incidentId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidents.hasMany(RaidIncidentMessages, {
+	foreignKey: `incidentId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidentMessages.belongsTo(RaidIncidents, {
+	foreignKey: `incidentId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidents.hasMany(RaidIncidentFiles, {
+	foreignKey: `incidentId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+RaidIncidentFiles.belongsTo(RaidIncidents, {
+	foreignKey: `incidentId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
 module.exports = {
 	sequelize,
 	Servers,
@@ -144,4 +257,10 @@ module.exports = {
 	RulesVerificationMessages,
 	BirthdayUsers,
 	BirthdayConfigs,
+	CommandMonitorWhitelists,
+	RaidConfigs,
+	RaidIncidents,
+	RaidIncidentUsers,
+	RaidIncidentMessages,
+	RaidIncidentFiles,
 };

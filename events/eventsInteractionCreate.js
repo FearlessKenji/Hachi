@@ -2,6 +2,23 @@ const { Events, MessageFlags } = require(`discord.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const { autocompletes } = require(`../utils/autocompletes.js`);
 
+async function sendInteractionError(interaction) {
+	const payload = {
+		content: `Something went wrong.`,
+		flags: MessageFlags.Ephemeral,
+	};
+
+	try {
+		if (interaction.replied || interaction.deferred) {
+			await interaction.followUp(payload);
+		} else {
+			await interaction.reply(payload);
+		}
+	} catch (err) {
+		error(`Failed to send interaction error response:`, err);
+	}
+}
+
 module.exports = {
 	name: Events.InteractionCreate,
 
@@ -26,6 +43,7 @@ module.exports = {
 				await command.execute(interaction);
 			} catch (err) {
 				error(`Error executing ${interaction.commandName}`, err);
+				await sendInteractionError(interaction);
 			}
 
 			return;
@@ -44,6 +62,7 @@ module.exports = {
 				await command.execute(interaction);
 			} catch (err) {
 				error(`Error executing ${interaction.commandName}`, err);
+				await sendInteractionError(interaction);
 			}
 
 			return;
@@ -69,17 +88,7 @@ module.exports = {
 				await command.handleComponent(interaction);
 			} catch (err) {
 				error(`Error handling interaction:`, err);
-
-				const payload = {
-					content: `Something went wrong.`,
-					flags: MessageFlags.Ephemeral,
-				};
-
-				if (interaction.replied || interaction.deferred) {
-					await interaction.followUp(payload);
-				} else {
-					await interaction.reply(payload);
-				}
+				await sendInteractionError(interaction);
 			}
 		}
 
@@ -98,17 +107,7 @@ module.exports = {
 				await command.handleModalSubmit(interaction);
 			} catch (err) {
 				error(`Error handling modal submit:`, err);
-
-				const payload = {
-					content: `Something went wrong.`,
-					flags: MessageFlags.Ephemeral,
-				};
-
-				if (interaction.replied || interaction.deferred) {
-					await interaction.followUp(payload);
-				} else {
-					await interaction.reply(payload);
-				}
+				await sendInteractionError(interaction);
 			}
 		}
 	},

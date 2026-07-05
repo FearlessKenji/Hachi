@@ -19,6 +19,16 @@ module.exports = {
 		.setDescription(`Replies with the runtime.`)
 		.setDefaultMemberPermissions(0),
 
+	help: {
+		category: `diagnostics`,
+		entries: [
+			{
+				command: `/uptime`,
+				description: `show how long Hachi has been running.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		await interaction.reply({ content: calculateUptime() });
 	},

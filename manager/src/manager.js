@@ -434,6 +434,7 @@ class HachiManager {
 			configJson: path.join(root, "config", "config.json"),
 			blankConfig: path.join(root, "config", "blank.json"),
 			ecosystem: path.join(root, "config", "ecosystem.config.js"),
+			deleteCommands: path.join(root, "delete-all-commands.js"),
 			deployGlobal: path.join(root, "deploy-global-commands.js"),
 			deployGuild: path.join(root, "deploy-guild-commands.js"),
 			dbAudit: path.join(root, "database", "dbAudit.js"),
@@ -829,6 +830,7 @@ class HachiManager {
 			["package.json", paths.packageJson],
 			["index.js", paths.index],
 			["config/ecosystem.config.js", paths.ecosystem],
+			["delete-all-commands.js", paths.deleteCommands],
 			["deploy-global-commands.js", paths.deployGlobal],
 			["deploy-guild-commands.js", paths.deployGuild],
 		];
@@ -1519,14 +1521,21 @@ class HachiManager {
 	}
 
 	async deployCommands() {
-		// Run both slash-command deployment scripts behind one UI button. Normal
-		// users generally want global and guild commands refreshed together.
+		// Redeploy slash commands from a clean Discord state. Deleting first
+		// removes commands that no longer exist locally before the fresh global
+		// and guild command lists are uploaded.
 		if (!this.isProjectFolder()) {
 			throw new Error("Hachi is not installed in the selected folder.");
 		}
 
 		await this.runConfigValidation();
-		this.log("Deploying Hachi slash commands...");
+		this.log("Deleting existing Hachi slash commands...");
+		await run("node", ["delete-all-commands.js"], {
+			cwd: this.getInstallPath(),
+			timeoutMs: 300000,
+			onLog: entry => this.logShell(entry),
+		});
+		this.log("Deploying fresh Hachi slash commands...");
 		await run("node", ["deploy-global-commands.js"], {
 			cwd: this.getInstallPath(),
 			timeoutMs: 300000,
@@ -1722,7 +1731,7 @@ class HachiManager {
 				allowFailure: true,
 				timeoutMs: 30000,
 			});
-			pm2 = result.stdout || result.stderr;
+			pm2 = [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
 		}
 
 		return {

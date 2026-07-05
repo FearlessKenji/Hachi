@@ -8,6 +8,10 @@ module.exports = {
 		.setDescription(`Restart the bot`)
 		.setDefaultMemberPermissions(0),
 
+	help: {
+		hidden: true,
+	},
+
 	async execute(interaction) {
 		if (interaction.user.id === config.botOwner) {
 			await interaction.reply({ content: `Restarting...`, flags: MessageFlags.Ephemeral });

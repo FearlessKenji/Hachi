@@ -1,6 +1,6 @@
 # Hachi
 
-Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage birthdays, create reaction-role panels, post rules embeds, and provide small utility commands.
+Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
 
 Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager included in the project.
 
@@ -14,6 +14,9 @@ Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager in
 - Reaction-role panel creation, editing, message conversion, and cleanup when messages or channels are deleted
 - Per-server profile customization with avatar, banner, bio, and nickname fields
 - Rules embeds with optional reaction verification
+- Optional application command monitoring with app/channel whitelists
+- Configurable raid protection with quarantine, join-spike alerts, spam evidence, and incident reports
+- Permission-aware `/help` generated from command metadata
 - Timestamp and dice rolling utility commands
 
 Hachi uses [The Official Twitch API](https://dev.twitch.tv/docs/api/) and [The Official Kick API](https://docs.kick.com/). Stream checks are batched per server to limit API calls.
@@ -52,7 +55,7 @@ HachiGen can:
 - Save local file changes to a recoverable Git stash before updating
 - Restore or delete HachiGen-created stashes
 - View, sort, back up, restore, sanitize, and migrate the local SQLite database
-- Deploy global and guild slash commands with one Deploy Commands button
+- Deploy global and guild slash commands with one button; HachiGen deletes old commands first so removed local commands are cleared from Discord
 - Start, stop, and restart Hachi through PM2
 - Read PM2 status and recent logs
 
@@ -131,137 +134,91 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 
 ### Global Commands
 
-<table>
-	<thead>
-		<tr>
-			<th>Category</th>
-			<th>Command</th>
-			<th>Description</th>
-		</tr>
-	</thead>
-	<tbody>
-		<tr>
-			<th scope="rowgroup">Setup</th>
-			<td><code>/setup</code></td>
-			<td>Configure stream notification channels and roles.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup" rowspan="3">Streams</th>
-			<td><code>/stream add</code></td>
-			<td>Add or edit a Twitch/Kick streamer entry.</td>
-		</tr>
-		<tr>
-			<td><code>/stream list</code></td>
-			<td>List streamers configured for the server.</td>
-		</tr>
-		<tr>
-			<td><code>/stream remove</code></td>
-			<td>Remove a streamer entry.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup" rowspan="5">Birthdays</th>
-			<td><code>/birthday set</code></td>
-			<td>Store your birthday for the current server. Numeric dates use American <code>MM/DD</code> format, such as <code>12/25</code>.</td>
-		</tr>
-		<tr>
-			<td><code>/birthday view</code></td>
-			<td>View a member's stored birthday.</td>
-		</tr>
-		<tr>
-			<td><code>/birthday list</code></td>
-			<td>List birthdays for a month, grouped by day.</td>
-		</tr>
-		<tr>
-			<td><code>/birthday remove</code></td>
-			<td>Remove your stored birthday from the current server.</td>
-		</tr>
-		<tr>
-			<td><code>/birthday setup</code></td>
-			<td>Configure birthday channels, roles, posting hour, and timezone.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup" rowspan="3">Reaction Roles</th>
-			<td><code>/reaction roles add</code></td>
-			<td>Create a reaction-role panel.</td>
-		</tr>
-		<tr>
-			<td><code>Edit Reaction Roles</code></td>
-			<td>Message context menu to edit an existing reaction-role panel. Right-click message, then go to App to use.</td>
-		</tr>
-		<tr>
-			<td><code>Convert to Reaction Roles</code></td>
-			<td>Message context menu to convert an existing message into a reaction-role panel. Right-click message, then go to App to use.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup" rowspan="2">Profiles</th>
-			<td><code>/profile set</code></td>
-			<td>Set a per-server profile avatar, banner, bio, or nickname.</td>
-		</tr>
-		<tr>
-			<td><code>/profile clear</code></td>
-			<td>Clear one or all per-server profile fields.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup" rowspan="3">Rules & Utilities</th>
-			<td><code>/rules</code></td>
-			<td>Post a custom rules embed with optional reaction verification.</td>
-		</tr>
-		<tr>
-			<td><code>/roll</code></td>
-			<td>Roll dice using RPG notation.</td>
-		</tr>
-		<tr>
-			<td><code>/timestamp</code></td>
-			<td>Convert a date and time into Discord timestamp tags.</td>
-		</tr>
-	</tbody>
-</table>
+| Category | Command | Description |
+| --- | --- | --- |
+| Help | `/help` | Show a permission-aware command list. |
+| Help | `/help public:true` | Moderator-only public help flow with a category picker. |
+| Setup | `/setup` | Open the setup hub for stream, security, and raid configuration. |
+| Streams | `/stream setup` | Configure Twitch/Kick notification channels and roles. |
+| Streams | `/stream add` | Add or edit a Twitch/Kick streamer entry. |
+| Streams | `/stream list` | List streamers configured for the server. |
+| Streams | `/stream remove` | Remove a streamer entry. |
+| Security | `/security setup` | Configure application command reporting. |
+| Security | `/security status` | Show command-monitoring settings. |
+| Security | `/security audit` | Check whether command-monitoring reports can be posted. |
+| Security | `/security whitelist app` | Add or remove a trusted application ID from command-monitoring reports. |
+| Security | `/security whitelist channel` | Add or remove a channel from command-monitoring reports. |
+| Security | `/security whitelist list` | List command-monitoring whitelist entries. |
+| Raid Protection | `/raid setup` | Configure raid protection. |
+| Raid Protection | `/raid status` | Show raid protection settings. |
+| Raid Protection | `/raid audit` | Check quarantine and alert/report readiness. |
+| Raid Protection | `/raid drill` | Send dry-run raid alerts and reports without taking actions or pinging roles. |
+| Raid Protection | `/raid incidents` | List recent raid incidents. |
+| Raid Protection | `/raid incident` | Show one raid incident. |
+| Raid Protection | `/raid report` | Post a raid report to the configured report channel. |
+| Raid Protection | `/raid evidence` | Post stored incident evidence to the configured report channel. |
+| Raid Protection | `/raid quarantine` | Manually assign the quarantine role. |
+| Raid Protection | `/raid release` | Remove quarantine and timeout state. |
+| Raid Protection | `/raid sync` | Open a confirmation panel for applying quarantine denies across channels/categories. |
+| Birthdays | `/birthday set` | Store your birthday for the current server. Numeric dates use American `MM/DD` format. |
+| Birthdays | `/birthday view` | View a member's stored birthday. |
+| Birthdays | `/birthday list` | List birthdays for a month, grouped by day. |
+| Birthdays | `/birthday remove` | Remove your stored birthday from the current server. |
+| Birthdays | `/birthday setup` | Configure birthday channels, roles, posting hour, and timezone. |
+| Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
+| Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
+| Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
+| Profiles | `/profile set` | Set a per-server profile avatar, banner, bio, or nickname. |
+| Profiles | `/profile clear` | Clear one or all per-server profile fields. |
+| Rules | `/rules` | Post a custom rules embed with optional reaction verification. |
+| Utilities | `/roll` | Roll dice using RPG notation. |
+| Utilities | `/timestamp` | Convert a date and time into Discord timestamp tags. |
 
 ### Guild Commands
 
-<table>
-	<thead>
-		<tr>
-			<th>Category</th>
-			<th>Command</th>
-			<th>Description</th>
-		</tr>
-	</thead>
-	<tbody>
-		<tr>
-			<th scope="rowgroup" rowspan="3">Utilities</th>
-			<td><code>/ping</code></td>
-			<td>Reply with bot latency.</td>
-		</tr>
-		<tr>
-			<td><code>/time</code></td>
-			<td>Reply with the current Discord-formatted time.</td>
-		</tr>
-		<tr>
-			<td><code>/uptime</code></td>
-			<td>Reply with the current bot uptime.</td>
-		</tr>
-		<tr>
-			<th scope="rowgroup">Admin</th>
-			<td><code>/restart</code></td>
-			<td>Restart the bot.</td>
-		</tr>
-	</tbody>
-</table>
+| Category | Command | Description |
+| --- | --- | --- |
+| Utilities | `/ping` | Reply with bot latency. |
+| Utilities | `/time` | Reply with the current Discord-formatted time. |
+| Utilities | `/uptime` | Reply with the current bot uptime. |
+| Admin | `/restart` | Owner-only bot restart command. Hidden from `/help`. |
 
 Global command updates can take time to appear in Discord. Guild commands are deployed only to the server matched by `guildId`, and usually appear much faster for testing.
 
 ## Command Details
 
-### Setup Notifications
+### Help
 
-Use `/setup` to configure Discord channels and roles for stream notifications.
+Use `/help` to show a permission-aware command list. Hachi builds help from command metadata exported by files in `commands/`; commands with a `help` block get custom category text, while simple commands can fall back to their slash command name and description.
 
-The setup command opens an ephemeral panel with buttons for:
+Private help is ephemeral. Categories and entries that the user cannot use are hidden, and the footer notes when commands may be hidden by permissions.
 
-- My Stream
-- Affiliate Streams
-- Submit
+Moderators and administrators can run `/help public:true`. Hachi first opens an ephemeral category picker, then posts only the selected help categories publicly. Public help is allowed for members with at least one of these permissions:
+
+- Administrator
+- Manage Server
+- Manage Messages
+- Timeout Members
+
+### Setup Hub
+
+Use `/setup` to open the setup hub. The hub routes to:
+
+- Stream Notifications
+- Security Reporting
+- Raid Protection
+
+Buttons do not literally invoke slash commands in Discord, but they route to the same panels used by `/stream setup`, `/security setup`, and `/raid setup`.
+
+### Stream Notifications
+
+Use `/stream setup` to configure Discord channels and roles for stream notifications.
+
+The setup panel includes:
+
+- My Twitch notification role/channel
+- My Kick notification role/channel
+- Affiliate stream notification role/channel
 
 Changes made in the panel are pending until you press Submit. Selecting channels, selecting roles, or clearing settings updates the panel, but nothing is written to the database until Submit is pressed.
 
@@ -288,6 +245,55 @@ Each selection updates the panel, but the streamer is not written to the databas
 Use `/stream list` to check which streamers are configured, whether they are labeled as self or affiliate, and which notification types are enabled.
 
 Use `/stream remove name: streamername` to remove a streamer from the database.
+
+### Security Reporting
+
+Use `/security setup` to configure application command monitoring.
+
+When command monitoring is enabled, Hachi watches public application-command response messages that Discord emits into channels it can see. Reports are posted as embeds to the configured reporting channel and include the triggering user, responding application, command name when available, command type, install context, source channel, interaction ID, and a jump link to the response.
+
+Message content is not shown in the monitoring embed. Hachi logs command response metadata internally for investigation.
+
+Use the whitelist for trusted apps or noisy channels:
+
+```console
+/security whitelist app action:Add application_id:1211781489931452447 name:Wordle
+/security whitelist channel action:Add channel:#bot-games
+/security whitelist list
+```
+
+Whitelisted apps and channels suppress command-monitoring reports only. Raid spam detection still sees those messages.
+
+Command monitoring only detects public command responses that Discord emits as messages. Ephemeral responses cannot be seen by Hachi, including responses that become ephemeral because a member lacks `Use External Apps`.
+
+### Raid Protection
+
+Use `/raid setup` to configure raid protection.
+
+Configurable options include:
+
+- Enable/disable raid protection
+- Quarantine role
+- Moderator alert role
+- Alert channel
+- Report channel
+- Message/app spam threshold
+- Join spike threshold
+- Quarantine action
+- Timeout action and duration
+- Spam deletion action
+
+Message/app spam detection uses a short rolling buffer. Hachi does not permanently store every message; incident evidence is saved only after a configured threshold is triggered.
+
+Use `/raid drill` to send dry-run alert and report messages to the configured raid channels without assigning roles, timing users out, deleting messages, editing overwrites, pinging roles, or creating database incidents. Drill alerts use the same alert embed as a real raid alert and suppress role pings with `allowedMentions`.
+
+Use `/raid audit` to check whether Hachi can send alerts/reports, assign the quarantine role, time users out, delete spam, and whether quarantine overwrites appear reliable.
+
+Use `/raid sync` to open a confirmation panel for applying quarantine denies across supported channels and categories. The sync only runs after pressing the confirmation button. Review channels that should remain visible, such as rules channels, after syncing.
+
+Raid incidents can be reviewed with `/raid incidents`, `/raid incident id:<id>`, `/raid report id:<id>`, and `/raid evidence id:<id>`. Reports and evidence go to the configured report/mod channel.
+
+Attachments from incident messages are archived locally under `data/evidence/` when available. Duplicate spam is collapsed in reports while preserving stored evidence rows.
 
 ### Birthdays
 
@@ -479,15 +485,15 @@ When changing the icon, generate a fresh `manager/icon.ico` from the desired sou
 			<td>Regenerate from the desired source image before packaging.</td>
 		</tr>
 		<tr>
-			<td rowspan="4">Bot runtime</td>
+			<td rowspan="7">Bot runtime</td>
 			<td><code>index.js</code></td>
 			<td>Main Hachi bot entry point.</td>
 			<td>Edit when changing bot startup behavior.</td>
 		</tr>
 		<tr>
 			<td><code>commands/</code></td>
-			<td>Slash commands and message context menu commands.</td>
-			<td>Edit when adding or changing Discord commands.</td>
+			<td>Slash commands and message context menu commands. Optional <code>help</code> metadata is used by <code>/help</code>.</td>
+			<td>Edit when adding or changing Discord commands or their help entries.</td>
 		</tr>
 		<tr>
 			<td><code>events/</code></td>
@@ -495,12 +501,27 @@ When changing the icon, generate a fresh `manager/icon.ico` from the desired sou
 			<td>Edit when changing how Hachi reacts to Discord events.</td>
 		</tr>
 		<tr>
+			<td><code>database/models/</code></td>
+			<td>Sequelize models for server settings, streamers, birthdays, command-monitor whitelists, and raid incidents.</td>
+			<td>Edit when persistent bot data needs a new table or column.</td>
+		</tr>
+		<tr>
+			<td><code>utils/helpCatalog.js</code></td>
+			<td>Builds permission-aware help categories from loaded command modules.</td>
+			<td>Edit when changing how <code>/help</code> groups, filters, or formats command metadata.</td>
+		</tr>
+		<tr>
+			<td><code>utils/raidProtection.js</code></td>
+			<td>Tracks short rolling raid buffers, applies quarantine/timeout/delete actions, stores incident evidence, and builds reports.</td>
+			<td>Edit when changing raid detection, incident storage, or report behavior.</td>
+		</tr>
+		<tr>
 			<td><code>utils/</code></td>
-			<td>Shared helpers for birthdays, reaction roles, colors, crons, command loading, and logging.</td>
+			<td>Shared helpers for birthdays, reaction roles, colors, crons, command loading, raid protection, help catalog generation, and logging.</td>
 			<td>Edit when changing shared behavior used by multiple commands or events.</td>
 		</tr>
 		<tr>
-			<td rowspan="4">Local runtime data</td>
+			<td rowspan="5">Local runtime data</td>
 			<td><code>.env</code></td>
 			<td>Local secrets and API credentials.</td>
 			<td>Created or edited by HachiGen; ignored by Git.</td>
@@ -512,8 +533,13 @@ When changing the icon, generate a fresh `manager/icon.ico` from the desired sou
 		</tr>
 		<tr>
 			<td><code>database/*.sqlite</code></td>
-			<td>Local SQLite databases.</td>
+			<td>Local SQLite databases, including command-monitor and raid-protection settings/state.</td>
 			<td>Generated at runtime; ignored by Git.</td>
+		</tr>
+		<tr>
+			<td><code>data/evidence/</code></td>
+			<td>Local copies of available attachment evidence from raid incidents.</td>
+			<td>Generated during raid incident handling; ignored by Git.</td>
 		</tr>
 		<tr>
 			<td><code>logs/</code></td>

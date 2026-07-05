@@ -221,6 +221,16 @@ module.exports = {
 				.setRequired(true),
 		),
 
+	help: {
+		category: `general`,
+		entries: [
+			{
+				command: `/timestamp`,
+				description: `create Discord timestamps from a date, time, and timezone.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const title = interaction.options.getString(`title`, true).trim();
 		const timezone = interaction.options.getString(`timezone`, true);

@@ -32,3 +32,6 @@ config.json
 # Local databases
 *.sqlite
 *.sqlite.*
+
+# Local moderation evidence
+data/evidence/

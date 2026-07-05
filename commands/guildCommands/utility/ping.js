@@ -6,6 +6,16 @@ module.exports = {
 		.setDescription(`Replies with Pong!`)
 		.setDefaultMemberPermissions(0),
 
+	help: {
+		category: `diagnostics`,
+		entries: [
+			{
+				command: `/ping`,
+				description: `check bot latency when guild utility commands are installed.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const sent = await interaction.reply({ content: `Pinging...`, withResponse: true });
 		interaction.editReply(`Roundtrip latency: ${sent.resource.message.createdTimestamp - interaction.createdTimestamp}ms`);

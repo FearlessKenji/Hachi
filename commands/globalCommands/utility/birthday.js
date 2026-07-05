@@ -277,6 +277,22 @@ module.exports = {
 				),
 		),
 
+	help: {
+		category: `general`,
+		entries: [
+			{
+				command: `/birthday set/view/list/remove`,
+				description: `set, view, list, and remove server birthdays.`,
+			},
+			{
+				category: `management`,
+				command: `/birthday setup`,
+				description: `configure automatic birthday posts.`,
+				permissions: [PermissionFlagsBits.ManageGuild],
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const subcommand = interaction.options.getSubcommand();
 

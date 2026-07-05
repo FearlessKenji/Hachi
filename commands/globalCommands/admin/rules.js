@@ -330,6 +330,17 @@ module.exports = {
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 		.setContexts(InteractionContextType.Guild),
 
+	help: {
+		category: `management`,
+		permissions: [PermissionFlagsBits.ManageGuild],
+		entries: [
+			{
+				command: `/rules`,
+				description: `post a rules embed with optional reaction verification.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		try {
 			await startPost(interaction);

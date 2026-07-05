@@ -6,6 +6,16 @@ module.exports = {
 		.setDescription(`Replies with the current time and date.`)
 		.setDefaultMemberPermissions(0),
 
+	help: {
+		category: `diagnostics`,
+		entries: [
+			{
+				command: `/time`,
+				description: `show the current Discord timestamp.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const epoch = Math.floor(Date.now() / 1000);
 		const discordTime = `<t:${epoch}:t>`;

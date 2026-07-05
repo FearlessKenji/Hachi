@@ -269,6 +269,16 @@ module.exports = {
 				.setRequired(true),
 		),
 
+	help: {
+		category: `general`,
+		entries: [
+			{
+				command: `/roll`,
+				description: `roll dice using RPG notation.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const expressions = getExpressions(interaction.options.getString(`expression`, true));
 

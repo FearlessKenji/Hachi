@@ -719,6 +719,20 @@ module.exports = {
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageRoles | PermissionFlagsBits.ManageGuild)
 		.setContexts(InteractionContextType.Guild),
 
+	help: {
+		category: `management`,
+		permissions: [
+			PermissionFlagsBits.ManageGuild,
+			PermissionFlagsBits.ManageRoles,
+		],
+		entries: [
+			{
+				command: `/reaction roles add`,
+				description: `create reaction-role panels.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const subcommand = interaction.options.getSubcommand();
 

@@ -34,12 +34,13 @@ function getLogPaths() {
 		folder,
 		raw: path.join(folder, `raw.log`),
 		structured: path.join(folder, `structured.log`),
+		structuredPretty: path.join(folder, `structured.pretty.log`),
 		crash: path.join(folder, `crash.log`),
 	};
 }
 
 function ensureLogs() {
-	const { folder, raw, structured, crash } = getLogPaths();
+	const { folder, raw, structured, structuredPretty, crash } = getLogPaths();
 	let createdDateFolder = false;
 
 	if (!fs.existsSync(baseLogsFolder)) {
@@ -57,6 +58,10 @@ function ensureLogs() {
 
 	if (!fs.existsSync(structured)) {
 		fs.writeFileSync(structured, ``);
+	}
+
+	if (!fs.existsSync(structuredPretty)) {
+		fs.writeFileSync(structuredPretty, ``);
 	}
 
 	if (!fs.existsSync(crash)) {
@@ -330,6 +335,10 @@ function writeStructuredLog(structuredPath, entry) {
 	fs.appendFileSync(structuredPath, `${JSON.stringify(entry)}\n`);
 }
 
+function writePrettyStructuredLog(structuredPrettyPath, entry) {
+	fs.appendFileSync(structuredPrettyPath, `${JSON.stringify(entry, null, 2)}\n`);
+}
+
 function writeCrashDump(type, err) {
 	try {
 		ensureLogs();
@@ -558,19 +567,22 @@ function writeLog(message, err = null, options = {}) {
 	try {
 		ensureLogs();
 
-		const { raw, structured } = getLogPaths();
+		const { raw, structured, structuredPretty } = getLogPaths();
 
 		fs.appendFileSync(raw, rawText);
 
 		if (includeStructured) {
-			writeStructuredLog(structured, {
+			const structuredEntry = {
 				timestamp,
 				level: levelUpper,
 				module: moduleName,
 				message: normalized.message,
 				meta,
 				error: cleanError(normalized.err),
-			});
+			};
+
+			writeStructuredLog(structured, structuredEntry);
+			writePrettyStructuredLog(structuredPretty, structuredEntry);
 		}
 	} catch (logErr) {
 		console.error(`[LOGGER] Failed to write log file:`, logErr);

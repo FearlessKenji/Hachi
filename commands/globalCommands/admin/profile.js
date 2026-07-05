@@ -428,6 +428,17 @@ module.exports = {
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 		.setContexts(InteractionContextType.Guild),
 
+	help: {
+		category: `management`,
+		permissions: [PermissionFlagsBits.ManageGuild],
+		entries: [
+			{
+				command: `/profile`,
+				description: `manage Hachi's per-server avatar, banner, bio, and nickname.`,
+			},
+		],
+	},
+
 	async execute(interaction) {
 		const subcommand = interaction.options.getSubcommand();
 
