@@ -164,7 +164,7 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Birthdays | `/birthday view` | View a member's stored birthday. |
 | Birthdays | `/birthday list` | List birthdays for a month, grouped by day. |
 | Birthdays | `/birthday remove` | Remove your stored birthday from the current server. |
-| Birthdays | `/birthday setup` | Configure birthday channels, roles, posting hour, and timezone. |
+| Birthdays | `/birthday setup` | Open the birthday setup panel for channels, roles, posting hour, and timezone. |
 | Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
 | Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
@@ -314,14 +314,16 @@ Numeric birthday dates use American `MM/DD` order.
 Administrators can configure automatic birthday posts:
 
 ```console
-/birthday setup channel: #birthdays week_role: @Staff day_role: @Birthday hour: 12pm timezone: America/New_York
+/birthday setup
 ```
 
-- `channel` is where birthday reminders and birthday-day posts are sent.
-- `week_role` is an optional role to ping one week before birthdays.
-- `day_role` is an optional role to ping on birthday days.
-- `hour` is a whole-hour local posting time such as `12pm`, `noon`, or `13`.
-- `timezone` is the IANA timezone used for the server's birthday schedule.
+The setup panel configures:
+
+- Posting channel for birthday reminders and birthday-day posts.
+- Optional role to ping one week before birthdays.
+- Optional role to ping on birthday days.
+- Whole-hour local posting time.
+- IANA timezone used for the server's birthday schedule.
 
 Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. February 29 birthdays are celebrated on February 28 during non-leap years.
 

@@ -25,6 +25,11 @@ function buildSetupEmbed() {
 				inline: false,
 			},
 			{
+				name: `Birthday Posts`,
+				value: `Configure automatic birthday reminder and birthday-day posts.`,
+				inline: false,
+			},
+			{
 				name: `Security Reporting`,
 				value: `Configure application command reporting.`,
 				inline: false,
@@ -49,6 +54,10 @@ function buildSetupComponents(setupId) {
 				.setCustomId(`setup:${setupId}:stream`)
 				.setLabel(`Stream Notifications`)
 				.setStyle(ButtonStyle.Primary),
+			new ButtonBuilder()
+				.setCustomId(`setup:${setupId}:birthday`)
+				.setLabel(`Birthday Posts`)
+				.setStyle(ButtonStyle.Secondary),
 			new ButtonBuilder()
 				.setCustomId(`setup:${setupId}:security`)
 				.setLabel(`Security Reporting`)
@@ -151,6 +160,8 @@ module.exports = {
 				await showSetupHub(interaction, setupId);
 			} else if (action === `stream`) {
 				await routeToCommandPanel(interaction, setupId, `stream`);
+			} else if (action === `birthday`) {
+				await routeToCommandPanel(interaction, setupId, `birthday`);
 			} else if (action === `security`) {
 				await routeToCommandPanel(interaction, setupId, `security`);
 			} else if (action === `raid`) {
