@@ -1,0 +1,67 @@
+name: Release HachiGen
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach HachiGen.exe to, for example v3.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-hachigen:
+    name: build-hachigen
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            manager/package-lock.json
+
+      - name: Install bot dependencies
+        run: npm ci
+
+      - name: Install HachiGen dependencies
+        run: npm --prefix manager ci
+
+      - name: Build HachiGen
+        run: npm run build:hachigen
+
+      - name: Create or update GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          $tag = $env:RELEASE_TAG
+
+          if (-not $tag) {
+            Write-Error "Release tag was not provided."
+            exit 1
+          }
+
+          gh release view $tag *> $null
+
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag HachiGen.exe --clobber
+            exit $LASTEXITCODE
+          }
+
+          gh release create $tag HachiGen.exe --title "Hachi $tag" --generate-notes --latest
+          exit $LASTEXITCODE
