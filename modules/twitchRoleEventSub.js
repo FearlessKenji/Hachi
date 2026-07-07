@@ -24,6 +24,7 @@ function eventDetails(subscriptionType) {
 function createService(client) {
 	let socket = null;
 	let reconnectTimer = null;
+	let pausedForNoConfigs = false;
 	let stopped = false;
 
 	function clearReconnectTimer() {
@@ -40,7 +41,7 @@ function createService(client) {
 
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = null;
-			connect(EVENTSUB_WEBSOCKET_URL);
+			connectWhenConfigured();
 		}, RECONNECT_DELAY_MS);
 	}
 
@@ -91,12 +92,15 @@ function createService(client) {
 		const configs = await getBroadcasterConfigs();
 
 		if (!configs.length) {
-			info(`Twitch role EventSub connected; no broadcaster role mappings configured.`);
-			return;
+			pausedForNoConfigs = true;
+			info(`Twitch role EventSub paused; no broadcaster role mappings configured.`);
+			return false;
 		}
 
+		pausedForNoConfigs = false;
 		await Promise.all(configs.map(config => subscribeConfig(sessionId, config)));
 		info(`Twitch role EventSub subscribed for ${configs.length} broadcaster configuration(s).`);
+		return true;
 	}
 
 	async function markEventSeen(metadata, subscriptionType, event) {
@@ -167,7 +171,11 @@ function createService(client) {
 			}
 
 			if (sessionId) {
-				await subscribeSession(sessionId);
+				const subscribed = await subscribeSession(sessionId);
+
+				if (!subscribed && socket === ws && ws.readyState === WebSocket.OPEN) {
+					ws.close(1000, `No Twitch role EventSub subscriptions configured`);
+				}
 			}
 		} else if (messageType === `session_reconnect`) {
 			const reconnectUrl = message.payload?.session?.reconnect_url;
@@ -202,6 +210,11 @@ function createService(client) {
 
 		ws.on(`close`, () => {
 			if (socket === ws && !stopped) {
+				if (pausedForNoConfigs) {
+					socket = null;
+					return;
+				}
+
 				warn(`Twitch role EventSub WebSocket closed; reconnecting soon.`);
 				scheduleReconnect();
 			}
@@ -212,9 +225,31 @@ function createService(client) {
 		});
 	}
 
+	async function connectWhenConfigured() {
+		if (stopped) {
+			return;
+		}
+
+		try {
+			const configs = await getBroadcasterConfigs();
+
+			if (!configs.length) {
+				pausedForNoConfigs = true;
+				info(`Twitch role EventSub paused; no broadcaster role mappings configured.`);
+				return;
+			}
+
+			pausedForNoConfigs = false;
+			connect(EVENTSUB_WEBSOCKET_URL);
+		} catch (err) {
+			error(`Failed to prepare Twitch role EventSub connection:`, err);
+			scheduleReconnect();
+		}
+	}
+
 	function start() {
 		stopped = false;
-		connect(EVENTSUB_WEBSOCKET_URL);
+		connectWhenConfigured();
 	}
 
 	function stop() {
@@ -229,6 +264,7 @@ function createService(client) {
 
 	function restart() {
 		clearReconnectTimer();
+		pausedForNoConfigs = false;
 
 		if (socket) {
 			socket.close(1000, `Hachi refreshing Twitch EventSub subscriptions`);
@@ -236,7 +272,7 @@ function createService(client) {
 		}
 
 		if (!stopped) {
-			connect(EVENTSUB_WEBSOCKET_URL);
+			connectWhenConfigured();
 		}
 	}
 
