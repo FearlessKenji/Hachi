@@ -3,6 +3,7 @@ require(`./config/configCheck.js`);
 const { Client, Collection, GatewayIntentBits, Partials } = require(`discord.js`);
 const { info, warn, error, initCrashHandlers, startLogCleanup, stopLogCleanup } = require(`./utils/writeLog.js`);
 const createCronJobs = require(`./utils/crons.js`);
+const { stopTwitchRoleEventSub } = require(`./modules/twitchRoleEventSub.js`);
 const { getCommandFiles, loadCommand } = require(`./utils/commandLoader.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
@@ -76,6 +77,7 @@ function shutdown() {
 	}
 
 	stopLogCleanup();
+	stopTwitchRoleEventSub();
 	client.destroy();
 	process.exit(0);
 }

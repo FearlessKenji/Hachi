@@ -45,6 +45,19 @@ When server administrators configure Twitch or Kick notifications, Hachi may sto
 
 This information is used to check whether configured streamers are live and to post or update stream notifications in configured Discord channels.
 
+### Twitch Role Sync Information
+
+When server administrators enable Twitch VIP or Moderator role sync, Hachi may store:
+
+- The Discord server ID
+- Discord role IDs mapped to Twitch VIP and Moderator status
+- The connected Twitch broadcaster user ID and login
+- Twitch OAuth access and refresh tokens for the connected broadcaster
+- Discord user IDs linked to verified Twitch user IDs and Twitch logins
+- Twitch EventSub message IDs used to avoid processing duplicate role events
+
+Broadcaster tokens are used to read Twitch VIP and Moderator lists and to subscribe to Twitch EventSub events for that broadcaster. Member Twitch access tokens are used only during verification and are not intentionally kept after the Discord user ID to Twitch user ID link is saved.
+
 ### Birthday Information
 
 If you use Hachi's birthday features, Hachi may store:
@@ -116,6 +129,7 @@ Hachi uses collected information to:
 - Provide Discord bot commands and responses
 - Send Twitch and Kick live notifications
 - Store and apply server notification settings
+- Sync Twitch VIP and Moderator status to configured Discord roles
 - Store and post birthday reminders when users choose to use the birthday feature
 - Create, edit, convert, maintain, and clean up reaction-role panels
 - Add or remove Discord roles when users interact with reaction-role panels
@@ -131,7 +145,7 @@ Hachi does not sell personal information.
 Information may be visible or shared in these limited situations:
 
 - With Discord, because Hachi operates on Discord's platform
-- With Twitch or Kick APIs, when checking configured streamer channels and posting live notification information
+- With Twitch or Kick APIs, when checking configured streamer channels, posting live notification information, validating Twitch role-sync authorizations, and reading Twitch VIP or Moderator status
 - With GitHub, if you visit Hachi's GitHub Pages site
 - With the bot owner or authorized maintainers for operation, moderation, maintenance, and support
 - When Hachi posts information into a Discord server as part of an enabled feature, such as a live notification, birthday post, or reaction-role panel
@@ -145,6 +159,7 @@ Hachi keeps information only as long as reasonably needed for the purposes descr
 
 - Server notification settings are generally kept while Hachi remains configured for that server or until removed by an administrator.
 - Streamer entries are kept until an administrator removes them or they are no longer needed.
+- Twitch role-sync broadcaster settings, role mappings, and user links are kept until removed by an administrator or no longer needed for role sync.
 - Birthday entries are kept until the user removes them, the server disables the feature, or the data is no longer needed.
 - Reaction-role panel data is kept while the panel is active and may be deleted or disabled when the related Discord message or channel is deleted.
 - Operational logs are archived after about 1 day and archived logs are deleted after about 30 days, unless a longer period is needed for security, debugging, abuse prevention, or legal compliance.
@@ -153,7 +168,7 @@ Some data may also remain in Discord, GitHub, Twitch, Kick, backups, or other th
 
 ## Your Choices and Requests
 
-You can remove some data directly through Hachi commands. For example, you can use the birthday remove command to delete your stored birthday for a server. Server administrators can remove configured streamers, update notification settings, and manage reaction-role panels.
+You can remove some data directly through Hachi commands. For example, you can use the birthday remove command to delete your stored birthday for a server. Server administrators can remove configured streamers, update notification settings, disconnect Twitch role sync, and manage reaction-role panels.
 
 Server owners or administrators may remove Hachi from a Discord server at any time. Removing Hachi stops new server-related processing for that server, but prior logs or records may still be retained where reasonably necessary.
 

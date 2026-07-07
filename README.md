@@ -9,6 +9,7 @@ Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager in
 - Twitch and Kick live notifications with configurable Discord channels and role pings
 - Stream message updates while a streamer remains live
 - VoD/end-of-stream updates when a previous live message can be matched
+- Twitch VIP and Moderator role sync through Twitch device-code authorization
 - Per-server notification setup for self streams and affiliate streams
 - Birthday storage, birthday month lists, one-week reminders, birthday-day posts, and RecoCards card buttons
 - Reaction-role panel creation, editing, message conversion, and cleanup when messages or channels are deleted
@@ -143,6 +144,12 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Streams | `/stream add` | Add or edit a Twitch/Kick streamer entry. |
 | Streams | `/stream list` | List streamers configured for the server. |
 | Streams | `/stream remove` | Remove a streamer entry. |
+| Streams | `/twitch verify` | Verify your Twitch account for VIP/Moderator role sync. |
+| Streams | `/twitch connect` | Connect this Discord server to a Twitch broadcaster. |
+| Streams | `/twitch roles` | Map Twitch VIP and Moderator status to Discord roles. |
+| Streams | `/twitch panel` | Post a public Twitch verification button. |
+| Streams | `/twitch sync` | Reconcile linked users against Twitch VIP/Moderator lists. |
+| Streams | `/twitch status` | Show Twitch role-sync setup for the server. |
 | Security | `/security setup` | Configure application command reporting. |
 | Security | `/security status` | Show command-monitoring settings. |
 | Security | `/security audit` | Check whether command-monitoring reports can be posted. |
@@ -245,6 +252,16 @@ Each selection updates the panel, but the streamer is not written to the databas
 Use `/stream list` to check which streamers are configured, whether they are labeled as self or affiliate, and which notification types are enabled.
 
 Use `/stream remove name: streamername` to remove a streamer from the database.
+
+### Twitch VIP and Moderator Role Sync
+
+Use `/twitch connect` to connect the Discord server to the broadcaster's Twitch account. Hachi uses Twitch's device-code flow, so no public callback URL, domain, tunnel, or web server is required. The broadcaster opens Twitch, enters the activation code, and grants `channel:read:vips` and `moderation:read`.
+
+Use `/twitch roles` to choose separate Discord roles for Twitch VIPs and Twitch Moderators. Hachi must have Manage Roles, and Hachi's highest role must be above both mapped roles.
+
+Members can run `/twitch verify`, or an administrator can post `/twitch panel` so members can click a public verification button. Verification links the member's Discord user ID to their Twitch user ID for that server. Hachi does not keep member Twitch access tokens after verification.
+
+Hachi listens for Twitch EventSub WebSocket VIP/Moderator add and remove events for connected broadcasters. It also reconciles linked users during `/twitch sync`, on startup, and during the hourly auth cron to repair missed events or role drift.
 
 ### Security Reporting
 

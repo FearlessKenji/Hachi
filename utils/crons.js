@@ -5,6 +5,7 @@ const config = require(`../config/config.json`);
 const { ActivityType } = require(`discord.js`);
 const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
 const { checkBirthdays } = require(`./birthdays.js`);
+const { syncAllTwitchRoles } = require(`../modules/twitchRoles.js`);
 
 module.exports = (client) => {
 	let activityIndex = -1;
@@ -49,6 +50,7 @@ module.exports = (client) => {
 			await Promise.all([
 				updateTwitch(),
 				updateKick(),
+				syncAllTwitchRoles(client),
 			]);
 		}),
 	};

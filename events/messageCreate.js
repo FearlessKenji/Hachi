@@ -14,6 +14,19 @@ const WHITELIST_TYPES = {
 	APPLICATION: `application`,
 	CHANNEL: `channel`,
 };
+const LEAD_MOD_JENNY_GUILD_ID = `802646977228701747`;
+const LEAD_MOD_JENNY_COOLDOWN_MS = 5 * 60 * 1000;
+const LEAD_MOD_JENNY_TRIGGER = /\blead mod jenny\b/i;
+const LEAD_MOD_JENNY_REACTIONS = [
+	`<:LeadMod:1523582177370050580>`,
+	`\u{1F1EF}`,
+	`\u{1F1EA}`,
+	`\u{1F1F3}`,
+	`<:N2:1523584853851897856>`,
+	`\u{1F1FE}`,
+	`\u{1F1F8}`,
+];
+let leadModJennyLastReactAt = 0;
 
 function trimContent(content) {
 	if (!content) {
@@ -25,6 +38,27 @@ function trimContent(content) {
 	}
 
 	return `${content.slice(0, MAX_INTERNAL_CONTENT_LENGTH)}...`;
+}
+
+function shouldReactToLeadModJenny(message) {
+	const now = Date.now();
+
+	return message.guildId === LEAD_MOD_JENNY_GUILD_ID &&
+		!message.author?.bot &&
+		now - leadModJennyLastReactAt >= LEAD_MOD_JENNY_COOLDOWN_MS &&
+		LEAD_MOD_JENNY_TRIGGER.test(message.content || ``);
+}
+
+async function reactToLeadModJenny(message) {
+	if (!shouldReactToLeadModJenny(message)) {
+		return;
+	}
+
+	leadModJennyLastReactAt = Date.now();
+
+	for (const reaction of LEAD_MOD_JENNY_REACTIONS) {
+		await message.react(reaction);
+	}
 }
 
 function getInteractionMetadata(message) {
@@ -445,6 +479,19 @@ module.exports = {
 					messageId: message.id,
 				},
 				module: `raid`,
+			});
+		}
+
+		try {
+			await reactToLeadModJenny(message);
+		} catch (err) {
+			error(`Failed to react to lead mod jenny message:`, err, {
+				meta: {
+					channelId: message.channel?.id || null,
+					guildId: message.guild?.id || message.guildId || null,
+					messageId: message.id,
+				},
+				module: `chat-reactions`,
 			});
 		}
 

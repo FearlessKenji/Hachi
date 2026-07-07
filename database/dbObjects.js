@@ -42,6 +42,18 @@ const CommandMonitorWhitelists = require(`./models/commandMonitorWhitelists.js`)
 	sequelize,
 	Sequelize.DataTypes,
 );
+const TwitchRoleConfigs = require(`./models/twitchRoleConfigs.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const TwitchRoleLinks = require(`./models/twitchRoleLinks.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const TwitchRoleEventMessages = require(`./models/twitchRoleEventMessages.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
 const RaidConfigs = require(`./models/raidConfigs.js`)(
 	sequelize,
 	Sequelize.DataTypes,
@@ -175,6 +187,37 @@ CommandMonitorWhitelists.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+// Twitch Role Sync Associations
+// Broadcaster auth and per-member Twitch links are guild-scoped. Server deletion
+// remains restricted so role-sync credentials cannot disappear silently.
+Servers.hasOne(TwitchRoleConfigs, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+TwitchRoleConfigs.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+Servers.hasMany(TwitchRoleLinks, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+TwitchRoleLinks.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
 // Raid Protection Associations
 // Configuration is guild-scoped, while incidents own their captured users,
 // messages, and archived attachment records.
@@ -258,6 +301,9 @@ module.exports = {
 	BirthdayUsers,
 	BirthdayConfigs,
 	CommandMonitorWhitelists,
+	TwitchRoleConfigs,
+	TwitchRoleLinks,
+	TwitchRoleEventMessages,
 	RaidConfigs,
 	RaidIncidents,
 	RaidIncidentUsers,

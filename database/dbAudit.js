@@ -146,6 +146,52 @@ const EXPECTED_SCHEMA = [
 		],
 	},
 	{
+		name: `twitchRoleConfigs`,
+		columns: [
+			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`broadcasterTwitchUserId`, `VARCHAR(255)`, { nullable: true }),
+			column(`broadcasterLogin`, `VARCHAR(255)`, { nullable: true }),
+			column(`broadcasterDisplayName`, `VARCHAR(255)`, { nullable: true }),
+			column(`accessToken`, `TEXT`, { nullable: true }),
+			column(`refreshToken`, `TEXT`, { nullable: true }),
+			column(`tokenExpiresAt`, `DATETIME`, { nullable: true }),
+			column(`scopes`, `TEXT`, { nullable: true }),
+			column(`vipRoleId`, `VARCHAR(255)`, { nullable: true }),
+			column(`moderatorRoleId`, `VARCHAR(255)`, { nullable: true }),
+			column(`connectedBy`, `VARCHAR(255)`, { nullable: true }),
+			column(`connectedAt`, `DATETIME`, { nullable: true }),
+			column(`lastSyncAt`, `DATETIME`, { nullable: true }),
+		],
+		indexes: [],
+	},
+	{
+		name: `twitchRoleLinks`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`discordUserId`, `VARCHAR(255)`),
+			column(`twitchUserId`, `VARCHAR(255)`),
+			column(`twitchLogin`, `VARCHAR(255)`),
+			column(`twitchDisplayName`, `VARCHAR(255)`, { nullable: true }),
+			column(`verifiedAt`, `DATETIME`),
+		],
+		indexes: [
+			index(`twitchRoleLinksGuildDiscord`, [`guildId`, `discordUserId`], { unique: true }),
+			index(`twitchRoleLinksGuildTwitch`, [`guildId`, `twitchUserId`]),
+		],
+	},
+	{
+		name: `twitchRoleEventMessages`,
+		columns: [
+			column(`messageId`, `VARCHAR(255)`, { primaryKey: true }),
+			column(`subscriptionType`, `VARCHAR(255)`),
+			column(`broadcasterTwitchUserId`, `VARCHAR(255)`),
+			column(`twitchUserId`, `VARCHAR(255)`),
+			column(`receivedAt`, `DATETIME`),
+		],
+		indexes: [],
+	},
+	{
 		name: `raidConfigs`,
 		columns: [
 			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
