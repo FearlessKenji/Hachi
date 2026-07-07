@@ -1,0 +1,103 @@
+const path = require(`node:path`);
+const fs = require(`node:fs`);
+require(`dotenv/config`);
+const { info, error } = require(`../utils/writeLog.js`);
+
+const configPath = path.join(process.cwd(), `config`, `config.json`);
+const CONFIG_EXIT_CODE = 78;
+
+info(`Validating config files...`);
+
+function fatal(message) {
+	error(`[FATAL] ${message}`);
+	process.exit(CONFIG_EXIT_CODE);
+}
+
+// Helpers
+function isEmpty(value) {
+	return (
+		value === undefined ||
+		value === null ||
+		(typeof value === `string` && value.trim() === ``)
+	);
+}
+
+// Environment validation
+// Install-specific credentials and app IDs stay in .env with the rest of the bot identity.
+const REQUIRED_ENV = [
+	`TOKEN`,
+	`clientId`,
+	`twitchClientId`,
+	`twitchSecret`,
+	`kickClientId`,
+	`kickSecret`,
+];
+
+const missingEnv = REQUIRED_ENV.filter(key => isEmpty(process.env[key]));
+
+if (missingEnv.length) {
+	fatal(
+		`.env is missing required fields:\n` +
+		missingEnv.map(k => `  - ${k}`).join(`\n`),
+	);
+}
+
+// Config existence
+if (!fs.existsSync(configPath)) {
+	fatal(
+		`Missing config.json\n` +
+		`Run Hachi.exe for guided setup, or copy blank.json to config/config.json and fill in required fields.`,
+	);
+}
+
+// Config parsing
+let config;
+
+try {
+	config = JSON.parse(fs.readFileSync(configPath, `utf8`));
+} catch (err) {
+	fatal(
+		`config.json is not valid JSON:\n` +
+		err.message,
+	);
+}
+
+// Config validation
+// Cron expressions are required explicitly instead of silently defaulting, because
+// changing a scheduler should be an intentional config edit.
+const REQUIRED_STRICT = [
+	`botOwner`,
+	`guildId`,
+];
+
+const REQUIRED_WITH_DEFAULTS = [
+	`twitchCron`,
+	`kickCron`,
+	`birthdayCron`,
+	`statusCron`,
+	`authCron`,
+];
+
+const missingStrict = REQUIRED_STRICT.filter(key => isEmpty(config[key]));
+const missingDefaults = REQUIRED_WITH_DEFAULTS.filter(key => isEmpty(config[key]));
+
+if (missingStrict.length || missingDefaults.length) {
+	let message = `config.json is invalid`;
+
+	if (missingStrict.length) {
+		message += `\n\nMissing required fields:\n`;
+		message += missingStrict.map(k => `  - ${k}`).join(`\n`);
+	}
+
+	if (missingDefaults.length) {
+		message += `\n\nMissing required cron fields:\n`;
+		message += missingDefaults.map(k => `  - ${k}`).join(`\n`);
+	}
+
+	fatal(message);
+}
+
+info(`Configuration files validated.`);
+
+// Export validated config
+module.exports = config;

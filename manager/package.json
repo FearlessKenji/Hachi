@@ -1,0 +1,45 @@
+{
+	"name": "hachigen",
+	"version": "0.1.0",
+	"description": "Desktop manager for installing, configuring, updating, and running Hachi.",
+	"author": "FearlessKenji",
+	"private": true,
+	"main": "main.js",
+	"type": "commonjs",
+	"scripts": {
+		"start": "electron .",
+		"check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
+		"dist": "electron-builder --win portable"
+	},
+	"devDependencies": {
+		"electron": "^42.4.1",
+		"electron-builder": "^26.15.3"
+	},
+	"build": {
+		"appId": "com.hachi.hachigen",
+		"productName": "HachiGen",
+		"artifactName": "HachiGen.${ext}",
+		"directories": {
+			"output": "dist"
+		},
+		"files": [
+			"main.js",
+			"preload.js",
+			"src/**/*",
+			"renderer/**/*",
+			"package.json",
+			"icon.ico"
+		],
+		"win": {
+			"icon": "icon.ico",
+			"target": [
+				{
+					"target": "portable",
+					"arch": [
+						"x64"
+					]
+				}
+			]
+		}
+	}
+}

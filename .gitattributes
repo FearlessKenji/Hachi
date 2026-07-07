@@ -1,4 +1,5 @@
 # Auto detect text files and perform LF normalization
+.gitattributes  eol=lf
 *.js    eol=lf
-*.jsx   eol=lf
 *.json  eol=lf
+*.md    eol=lf
