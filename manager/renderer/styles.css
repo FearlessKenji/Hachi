@@ -116,7 +116,7 @@ select {
 	border-radius: 8px;
 	background: rgba(255, 255, 255, 0.07);
 	padding: 14px;
-	min-height: 108px;
+	min-height: 142px;
 }
 
 /* Main content area and top bar shared by every view. */
@@ -133,6 +133,15 @@ select {
 	overflow: hidden;
 	color: #ffffff;
 	font-size: 12px;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.repo-preview {
+	overflow: hidden;
+	margin-top: 8px;
+	color: rgba(230, 238, 241, 0.72);
+	font-size: 11px;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
