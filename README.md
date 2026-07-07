@@ -6,6 +6,8 @@ Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager av
 
 Release history is available in the [Changelog](docs/changelog.md).
 
+Release history is available in the [Changelog](docs/changelog.md).
+
 ## What Hachi Does
 
 - Twitch and Kick live notifications with configurable Discord channels and role pings
