@@ -29,7 +29,8 @@
     "db:migrate": "node database/dbAudit.js --migrate",
     "db:migrate:force": "node database/dbAudit.js --force",
     "lint": "eslint . --config config/eslint.config.js",
-    "lint:fix": "eslint . --config config/eslint.config.js --fix"
+    "lint:fix": "eslint . --config config/eslint.config.js --fix",
+    "smoke": "node scripts/smokeTest.js"
   },
   "repository": {
     "type": "git",
