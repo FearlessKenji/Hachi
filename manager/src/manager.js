@@ -848,6 +848,7 @@ class HachiManager {
 			installPath: paths.root,
 			projectFound: missingFiles.length === 0,
 			packageName: packageJson.name || null,
+			packageVersion: packageJson.version || null,
 			missingFiles,
 			hasEnv: fileExists(paths.env),
 			hasConfig: fileExists(paths.configJson),

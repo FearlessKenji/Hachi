@@ -178,17 +178,19 @@ function updateTargetLabel(updates) {
 	return updates?.updateTarget || state?.repository?.updateTarget || "origin/main";
 }
 
-function updateMetaLabel(updates, repository) {
+function updateMetaLabel(updates, repository, scan) {
+	const version = scan?.packageVersion || "Unknown";
+
 	if (!updates?.checkedAt) {
 		return repository?.isGit ?
-			`Branch ${repository.currentBranch || "Unknown"} | Target ${repository.updateTarget || "origin/main"}` :
-			"Not checked";
+			`Branch: ${repository.currentBranch || "Unknown"} | Target: ${repository.updateTarget || "origin/main"} | Version: ${version}` :
+			`Not checked | Version: ${version}`;
 	}
 
 	const checkedAt = new Date(updates.checkedAt).toLocaleString();
 	const branch = updates.currentBranch || repository?.currentBranch || "Unknown";
 	const target = updateTargetLabel(updates);
-	return `Last checked ${checkedAt} | Branch ${branch} | Target ${target}`;
+	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target} | Version: ${version}`;
 }
 
 // Disable every button while a backend action is running. This prevents stacked
@@ -1209,7 +1211,7 @@ function renderState(nextState) {
 
 	// Dashboard/panel metadata.
 	setText("#runtimeMeta", state.pm2?.message || "PM2 process: Hachi");
-	setText("#updatesMeta", updateMetaLabel(state.updates, state.repository));
+	setText("#updatesMeta", updateMetaLabel(state.updates, state.repository, scan));
 	setText("#incomingHeading", `Available from ${updateTargetLabel(state.updates)}`);
 	setText("#updateMessage", state.updates?.message || "");
 	setText("#dashboardUpdateButton", dashboardUpdateButtonText);
