@@ -357,6 +357,8 @@ function validateProjectFiles() {
 		`config/configCheck.js`,
 		`database/dbAudit.js`,
 		`database/dbInit.js`,
+		`docs/_config.yml`,
+		`docs/changelog.md`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
 		`events/ready.js`,
@@ -371,6 +373,14 @@ function validateProjectFiles() {
 	assert(fs.existsSync(resolveProject(`commands`, `guildCommands`)), `Missing guild command directory.`);
 	assert(fs.existsSync(resolveProject(`commands`, `globalCommands`, `utility`, `twitch.js`)), `Missing /twitch command file.`);
 	assert(!fs.existsSync(resolveProject(`commands`, `globalCommands`, `utility`, `twitchroles.js`)), `Old twitchroles command file still exists.`);
+
+	const rootChangelog = fs.readFileSync(resolveProject(`CHANGELOG.md`), `utf8`);
+	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
+	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
+
+	assert(rootChangelog.includes(`docs/changelog.md`), `Root CHANGELOG.md should point to docs/changelog.md.`);
+	assert(docsIndex.includes(`changelog.html`), `docs/index.md should link to the rendered changelog page.`);
+	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 }
 
 function validateBlankConfig() {

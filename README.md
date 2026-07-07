@@ -4,6 +4,8 @@ Hachi is a Discord bot for Twitch and Kick live notifications. It can post when 
 
 Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager included in the project.
 
+Release history is available in the [Changelog](docs/changelog.md).
+
 ## What Hachi Does
 
 - Twitch and Kick live notifications with configurable Discord channels and role pings
