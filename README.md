@@ -2,7 +2,7 @@
 
 Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
 
-Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager included in the project.
+Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager available from GitHub Releases or built from the `manager/` source.
 
 Release history is available in the [Changelog](docs/changelog.md).
 
@@ -26,7 +26,7 @@ Hachi uses [The Official Twitch API](https://dev.twitch.tv/docs/api/) and [The O
 
 ## Getting Started
 
-1. Download or clone this repository.
+1. Download `HachiGen.exe` from the latest GitHub Release, or clone this repository and build it locally.
 2. Open `HachiGen.exe`.
 3. Confirm or choose the Hachi install path.
 4. Open the Setup page and fill in Configuration.
@@ -426,7 +426,9 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 
 HachiGen is packaged with Electron Builder. The portable executable is created at `manager/dist/HachiGen.exe`, then copied to the repository root as `HachiGen.exe`.
 
-To rebuild HachiGen and update the root executable, run:
+`HachiGen.exe` is generated output and is not committed to the repository. When a `v*` version tag is pushed, `.github/workflows/release-hachigen.yml` builds HachiGen on a Windows runner and attaches `HachiGen.exe` to the matching GitHub Release. The same workflow can also be run manually for an existing tag from the GitHub Actions tab.
+
+To rebuild HachiGen locally, run:
 
 ```console
 npm run build:hachigen
@@ -437,7 +439,7 @@ Icon inputs:
 - Generated icon consumed by Electron Builder: `manager/icon.ico`
 - Build configuration: `manager/package.json`
 
-When changing the icon, generate a fresh `manager/icon.ico` from the desired source image, then package HachiGen again. The source image is not packaged with the repo. `manager/icon.ico` is tracked so future builds use the same icon; `manager/dist*/` is generated output and is ignored by Git.
+When changing the icon, generate a fresh `manager/icon.ico` from the desired source image, then package HachiGen again. The source image is not packaged with the repo. `manager/icon.ico` is tracked so future builds use the same icon; `HachiGen.exe` and `manager/dist*/` are generated output and are ignored by Git.
 
 ### File Map
 

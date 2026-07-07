@@ -351,6 +351,8 @@ function validatePackageMetadata() {
 function validateProjectFiles() {
 	const requiredFiles = [
 		`CHANGELOG.md`,
+		`.github/workflows/ci.yml`,
+		`.github/workflows/release-hachigen.yml`,
 		`README.md`,
 		`blank.env`,
 		`config/blank.json`,
@@ -377,10 +379,15 @@ function validateProjectFiles() {
 	const rootChangelog = fs.readFileSync(resolveProject(`CHANGELOG.md`), `utf8`);
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
+	const releaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
 
 	assert(rootChangelog.includes(`docs/changelog.md`), `Root CHANGELOG.md should point to docs/changelog.md.`);
 	assert(docsIndex.includes(`changelog.html`), `docs/index.md should link to the rendered changelog page.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
+	assert(releaseWorkflow.includes(`tags:`) && releaseWorkflow.includes(`"v*"`), `HachiGen release workflow should run for v* tags.`);
+	assert(releaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
+	assert(releaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
+	assert(releaseWorkflow.includes(`gh release upload`) && releaseWorkflow.includes(`gh release create`), `HachiGen release workflow should create or update releases.`);
 }
 
 function validateBlankConfig() {
@@ -465,15 +472,29 @@ function validatePureHelpers() {
 }
 
 function validateGitHygiene() {
-	const gitResult = runGit([`ls-files`, `node_modules`]);
+	const nodeModulesResult = runGit([`ls-files`, `node_modules`]);
 
-	if (gitResult.error) {
-		warn(`git is unavailable; skipped tracked node_modules check.`);
+	if (nodeModulesResult.error) {
+		warn(`git is unavailable; skipped tracked generated-file checks.`);
 		return;
 	}
 
-	assert(gitResult.status === 0, `git ls-files failed: ${gitResult.stderr}`);
-	assert(gitResult.stdout.trim() === ``, `node_modules files are tracked by git.`);
+	assert(nodeModulesResult.status === 0, `git ls-files failed: ${nodeModulesResult.stderr}`);
+	assert(nodeModulesResult.stdout.trim() === ``, `node_modules files are tracked by git.`);
+
+	const hachiGenResult = runGit([`ls-files`, `HachiGen.exe`]);
+
+	assert(hachiGenResult.status === 0, `git ls-files failed: ${hachiGenResult.stderr}`);
+
+	if (hachiGenResult.stdout.trim() !== ``) {
+		const hachiGenStatus = runGit([`status`, `--short`, `--`, `HachiGen.exe`]);
+
+		assert(hachiGenStatus.status === 0, `git status failed: ${hachiGenStatus.stderr}`);
+		assert(
+			hachiGenStatus.stdout.trim().startsWith(`D`),
+			`HachiGen.exe should be a release artifact, not a tracked repository file.`,
+		);
+	}
 }
 
 async function main() {
