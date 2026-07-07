@@ -11,6 +11,8 @@
     "ws": "^8.21.0"
   },
   "overrides": {
+    "js-yaml": "4.2.0",
+    "undici": "6.27.0",
     "uuid": "^11.1.0"
   },
   "devDependencies": {
