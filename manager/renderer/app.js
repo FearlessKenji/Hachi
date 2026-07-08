@@ -142,6 +142,57 @@ function shortPath(filePath) {
 	return `...${filePath.slice(-41)}`;
 }
 
+function shortRemoteUrl(remoteUrl) {
+	if (!remoteUrl) {
+		return "origin not set";
+	}
+
+	const text = String(remoteUrl).trim().replace(/\.git$/u, "");
+	const githubMatch = text.match(/github\.com[:/](.+)$/u);
+	const label = githubMatch ? githubMatch[1] : text;
+
+	if (label.length <= 36) {
+		return label;
+	}
+
+	return `...${label.slice(-33)}`;
+}
+
+function repositoryRemoteLabel(repository) {
+	if (!repository?.isGit) {
+		return "Repo: Not a Git checkout";
+	}
+
+	return `Repo: ${shortRemoteUrl(repository.originUrl)}`;
+}
+
+function repositoryBranchLabel(repository) {
+	if (!repository?.isGit) {
+		return "Branch: Not available";
+	}
+
+	return `Branch: ${repository.currentBranch || "Unknown"}`;
+}
+
+function updateTargetLabel(updates) {
+	return updates?.updateTarget || state?.repository?.updateTarget || "origin/main";
+}
+
+function updateMetaLabel(updates, repository, scan) {
+	const version = scan?.packageVersion || "Unknown";
+
+	if (!updates?.checkedAt) {
+		return repository?.isGit ?
+			`Branch: ${repository.currentBranch || "Unknown"} | Target: ${repository.updateTarget || "origin/main"} | Version: ${version}` :
+			`Not checked | Version: ${version}`;
+	}
+
+	const checkedAt = new Date(updates.checkedAt).toLocaleString();
+	const branch = updates.currentBranch || repository?.currentBranch || "Unknown";
+	const target = updateTargetLabel(updates);
+	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target} | Version: ${version}`;
+}
+
 // Disable every button while a backend action is running. This prevents stacked
 // clicks, such as running validation and update commands at the same time.
 function setBusy(nextBusy) {
@@ -247,6 +298,22 @@ function updateHealth(updates) {
 
 	if (updates.status === "current") {
 		return { label: "Current", dot: "good", detail: "No update found" };
+	}
+
+	if (updates.status === "branch_current") {
+		return { label: "Branch differs", dot: "info", detail: `Files match ${updateTargetLabel(updates)}` };
+	}
+
+	if (updates.status === "history_current") {
+		return { label: "History differs", dot: "info", detail: `Files match ${updateTargetLabel(updates)}` };
+	}
+
+	if (updates.status === "branch_mismatch") {
+		return {
+			label: "Manual update",
+			dot: "warn",
+			detail: updates.committedFilesMatchTarget ? "Local changes found" : `On ${updates.currentBranch || "another branch"}`,
+		};
 	}
 
 	if (updates.status === "not_git") {
@@ -454,10 +521,11 @@ function renderGroupedChangesList(selector, changes, emptyText) {
 }
 
 function renderIncomingUpdates(updates) {
-	// Render commits that exist on origin/main but not in the local install.
+	// Render commits that exist on the update target but not in the local install.
 	// This lets the Updates panel show what an update would actually bring in.
 	const commits = updates?.incomingCommits || [];
 	const summary = $("#incomingSummary");
+	const target = updateTargetLabel(updates);
 
 	if (!summary) {
 		return;
@@ -475,10 +543,14 @@ function renderIncomingUpdates(updates) {
 		return;
 	}
 
-	if (updates.diverged) {
-		summary.textContent = "Local and remote history have diverged. Review with Git before updating.";
+	if (updates.status === "branch_current" || updates.status === "history_current") {
+		summary.textContent = `Files match ${target}. No update is needed for this build.`;
+	} else if (updates.status === "branch_mismatch") {
+		summary.textContent = updates.message || `Current branch differs from ${target}. Use Git to update manually.`;
+	} else if (updates.diverged) {
+		summary.textContent = `Local and ${target} history have diverged. Review with Git before updating.`;
 	} else if (commits.length) {
-		summary.textContent = `${pluralize(commits.length, "incoming commit")} available from GitHub.`;
+		summary.textContent = `${pluralize(commits.length, "incoming commit")} available from ${target}.`;
 	} else {
 		summary.textContent = "No incoming commits. Hachi is up to date.";
 	}
@@ -1111,6 +1183,8 @@ function renderState(nextState) {
 	// Sidebar.
 	setText("#activeInstallPath", state.installPath);
 	setText("#sidebarInstallPath", shortPath(state.installPath));
+	setText("#sidebarRepoRemote", repositoryRemoteLabel(state.repository));
+	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
 	setText("#sidebarStatusText", install.label);
 	setDot("#sidebarStatusDot", install.dot);
 
@@ -1137,8 +1211,9 @@ function renderState(nextState) {
 
 	// Dashboard/panel metadata.
 	setText("#runtimeMeta", state.pm2?.message || "PM2 process: Hachi");
-	setText("#updatesMeta", state.updates?.checkedAt ? `Last checked ${new Date(state.updates.checkedAt).toLocaleString()}` : "Not checked");
-	setText("#updateMessage", state.updates?.status === "available" ? "Updates available" : state.updates?.message || "");
+	setText("#updatesMeta", updateMetaLabel(state.updates, state.repository, scan));
+	setText("#incomingHeading", `Available from ${updateTargetLabel(state.updates)}`);
+	setText("#updateMessage", state.updates?.message || "");
 	setText("#dashboardUpdateButton", dashboardUpdateButtonText);
 	setText("#updatesButton", updateButtonText);
 	renderIncomingUpdates(state.updates);

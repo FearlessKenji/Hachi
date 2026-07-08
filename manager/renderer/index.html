@@ -36,6 +36,8 @@
 				<div class="install-summary">
 					<div class="eyebrow">Install path</div>
 					<div class="path-preview" id="sidebarInstallPath">Not set</div>
+					<div class="repo-preview" id="sidebarRepoRemote">Repo not checked</div>
+					<div class="repo-preview" id="sidebarRepoBranch">Branch not checked</div>
 					<div class="summary-status">
 						<span class="dot muted" id="sidebarStatusDot"></span>
 						<span id="sidebarStatusText">Not checked</span>
@@ -229,7 +231,7 @@
 					</div>
 				</section>
 
-				<!-- Updates: GitHub commits, local changes, and HachiGen-created stashes. -->
+				<!-- Updates: remote commits, local changes, and HachiGen-created stashes. -->
 				<section class="view" data-view-panel="updates">
 					<div class="panel split-panel">
 						<div>
@@ -255,7 +257,7 @@
 
 					<div class="updates-grid">
 						<div class="panel">
-							<h2>Available from GitHub</h2>
+							<h2 id="incomingHeading">Available from origin/main</h2>
 							<div class="update-summary" id="incomingSummary">No update check has run yet.</div>
 							<ul class="update-list" id="incomingCommitsList"></ul>
 						</div>

@@ -9,6 +9,9 @@ const { commandExists, run } = require("./shell.js");
 
 // The repository HachiGen clones when the selected install folder is empty.
 const REPO_URL = "https://github.com/FearlessKenji/Hachi.git";
+const UPDATE_REMOTE = "origin";
+const UPDATE_BRANCH = "main";
+const UPDATE_TARGET = `${UPDATE_REMOTE}/${UPDATE_BRANCH}`;
 
 // PM2 process name used by the bot itself. If this changes in Hachi's
 // ecosystem config, it should change here too.
@@ -279,7 +282,7 @@ function summarizeLocalChanges(changes) {
 }
 
 // Convert a short `git log --oneline` row into structured commit data for the
-// "Available from GitHub" panel.
+// incoming updates panel.
 function parseIncomingCommit(line) {
 	const trimmed = line.trim();
 	const firstSpace = trimmed.indexOf(" ");
@@ -344,6 +347,7 @@ class HachiManager {
 			status: "unchecked",
 			available: false,
 			checkedAt: null,
+			updateTarget: UPDATE_TARGET,
 			message: "Updates have not been checked yet.",
 		};
 
@@ -844,6 +848,7 @@ class HachiManager {
 			installPath: paths.root,
 			projectFound: missingFiles.length === 0,
 			packageName: packageJson.name || null,
+			packageVersion: packageJson.version || null,
 			missingFiles,
 			hasEnv: fileExists(paths.env),
 			hasConfig: fileExists(paths.configJson),
@@ -940,6 +945,7 @@ class HachiManager {
 			appName: "HachiGen",
 			database: await this.getDatabaseState(),
 			installPath: this.getInstallPath(),
+			repository: await this.getRepositoryInfo(),
 			scan: this.quickScan(),
 			updates: this.updateState,
 			pm2: await this.getPm2Status(),
@@ -1199,11 +1205,51 @@ class HachiManager {
 			.filter(line => line.trim());
 	}
 
+	async getRepositoryInfo({ onLog = null } = {}) {
+		const paths = this.getPaths();
+		const info = {
+			isGit: fileExists(paths.git),
+			currentBranch: null,
+			originUrl: null,
+			updateRemote: UPDATE_REMOTE,
+			updateBranch: UPDATE_BRANCH,
+			updateTarget: UPDATE_TARGET,
+		};
+
+		if (!info.isGit) {
+			return info;
+		}
+
+		const runGit = async args => {
+			try {
+				const result = await run("git", args, {
+					cwd: paths.root,
+					allowFailure: true,
+					onLog,
+				});
+
+				return result.code === 0 ? result.stdout.trim() : "";
+			} catch {
+				return "";
+			}
+		};
+
+		info.currentBranch = await runGit(["branch", "--show-current"]);
+		info.originUrl = await runGit(["remote", "get-url", UPDATE_REMOTE]);
+
+		if (!info.currentBranch) {
+			const shortHead = await runGit(["rev-parse", "--short", "HEAD"]);
+			info.currentBranch = shortHead ? `detached:${shortHead}` : null;
+		}
+
+		return info;
+	}
+
 	async getIncomingCommits() {
-		// Return commits on origin/main that are not present locally, giving the
+		// Return commits on the update target that are not present locally, giving the
 		// Updates panel a concrete list of incoming work.
 		const paths = this.getPaths();
-		const result = await run("git", ["log", "--oneline", "--no-decorate", "HEAD..origin/main"], {
+		const result = await run("git", ["log", "--oneline", "--no-decorate", `HEAD..${UPDATE_TARGET}`], {
 			cwd: paths.root,
 			allowFailure: true,
 			onLog: entry => this.logShell(entry),
@@ -1323,7 +1369,7 @@ class HachiManager {
 	}
 
 	async checkUpdates() {
-		// Fetch and compare local HEAD against origin/main. This method reports
+		// Fetch and compare local HEAD against the update target. This method reports
 		// update availability and local changes, but never modifies the worktree.
 		const paths = this.getPaths();
 
@@ -1332,19 +1378,22 @@ class HachiManager {
 				status: "not_git",
 				available: false,
 				checkedAt: new Date().toISOString(),
+				updateTarget: UPDATE_TARGET,
 				message: "This install is not a Git checkout, so HachiGen cannot check for updates.",
 			};
 			return this.updateState;
 		}
 
 		await this.ensureGit(true);
+		const repository = await this.getRepositoryInfo({ onLog: entry => this.logShell(entry) });
 		const localChanges = await this.getLocalChanges();
 		const localChangeDetails = localChanges.map(describeGitStatus);
 		const localChangeSummary = summarizeLocalChanges(localChangeDetails);
 		this.log("Checking for Hachi updates...");
 
-		// fetch updates origin/main so the comparison below uses fresh GitHub data.
-		await run("git", ["fetch", "origin", "main"], {
+		// Fetch updates for the configured update target so the comparison below
+		// uses fresh remote data.
+		await run("git", ["fetch", UPDATE_REMOTE, UPDATE_BRANCH], {
 			cwd: paths.root,
 			timeoutMs: 300000,
 			onLog: entry => this.logShell(entry),
@@ -1354,44 +1403,82 @@ class HachiManager {
 			cwd: paths.root,
 			onLog: entry => this.logShell(entry),
 		})).stdout.trim();
-		const remote = (await run("git", ["rev-parse", "origin/main"], {
+		const remote = (await run("git", ["rev-parse", UPDATE_TARGET], {
 			cwd: paths.root,
 			onLog: entry => this.logShell(entry),
 		})).stdout.trim();
-		const base = (await run("git", ["merge-base", "HEAD", "origin/main"], {
+		const base = (await run("git", ["merge-base", "HEAD", UPDATE_TARGET], {
 			cwd: paths.root,
 			onLog: entry => this.logShell(entry),
 		})).stdout.trim();
-		const incomingCommits = await this.getIncomingCommits();
+		const localTree = (await run("git", ["rev-parse", "HEAD^{tree}"], {
+			cwd: paths.root,
+			onLog: entry => this.logShell(entry),
+		})).stdout.trim();
+		const remoteTree = (await run("git", ["rev-parse", `${UPDATE_TARGET}^{tree}`], {
+			cwd: paths.root,
+			onLog: entry => this.logShell(entry),
+		})).stdout.trim();
 
-		// These booleans describe the relationship between local HEAD and origin/main:
-		// available: remote has new commits and local can fast-forward safely.
-		// diverged: local and remote both moved; a human should review it.
-		// blocked: local files changed; update can continue only after stashing.
-		const available = local !== remote && base === local;
-		const diverged = local !== remote && base !== local;
 		const blocked = localChanges.length > 0;
+		const committedFilesMatchTarget = Boolean(localTree && remoteTree && localTree === remoteTree);
+		const filesMatchTarget = committedFilesMatchTarget && !blocked;
+		const onUpdateBranch = repository.currentBranch === UPDATE_BRANCH;
+		const canFastForward = local !== remote && base === local;
+		const historyDiverged = local !== remote && base !== local;
+		const available = onUpdateBranch && canFastForward;
+		let status = "current";
+		let message = "Hachi is up to date.";
+
+		if (!onUpdateBranch) {
+			status = filesMatchTarget ? "branch_current" : "branch_mismatch";
+			if (filesMatchTarget) {
+				message = `Current branch is ${repository.currentBranch || "unknown"}. Files match ${UPDATE_TARGET}. Automatic updates only run from ${UPDATE_BRANCH}.`;
+			} else if (committedFilesMatchTarget) {
+				message = `Current branch is ${repository.currentBranch || "unknown"}. Committed files match ${UPDATE_TARGET}, but local changes exist.`;
+			} else {
+				message = `Current branch is ${repository.currentBranch || "unknown"} and differs from ${UPDATE_TARGET}. Use Git to update manually.`;
+			}
+		} else if (available) {
+			status = "available";
+			message = "Updates available";
+		} else if (historyDiverged) {
+			status = filesMatchTarget ? "history_current" : "diverged";
+			message = filesMatchTarget ?
+				`Files match ${UPDATE_TARGET}, but Git history differs. Review with Git before updating.` :
+				`Local and ${UPDATE_TARGET} history have diverged. Update manually.`;
+		}
+
+		const incomingCommits = filesMatchTarget ? [] : await this.getIncomingCommits();
 
 		this.updateState = {
-			status: available ? "available" : diverged ? "diverged" : "current",
+			status,
 			available,
 			blocked,
-			diverged,
+			diverged: historyDiverged,
 			checkedAt: new Date().toISOString(),
 			local,
 			remote,
+			base,
+			localTree,
+			remoteTree,
+			committedFilesMatchTarget,
+			filesMatchTarget,
+			onUpdateBranch,
+			currentBranch: repository.currentBranch,
+			originUrl: repository.originUrl,
+			updateRemote: UPDATE_REMOTE,
+			updateBranch: UPDATE_BRANCH,
+			updateTarget: UPDATE_TARGET,
+			repository,
 			localChanges,
 			localChangeDetails,
 			localChangeSummary,
 			incomingCommits,
 			incomingCommitCount: incomingCommits.length,
-			message: available ?
-				blocked ?
-					"Updates available. Local changes will be stashed before updating." :
-					"Updates available" :
-				diverged ?
-					"Local and remote history have diverged. Update manually." :
-					"Hachi is up to date.",
+			message: available && blocked ?
+				"Updates available. Local changes will be stashed before updating." :
+				message,
 		};
 
 		await this.refreshActiveStash();
@@ -1428,7 +1515,7 @@ class HachiManager {
 	}
 
 	async applyUpdate() {
-		// Apply an available update by fast-forwarding to origin/main. It never
+		// Apply an available update by fast-forwarding to the update target. It never
 		// hard-resets; local work is stashed first and runtime files are backed up.
 		if (!this.updateState.available) {
 			await this.checkUpdates();
@@ -1447,7 +1534,7 @@ class HachiManager {
 
 		const backup = this.backupBeforeUpdate();
 		this.log(`Backed up local config before update: ${backup.backupDir}`);
-		await run("git", ["merge", "--ff-only", "origin/main"], {
+		await run("git", ["merge", "--ff-only", UPDATE_TARGET], {
 			cwd: this.getInstallPath(),
 			timeoutMs: 300000,
 			onLog: entry => this.logShell(entry),
