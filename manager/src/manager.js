@@ -1,5 +1,6 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { Buffer } = require("node:buffer");
 const { commandExists, run } = require("./shell.js");
 
 // This file contains HachiGen's backend coordinator.
@@ -12,6 +13,7 @@ const REPO_URL = "https://github.com/FearlessKenji/Hachi.git";
 const UPDATE_REMOTE = "origin";
 const UPDATE_BRANCH = "main";
 const UPDATE_TARGET = `${UPDATE_REMOTE}/${UPDATE_BRANCH}`;
+const DEFAULT_SSH_PORT = 22;
 
 function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
 	return {
@@ -30,6 +32,16 @@ const PROCESS_NAME = "Hachi";
 // Auto-stashes created by HachiGen use this text so they can be found later
 // without confusing them with the user's own manual Git stashes.
 const HACHIGEN_STASH_PREFIX = "HachiGen auto-stash before update";
+
+const DEFAULT_REMOTE_SETTINGS = {
+	host: "",
+	username: "",
+	sshKeyPath: "",
+	portMode: "default",
+	port: DEFAULT_SSH_PORT,
+	remotePath: "",
+	pm2Name: PROCESS_NAME,
+};
 
 // Values stored in the .env file. These are secrets or API/client IDs.
 const ENV_FIELDS = [
@@ -103,16 +115,20 @@ function readJson(filePath, fallback = null) {
 	}
 }
 
+function parseJsonText(text, fallback = {}) {
+	try {
+		return JSON.parse(String(text || ""));
+	} catch {
+		return fallback;
+	}
+}
+
 // Parse Hachi's simple KEY=value .env files. HachiGen only needs enough parsing
 // to load and save its known fields, so comments, blanks, and one quote layer
 // are handled without bringing in a larger dotenv writer.
-function parseDotEnv(filePath) {
-	if (!fileExists(filePath)) {
-		return {};
-	}
-
+function parseDotEnvContent(content) {
 	const values = {};
-	const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+	const lines = String(content || "").split(/\r?\n/);
 
 	for (const line of lines) {
 		const trimmed = line.trim();
@@ -141,6 +157,14 @@ function parseDotEnv(filePath) {
 	}
 
 	return values;
+}
+
+function parseDotEnv(filePath) {
+	if (!fileExists(filePath)) {
+		return {};
+	}
+
+	return parseDotEnvContent(fs.readFileSync(filePath, "utf8"));
 }
 
 // Format one value for .env output. JSON.stringify gives safe quoting for
@@ -332,6 +356,171 @@ function parseStashLine(line) {
 	};
 }
 
+function expandWindowsEnv(value) {
+	return String(value || "").trim().replace(/%([^%]+)%/gu, (_match, key) => process.env[key] || _match);
+}
+
+function sshPrivateKeyValidationError(filePath) {
+	const expandedPath = expandWindowsEnv(filePath);
+
+	if (!expandedPath) {
+		return "SSH private key path is required.";
+	}
+
+	let stats;
+
+	try {
+		stats = fs.statSync(expandedPath);
+	} catch {
+		return `SSH private key was not found at ${expandedPath}.`;
+	}
+
+	if (!stats.isFile()) {
+		return "SSH private key path must point to a file.";
+	}
+
+	if (stats.size === 0) {
+		return "SSH private key file is empty.";
+	}
+
+	if (stats.size > 1024 * 1024) {
+		return "SSH private key file is too large to be a normal private key.";
+	}
+
+	const buffer = Buffer.alloc(Math.min(stats.size, 16384));
+	const descriptor = fs.openSync(expandedPath, "r");
+
+	try {
+		fs.readSync(descriptor, buffer, 0, buffer.length, 0);
+	} finally {
+		fs.closeSync(descriptor);
+	}
+
+	const preview = buffer.toString("utf8").trimStart();
+	const hasPemHeader = /^-----BEGIN (?:OPENSSH PRIVATE|RSA PRIVATE|DSA PRIVATE|EC PRIVATE|PRIVATE|ENCRYPTED PRIVATE) KEY-----/u.test(preview);
+	const hasPuttyHeader = /^PuTTY-User-Key-File-\d+:/u.test(preview);
+
+	return hasPemHeader || hasPuttyHeader ? "" : "Selected file does not look like an SSH private key.";
+}
+
+function assertSshPrivateKeyFile(filePath) {
+	const error = sshPrivateKeyValidationError(filePath);
+
+	if (error) {
+		throw new Error(error);
+	}
+
+	return expandWindowsEnv(filePath);
+}
+
+function normalizeRemotePath(value) {
+	const cleaned = String(value || "").trim().replace(/\\/gu, "/");
+
+	if (!cleaned || cleaned === "~" || cleaned.startsWith("~/") || cleaned.startsWith("/")) {
+		return cleaned;
+	}
+
+	return `~/${cleaned.replace(/^\/+/u, "")}`;
+}
+
+function normalizeRemoteSettings(values = {}) {
+	const merged = {
+		...DEFAULT_REMOTE_SETTINGS,
+		...values,
+	};
+	const portMode = merged.portMode === "custom" ? "custom" : "default";
+	const parsedPort = Number.parseInt(String(merged.port), 10);
+	const customPort = Number.isInteger(parsedPort) ? parsedPort : null;
+
+	return {
+		host: String(merged.host || "").trim(),
+		username: String(merged.username || "").trim(),
+		sshKeyPath: String(merged.sshKeyPath || "").trim(),
+		portMode,
+		port: portMode === "custom" ? customPort : DEFAULT_SSH_PORT,
+		remotePath: normalizeRemotePath(merged.remotePath),
+		pm2Name: String(merged.pm2Name || PROCESS_NAME).trim() || PROCESS_NAME,
+	};
+}
+
+function validateRemoteSettings(settings, { requireFields = true } = {}) {
+	const errors = [];
+
+	if (requireFields && !settings.host) {
+		errors.push("Remote host is required.");
+	}
+
+	if (requireFields && !settings.username) {
+		errors.push("Remote username is required.");
+	}
+
+	if (requireFields && !settings.sshKeyPath) {
+		errors.push("SSH private key path is required.");
+	}
+
+	if (requireFields && !settings.remotePath) {
+		errors.push("Remote Hachi path is required.");
+	}
+
+	if (requireFields && !settings.pm2Name) {
+		errors.push("PM2 process name is required.");
+	}
+
+	if (settings.portMode === "custom" && (!Number.isInteger(settings.port) || settings.port < 1 || settings.port > 65535)) {
+		errors.push("Custom SSH port must be between 1 and 65535.");
+	}
+
+	return errors;
+}
+
+function quotePosix(value) {
+	return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function quoteRemotePath(value) {
+	const text = String(value || "");
+
+	if (text === "~") {
+		return "~";
+	}
+
+	if (text.startsWith("~/")) {
+		return `~/${quotePosix(text.slice(2))}`;
+	}
+
+	return quotePosix(text);
+}
+
+function gitShellCommand(args) {
+	return ["git", ...args.map(arg => quotePosix(arg))].join(" ");
+}
+
+function parseJsonResult(result, fallbackMessage) {
+	const output = (result.stdout || "").trim();
+
+	try {
+		return JSON.parse(output);
+	} catch {
+		throw new Error(result.stderr || output || fallbackMessage);
+	}
+}
+
+function sanitizeShellLogEntry(entry) {
+	const message = String(entry.message || "");
+
+	if (entry.stream === "command" && /^> ssh(?:\s|$)/u.test(message)) {
+		return {
+			...entry,
+			message: "> ssh [remote command hidden]",
+		};
+	}
+
+	return {
+		...entry,
+		message: message.replace(/(-i\s+)(?:"[^"]+"|\S+)/u, "$1[ssh-key]"),
+	};
+}
+
 class HachiManager {
 	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent }) {
 		// managerRoot is the manager folder in development and the bundled app
@@ -365,11 +554,16 @@ class HachiManager {
 		const defaults = {
 			installPath: this.defaultInstallPath,
 			activeStash: null,
+			remote: { ...DEFAULT_REMOTE_SETTINGS },
+			runtimeTarget: "local",
 		};
+		const saved = readJson(this.settingsPath, {}) || {};
 
 		return {
 			...defaults,
-			...readJson(this.settingsPath, {}),
+			...saved,
+			remote: normalizeRemoteSettings(saved.remote),
+			runtimeTarget: saved.runtimeTarget === "remote" ? "remote" : "local",
 		};
 	}
 
@@ -406,7 +600,8 @@ class HachiManager {
 	logShell(entry) {
 		// Shell output is tagged separately so the UI can show whether it came
 		// from stdout, stderr, or the displayed command itself.
-		this.event("shell", entry.message, { stream: entry.stream });
+		const sanitized = sanitizeShellLogEntry(entry);
+		this.event("shell", sanitized.message, { stream: sanitized.stream });
 	}
 
 	getInstallPath() {
@@ -431,6 +626,367 @@ class HachiManager {
 		this.settings.installPath = nextInstallPath;
 		this.saveSettings();
 		this.log(`Install path set to ${this.settings.installPath}`);
+	}
+
+	getRemoteSettings() {
+		const remote = normalizeRemoteSettings(this.settings.remote);
+		this.settings.remote = remote;
+		return remote;
+	}
+
+	getRuntimeTarget() {
+		return this.settings.runtimeTarget === "remote" ? "remote" : "local";
+	}
+
+	getRemoteState() {
+		const settings = this.getRemoteSettings();
+		const errors = validateRemoteSettings(settings);
+
+		return {
+			active: this.getRuntimeTarget() === "remote",
+			configured: errors.length === 0,
+			errors,
+			settings,
+		};
+	}
+
+	setRuntimeTarget(target) {
+		const nextTarget = target === "remote" ? "remote" : "local";
+
+		if (nextTarget === "remote") {
+			const settings = this.getRemoteSettings();
+			const errors = validateRemoteSettings(settings);
+
+			if (errors.length) {
+				throw new Error(errors[0]);
+			}
+
+			assertSshPrivateKeyFile(settings.sshKeyPath);
+		}
+
+		this.settings.runtimeTarget = nextTarget;
+		this.saveSettings();
+		this.log(`Runtime target set to ${nextTarget === "remote" ? "remote server" : "local development"}.`);
+
+		return {
+			ok: true,
+			message: `Runtime target set to ${nextTarget === "remote" ? "Remote" : "Local"}.`,
+			runtimeTarget: nextTarget,
+		};
+	}
+
+	saveRemoteSettings(values) {
+		const remote = normalizeRemoteSettings(values);
+		const errors = validateRemoteSettings(remote, { requireFields: false });
+
+		if (errors.length) {
+			throw new Error(errors[0]);
+		}
+
+		if (remote.sshKeyPath) {
+			assertSshPrivateKeyFile(remote.sshKeyPath);
+		}
+
+		this.settings.remote = remote;
+		this.saveSettings();
+		this.log("Remote settings saved.");
+
+		return {
+			ok: true,
+			message: "Remote settings saved.",
+			remote: this.getRemoteState(),
+		};
+	}
+
+	validateSshKeyPath(sshKeyPath) {
+		assertSshPrivateKeyFile(sshKeyPath);
+
+		return {
+			ok: true,
+			message: "SSH key selected.",
+			sshKeyPath,
+		};
+	}
+
+	buildRemoteSshArgs(settings, remoteCommand) {
+		const args = [
+			"-i",
+			expandWindowsEnv(settings.sshKeyPath),
+			"-o",
+			"BatchMode=yes",
+			"-o",
+			"ConnectTimeout=10",
+		];
+
+		if (settings.portMode === "custom") {
+			args.push("-p", String(settings.port));
+		}
+
+		args.push(`${settings.username}@${settings.host}`);
+
+		if (remoteCommand) {
+			args.push(remoteCommand);
+		}
+
+		return args;
+	}
+
+	async requireRemoteRuntime() {
+		const settings = this.getRemoteSettings();
+		const errors = validateRemoteSettings(settings);
+
+		if (errors.length) {
+			throw new Error(errors[0]);
+		}
+
+		assertSshPrivateKeyFile(settings.sshKeyPath);
+
+		if (!await commandExists("ssh")) {
+			throw new Error("OpenSSH client was not found on this computer.");
+		}
+
+		return settings;
+	}
+
+	async runRemoteCommand(remoteCommand, { allowFailure = false, log = false, timeoutMs = 30000 } = {}) {
+		const settings = await this.requireRemoteRuntime();
+		return run("ssh", this.buildRemoteSshArgs(settings, remoteCommand), {
+			allowFailure,
+			timeoutMs,
+			onLog: log ? entry => this.logShell(entry) : null,
+		});
+	}
+
+	async runRemoteHachiCommand(command, options = {}) {
+		const settings = await this.requireRemoteRuntime();
+		const shouldLog = options.log === true;
+
+		return run("ssh", this.buildRemoteSshArgs(settings, `cd ${quoteRemotePath(settings.remotePath)} && ${command}`), {
+			allowFailure: Boolean(options.allowFailure),
+			timeoutMs: options.timeoutMs || 30000,
+			onLog: shouldLog ? entry => this.logShell(entry) : null,
+		});
+	}
+
+	async runRemoteHachiJson(command, options = {}) {
+		const result = await this.runRemoteHachiCommand(command, {
+			...options,
+			allowFailure: true,
+		});
+
+		return parseJsonResult(result, options.fallbackMessage || "Remote command did not return valid JSON.");
+	}
+
+	async remotePathExists(relativePath, type = "e") {
+		const result = await this.runRemoteHachiCommand(`test -${type} ${quotePosix(relativePath)}`, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 10000,
+		});
+
+		return result.code === 0;
+	}
+
+	async readRemoteText(relativePath) {
+		const result = await this.runRemoteHachiCommand(`if test -f ${quotePosix(relativePath)}; then cat ${quotePosix(relativePath)}; fi`, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 15000,
+		});
+
+		return result.stdout || "";
+	}
+
+	async writeRemoteText(relativePath, content) {
+		const directory = path.posix.dirname(relativePath);
+		const encoded = Buffer.from(String(content), "utf8").toString("base64");
+		const mkdir = directory && directory !== "." ? `mkdir -p ${quotePosix(directory)} && ` : "";
+
+		await this.runRemoteHachiCommand(`${mkdir}printf %s ${quotePosix(encoded)} | base64 -d > ${quotePosix(relativePath)}`, {
+			timeoutMs: 30000,
+		});
+	}
+
+	async runGit(args, options = {}) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.runRemoteHachiCommand(gitShellCommand(args), options);
+		}
+
+		return run("git", args, {
+			cwd: this.getInstallPath(),
+			allowFailure: Boolean(options.allowFailure),
+			timeoutMs: options.timeoutMs || 300000,
+			onLog: options.log === false ? null : options.onLog || (entry => this.logShell(entry)),
+		});
+	}
+
+	remotePm2ErrorStatus(message) {
+		return {
+			installed: false,
+			registered: false,
+			status: "remote-error",
+			target: "remote",
+			message,
+		};
+	}
+
+	remotePm2StatusFromResult(result, settings) {
+		if (result.code !== 0) {
+			const detail = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+			const missingPm2 = /pm2: command not found|pm2.*not recognized|not found/u.test(detail);
+
+			return {
+				installed: !missingPm2,
+				registered: false,
+				status: missingPm2 ? "pm2-missing" : "error",
+				target: "remote",
+				message: detail || "Could not read remote PM2 status.",
+			};
+		}
+
+		try {
+			const apps = parsePm2Json(result.stdout);
+			const app = apps.find(item => item.name === settings.pm2Name);
+
+			if (!app) {
+				return {
+					installed: true,
+					registered: false,
+					status: "not-registered",
+					target: "remote",
+					message: `${settings.pm2Name} is not registered in remote PM2.`,
+				};
+			}
+
+			return {
+				installed: true,
+				registered: true,
+				status: app.pm2_env?.status || "unknown",
+				restarts: app.pm2_env?.restart_time || 0,
+				cpu: app.monit?.cpu || 0,
+				memory: app.monit?.memory || 0,
+				pid: app.pid || null,
+				target: "remote",
+				message: `Remote ${settings.pm2Name} is ${app.pm2_env?.status || "unknown"}.`,
+			};
+		} catch (error) {
+			return this.remotePm2ErrorStatus(error.message);
+		}
+	}
+
+	async getRemotePm2Status() {
+		let settings;
+
+		try {
+			settings = await this.requireRemoteRuntime();
+		} catch (error) {
+			return this.remotePm2ErrorStatus(error.message);
+		}
+
+		const result = await run("ssh", this.buildRemoteSshArgs(settings, "pm2 jlist"), {
+			allowFailure: true,
+			timeoutMs: 15000,
+		});
+
+		return this.remotePm2StatusFromResult(result, settings);
+	}
+
+	async startRemoteBot() {
+		const settings = await this.requireRemoteRuntime();
+		const name = quotePosix(settings.pm2Name);
+		const ecosystem = quotePosix("config/ecosystem.config.js");
+		const remoteCommand = [
+			`cd ${quoteRemotePath(settings.remotePath)}`,
+			`if pm2 describe ${name} --no-color >/dev/null 2>&1; then pm2 restart ${ecosystem} --only ${name}; else pm2 start ${ecosystem} --only ${name}; fi`,
+			"pm2 save",
+		].join(" && ");
+
+		this.log(`Starting remote ${settings.pm2Name}...`);
+		await this.runRemoteCommand(remoteCommand, {
+			timeoutMs: 120000,
+		});
+		return this.getRemotePm2Status();
+	}
+
+	async stopRemoteBot() {
+		const settings = await this.requireRemoteRuntime();
+
+		this.log(`Stopping remote ${settings.pm2Name}...`);
+		await this.runRemoteCommand(`pm2 stop ${quotePosix(settings.pm2Name)}`, {
+			timeoutMs: 120000,
+		});
+		return this.getRemotePm2Status();
+	}
+
+	async restartRemoteBot() {
+		const settings = await this.requireRemoteRuntime();
+		const name = quotePosix(settings.pm2Name);
+		const ecosystem = quotePosix("config/ecosystem.config.js");
+		const remoteCommand = [
+			`cd ${quoteRemotePath(settings.remotePath)}`,
+			`if pm2 describe ${name} --no-color >/dev/null 2>&1; then pm2 restart ${name}; else pm2 start ${ecosystem} --only ${name}; fi`,
+			"pm2 save",
+		].join(" && ");
+
+		this.log(`Restarting remote ${settings.pm2Name}...`);
+		await this.runRemoteCommand(remoteCommand, {
+			timeoutMs: 120000,
+		});
+		return this.getRemotePm2Status();
+	}
+
+	async readRemoteLogs() {
+		const settings = await this.requireRemoteRuntime();
+		const remoteCommand = [
+			`cd ${quoteRemotePath(settings.remotePath)}`,
+			`pm2 logs ${quotePosix(settings.pm2Name)} --lines 160 --nostream --no-color`,
+		].join(" && ");
+		const result = await this.runRemoteCommand(remoteCommand, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 30000,
+		});
+
+		return [result.stdout, result.stderr].filter(Boolean).join("\n").trim();
+	}
+
+	async testRemoteConnection() {
+		const settings = this.getRemoteSettings();
+		const errors = validateRemoteSettings(settings);
+
+		if (errors.length) {
+			throw new Error(errors[0]);
+		}
+
+		assertSshPrivateKeyFile(settings.sshKeyPath);
+
+		if (!await commandExists("ssh")) {
+			throw new Error("OpenSSH client was not found on this computer.");
+		}
+
+		const remoteCommand = [
+			`cd ${quoteRemotePath(settings.remotePath)}`,
+			"printf 'path='",
+			"pwd",
+			"printf 'node='",
+			"node -v",
+			"printf 'pm2='",
+			`pm2 describe ${quotePosix(settings.pm2Name)} --no-color`,
+		].join(" && ");
+		this.log("Testing remote connection...");
+		const result = await run("ssh", this.buildRemoteSshArgs(settings, remoteCommand), {
+			allowFailure: true,
+			timeoutMs: 20000,
+		});
+		const ok = result.code === 0;
+
+		return {
+			code: result.code,
+			ok,
+			message: ok ? "Remote connection validated." : "Remote connection test failed. Review the output for details.",
+			stderr: result.stderr,
+			stdout: result.stdout,
+		};
 	}
 
 	getPaths() {
@@ -510,6 +1066,10 @@ class HachiManager {
 	}
 
 	async getDatabaseState() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.getRemoteDatabaseState();
+		}
+
 		// Build lightweight database status for the Database tab. Opening SQLite
 		// is reserved for explicit Backup/Restore/Sanitize actions.
 		// This method is safe to call often from getState().
@@ -532,7 +1092,73 @@ class HachiManager {
 		};
 	}
 
+	async getRemoteDatabaseState() {
+		const script = `
+const fs = require("node:fs");
+const path = require("node:path");
+const databasePath = "database/database.sqlite";
+const backupDir = "manager/backups/database";
+function fileInfo(filePath) {
+	if (!fs.existsSync(filePath)) {
+		return null;
+	}
+	const stats = fs.statSync(filePath);
+	return {
+		modifiedAt: stats.mtime.toISOString(),
+		size: stats.size,
+	};
+}
+const backups = fs.existsSync(backupDir) ? fs.readdirSync(backupDir)
+	.filter(file => /\\.sqlite$/i.test(file))
+	.map(file => {
+		const fullPath = path.posix.join(backupDir, file);
+		const stats = fs.statSync(fullPath);
+		return {
+			file,
+			fullPath,
+			modifiedAt: stats.mtime.toISOString(),
+			size: stats.size,
+		};
+	})
+	.sort((left, right) => new Date(right.modifiedAt) - new Date(left.modifiedAt)) : [];
+process.stdout.write(JSON.stringify({
+	backupDir,
+	backups,
+	database: fileInfo(databasePath),
+	path: databasePath,
+}));
+`;
+		const state = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Could not read remote database state.",
+			log: false,
+			timeoutMs: 20000,
+		});
+		const backups = (state.backups || []).map(backup => ({
+			...backup,
+			sizeLabel: formatFileSize(backup.size),
+		}));
+		const exists = Boolean(state.database);
+		const audit = await this.auditDatabase({ quiet: true });
+
+		return {
+			audit,
+			backupDir: state.backupDir || "manager/backups/database",
+			backups,
+			exists,
+			latestBackup: backups[0] || null,
+			modifiedAt: state.database?.modifiedAt || null,
+			path: state.path || "database/database.sqlite",
+			size: state.database?.size || 0,
+			sizeLabel: state.database ? formatFileSize(state.database.size) : "0 B",
+			source: "remote",
+		};
+	}
+
 	async runDatabaseWorker(action, options = {}) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.runRemoteDatabaseWorker(action, options);
+		}
+
 		// Run SQLite inspection/cleanup in the user's normal Node.js process.
 		// That keeps native sqlite3 loading out of Electron's runtime.
 		// The worker returns JSON, so this method converts worker failures into
@@ -574,7 +1200,44 @@ class HachiManager {
 		return parsed;
 	}
 
+	async runRemoteDatabaseWorker(action, options = {}) {
+		const request = {
+			action,
+			dbPath: "database/database.sqlite",
+			...options,
+		};
+		const launcher = `
+const { spawnSync } = require("node:child_process");
+const path = require("node:path");
+const request = JSON.parse(process.argv[process.argv.length - 1] || "{}");
+request.root = process.cwd();
+request.dbPath = path.resolve(request.dbPath);
+const child = spawnSync(process.execPath, ["manager/src/database-worker.js", JSON.stringify(request)], {
+	encoding: "utf8",
+});
+process.stdout.write(child.stdout || "");
+process.stderr.write(child.stderr || "");
+process.exit(child.status === null ? 1 : child.status);
+`;
+		const result = await this.runRemoteHachiCommand(`node -e ${quotePosix(launcher)} ${quotePosix(JSON.stringify(request))}`, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 300000,
+		});
+		const parsed = parseJsonResult(result, "Remote database worker did not return valid JSON.");
+
+		if (!parsed.ok) {
+			throw new Error(parsed.error || result.stderr || "Remote database operation failed.");
+		}
+
+		return parsed;
+	}
+
 	async runDatabaseAuditCommand(args = [], { quiet = false } = {}) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.runRemoteDatabaseAuditCommand(args, { quiet });
+		}
+
 		// Run the same audit/migration script that users can run from the console.
 		// --json keeps stdout parseable for HachiGen.
 		const paths = this.getPaths();
@@ -645,6 +1308,31 @@ class HachiManager {
 		}
 	}
 
+	async runRemoteDatabaseAuditCommand(args = []) {
+		const result = await this.runRemoteHachiCommand(`node database/dbAudit.js --json ${args.map(arg => quotePosix(arg)).join(" ")}`, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 300000,
+		});
+		const output = (result.stdout || "").trim();
+
+		try {
+			return JSON.parse(output);
+		} catch {
+			return {
+				detail: "Remote database audit did not return valid JSON.",
+				dot: "bad",
+				error: result.stderr || output || "Remote database audit failed.",
+				exists: true,
+				forceMigrationAvailable: false,
+				label: "Audit Error",
+				migrationAvailable: false,
+				ok: false,
+				status: "error",
+			};
+		}
+	}
+
 	async auditDatabase(options = {}) {
 		// Audit only. This powers the Dashboard database card and button states.
 		return this.runDatabaseAuditCommand([], options);
@@ -679,6 +1367,10 @@ class HachiManager {
 	}
 
 	async backupDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.backupRemoteDatabase({ fileName, overwrite });
+		}
+
 		// Copy the current database into the dated backup folder. Manual backups
 		// use a date-only filename so HachiGen can ask before replacing today's.
 		// Automatic safety backups pass unique timestamped filenames.
@@ -715,7 +1407,62 @@ class HachiManager {
 		};
 	}
 
+	async backupRemoteDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
+		const safeFileName = path.basename(fileName);
+		const script = `
+const fs = require("node:fs");
+const path = require("node:path");
+const databasePath = "database/database.sqlite";
+const backupDir = "manager/backups/database";
+const fileName = ${JSON.stringify(safeFileName)};
+const overwrite = ${overwrite ? "true" : "false"};
+const backupPath = path.posix.join(backupDir, fileName);
+if (!fs.existsSync(databasePath)) {
+	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to back up." }));
+	process.exit(0);
+}
+fs.mkdirSync(backupDir, { recursive: true });
+if (fs.existsSync(backupPath) && !overwrite) {
+	process.stdout.write(JSON.stringify({
+		backupPath,
+		fileName,
+		needsOverwrite: true,
+		ok: false,
+		message: fileName + " already exists.",
+	}));
+	process.exit(0);
+}
+fs.copyFileSync(databasePath, backupPath);
+process.stdout.write(JSON.stringify({
+	backupPath,
+	fileName,
+	ok: true,
+	message: "Remote database backup created: " + fileName,
+}));
+`;
+
+		await this.checkpointDatabase();
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote database backup did not return valid JSON.",
+			timeoutMs: 300000,
+		});
+
+		if (result.error) {
+			throw new Error(result.error);
+		}
+
+		if (result.ok) {
+			this.log(`Remote database backup created: ${result.backupPath}`);
+		}
+
+		return result;
+	}
+
 	async restoreDatabaseFromBackup(backupPath) {
+		if (this.getRuntimeTarget() === "remote") {
+			throw new Error("Remote database restore from a local backup file is not available yet.");
+		}
+
 		// Replace the current database with a chosen HachiGen backup. A unique
 		// pre-restore backup is created first so the user has a rollback point.
 		const paths = this.getPaths();
@@ -786,7 +1533,8 @@ class HachiManager {
 		// Load a read-only preview for the Database tab viewer. The worker checks
 		// that the requested table exists before using it in a quoted SQL query.
 		const view = await this.runDatabaseWorker("view", { sort, table: tableName });
-		this.log(`Database viewer loaded ${view.selectedTable || "no table"}.`);
+		const sourceLabel = this.getRuntimeTarget() === "remote" ? "Remote database" : "Database";
+		this.log(`${sourceLabel} viewer loaded ${view.selectedTable || "no table"}.`);
 		return {
 			...view,
 			database: await this.getDatabaseState(),
@@ -851,11 +1599,12 @@ class HachiManager {
 		const missingFiles = requiredFiles
 			.filter(([, filePath]) => !fileExists(filePath))
 			.map(([label]) => label);
-		const config = this.readConfiguration();
+		const config = this.readLocalConfiguration();
 		const packageJson = readJson(paths.packageJson, {});
 
 		return {
 			installPath: paths.root,
+			source: "local",
 			projectFound: missingFiles.length === 0,
 			packageName: packageJson.name || null,
 			packageVersion: packageJson.version || null,
@@ -869,7 +1618,65 @@ class HachiManager {
 		};
 	}
 
-	readConfiguration() {
+	async getQuickScan() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.remoteQuickScan();
+		}
+
+		return this.quickScan();
+	}
+
+	async remoteQuickScan() {
+		const config = await this.readRemoteConfiguration();
+		const script = `
+const fs = require("node:fs");
+function exists(filePath) {
+	return fs.existsSync(filePath);
+}
+function readJson(filePath) {
+	try {
+		return JSON.parse(fs.readFileSync(filePath, "utf8"));
+	} catch {
+		return {};
+	}
+}
+const requiredFiles = [
+	["package.json", "package.json"],
+	["index.js", "index.js"],
+	["config/ecosystem.config.js", "config/ecosystem.config.js"],
+	["delete-all-commands.js", "delete-all-commands.js"],
+	["deploy-global-commands.js", "deploy-global-commands.js"],
+	["deploy-guild-commands.js", "deploy-guild-commands.js"],
+];
+const missingFiles = requiredFiles.filter(([, filePath]) => !exists(filePath)).map(([label]) => label);
+const packageJson = readJson("package.json");
+process.stdout.write(JSON.stringify({
+	installPath: process.cwd(),
+	source: "remote",
+	projectFound: missingFiles.length === 0,
+	packageName: packageJson.name || null,
+	packageVersion: packageJson.version || null,
+	missingFiles,
+	hasEnv: exists(".env"),
+	hasConfig: exists("config/config.json"),
+	hasGit: exists(".git"),
+	hasNodeModules: exists("node_modules"),
+}));
+`;
+		const scan = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Could not scan remote Hachi install.",
+			log: false,
+			timeoutMs: 20000,
+		});
+
+		return {
+			...scan,
+			configurationMissing: config.missing,
+			configurationReady: config.missing.length === 0,
+		};
+	}
+
+	readLocalConfiguration() {
 		// Merge blank templates and real config files into one UI-friendly shape.
 		// Template values reveal available fields; real user values override them.
 		const paths = this.getPaths();
@@ -909,13 +1716,72 @@ class HachiManager {
 		};
 	}
 
+	readConfiguration() {
+		return this.readLocalConfiguration();
+	}
+
+	async readActiveConfiguration() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.readRemoteConfiguration();
+		}
+
+		return this.readLocalConfiguration();
+	}
+
+	async readRemoteConfiguration() {
+		const [blankEnv, env, blankConfigText, configText] = await Promise.all([
+			this.readRemoteText("blank.env"),
+			this.readRemoteText(".env"),
+			this.readRemoteText("config/blank.json"),
+			this.readRemoteText("config/config.json"),
+		]);
+		const envValues = {
+			...parseDotEnvContent(blankEnv),
+			...parseDotEnvContent(env),
+		};
+		const configValues = {
+			...parseJsonText(blankConfigText, {}),
+			...parseJsonText(configText, {}),
+		};
+		const missing = [];
+
+		for (const field of ENV_FIELDS) {
+			if (isMissingValue(envValues[field])) {
+				missing.push(field);
+			}
+		}
+
+		for (const field of CONFIG_FIELDS) {
+			if (isMissingValue(configValues[field])) {
+				missing.push(field);
+			}
+		}
+
+		return {
+			exists: {
+				env: Boolean(env.trim()),
+				config: Boolean(configText.trim()),
+			},
+			source: "remote",
+			values: {
+				...envValues,
+				...configValues,
+			},
+			missing,
+		};
+	}
+
 	async writeConfiguration(values) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.writeRemoteConfiguration(values);
+		}
+
 		// Split the Setup form into the two files Hachi expects: .env for
 		// secrets/client IDs and config/config.json for bot behavior settings.
 		const paths = this.getPaths();
 		ensureDir(paths.configDir);
 
-		const current = this.readConfiguration().values;
+		const current = this.readLocalConfiguration().values;
 		const merged = {
 			...current,
 			...values,
@@ -936,7 +1802,30 @@ class HachiManager {
 		fs.writeFileSync(paths.env, `${envLines.join("\n")}\n`, "utf8");
 		fs.writeFileSync(paths.configJson, `${JSON.stringify(configValues, null, "\t")}\n`, "utf8");
 		this.log("Configuration saved.");
-		return this.readConfiguration();
+		return this.readLocalConfiguration();
+	}
+
+	async writeRemoteConfiguration(values) {
+		const current = (await this.readRemoteConfiguration()).values;
+		const merged = {
+			...current,
+			...values,
+		};
+		const envLines = ENV_FIELDS.map(field => `${field}=${formatEnvValue(merged[field])}`);
+		const configValues = {
+			botOwner: merged.botOwner || "",
+			guildId: merged.guildId || "",
+			twitchCron: merged.twitchCron || CONFIG_DEFAULTS.twitchCron,
+			kickCron: merged.kickCron || CONFIG_DEFAULTS.kickCron,
+			birthdayCron: merged.birthdayCron || CONFIG_DEFAULTS.birthdayCron,
+			statusCron: merged.statusCron || CONFIG_DEFAULTS.statusCron,
+			authCron: merged.authCron || CONFIG_DEFAULTS.authCron,
+		};
+
+		await this.writeRemoteText(".env", `${envLines.join("\n")}\n`);
+		await this.writeRemoteText("config/config.json", `${JSON.stringify(configValues, null, "\t")}\n`);
+		this.log("Remote configuration saved.");
+		return this.readRemoteConfiguration();
 	}
 
 	async getState() {
@@ -957,12 +1846,16 @@ class HachiManager {
 			this.updateState.stash = this.settings.activeStash || null;
 		}
 
+		const scan = await this.getQuickScan();
+
 		return {
 			appName: "HachiGen",
 			database: await this.getDatabaseState(),
 			installPath: this.getInstallPath(),
 			repository: await this.getRepositoryInfo(),
-			scan: this.quickScan(),
+			remote: this.getRemoteState(),
+			runtimeTarget: this.getRuntimeTarget(),
+			scan,
 			updates: this.updateState,
 			pm2: await this.getPm2Status(),
 			recentEvents: this.operationLog.slice(-80),
@@ -1120,6 +2013,10 @@ class HachiManager {
 	}
 
 	async installOrValidate() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.validateInstall({ repair: true });
+		}
+
 		// Handle the Setup page's Install / Validate button. It creates or clones
 		// the install when needed, then runs the repair-capable validation path.
 		await this.installRepositoryIfNeeded();
@@ -1127,6 +2024,10 @@ class HachiManager {
 	}
 
 	async validateInstall({ repair = false } = {}) {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.validateRemoteInstall({ repair });
+		}
+
 		// Validate the selected install. repair=false only reports problems;
 		// repair=true is allowed to create folders, clone, install deps, and PM2.
 		this.log(repair ? "Validating and repairing Hachi install..." : "Validating Hachi install...");
@@ -1197,19 +2098,59 @@ class HachiManager {
 		};
 	}
 
+	async validateRemoteInstall({ repair = false } = {}) {
+		this.log(repair ? "Validating and repairing remote Hachi install..." : "Validating remote Hachi install...");
+		const scan = await this.remoteQuickScan();
+
+		if (!scan.projectFound) {
+			return {
+				ok: false,
+				message: "The remote path does not contain a complete Hachi install.",
+				scan,
+			};
+		}
+
+		if (repair && !scan.hasNodeModules) {
+			this.log("Installing remote Hachi npm dependencies...");
+			await this.runRemoteHachiCommand("npm install", {
+				timeoutMs: 900000,
+			});
+		}
+
+		const configResult = await this.runRemoteHachiCommand(`node -e ${quotePosix("require('./config/configCheck.js')")}`, {
+			allowFailure: true,
+			timeoutMs: 120000,
+		});
+		const refreshedScan = await this.remoteQuickScan();
+		const configOk = configResult.code === 0;
+		const ok = refreshedScan.projectFound && refreshedScan.hasNodeModules && configOk;
+
+		return {
+			ok,
+			message: ok ? "Remote Hachi install is ready." : "Remote Hachi install needs attention.",
+			scan: refreshedScan,
+			config: {
+				ok: configOk,
+				message: configOk ? "Configuration is valid." : configResult.stderr || configResult.stdout || "Remote configuration validation failed.",
+			},
+		};
+	}
+
 	async getLocalChanges() {
 		// Return raw Git porcelain lines for files changed locally. HachiGen
 		// shows these before updating so generated or edited files are visible.
 		const paths = this.getPaths();
 
-		if (!fileExists(paths.git)) {
+		if (this.getRuntimeTarget() === "remote" && !await this.remotePathExists(".git", "d")) {
 			return [];
 		}
 
-		const result = await run("git", ["status", "--porcelain=v1", "-uall"], {
-			cwd: paths.root,
+		if (this.getRuntimeTarget() !== "remote" && !fileExists(paths.git)) {
+			return [];
+		}
+
+		const result = await this.runGit(["status", "--porcelain=v1", "-uall"], {
 			allowFailure: true,
-			onLog: entry => this.logShell(entry),
 		});
 
 		// Raw lines are parsed later so the UI can show both grouped labels and
@@ -1223,13 +2164,15 @@ class HachiManager {
 
 	async getRepositoryInfo({ onLog = null } = {}) {
 		const paths = this.getPaths();
+		const isRemote = this.getRuntimeTarget() === "remote";
 		const info = {
-			isGit: fileExists(paths.git),
+			isGit: isRemote ? await this.remotePathExists(".git", "d") : fileExists(paths.git),
 			currentBranch: null,
 			originUrl: null,
 			updateRemote: UPDATE_REMOTE,
 			updateBranch: UPDATE_BRANCH,
 			updateTarget: UPDATE_TARGET,
+			source: isRemote ? "remote" : "local",
 		};
 
 		if (!info.isGit) {
@@ -1238,10 +2181,9 @@ class HachiManager {
 
 		const runGit = async args => {
 			try {
-				const result = await run("git", args, {
-					cwd: paths.root,
+				const result = await this.runGit(args, {
 					allowFailure: true,
-					onLog,
+					onLog: onLog || undefined,
 				});
 
 				return result.code === 0 ? result.stdout.trim() : "";
@@ -1264,11 +2206,8 @@ class HachiManager {
 	async getIncomingCommits() {
 		// Return commits on the update target that are not present locally, giving the
 		// Updates panel a concrete list of incoming work.
-		const paths = this.getPaths();
-		const result = await run("git", ["log", "--oneline", "--no-decorate", `HEAD..${UPDATE_TARGET}`], {
-			cwd: paths.root,
+		const result = await this.runGit(["log", "--oneline", "--no-decorate", `HEAD..${UPDATE_TARGET}`], {
 			allowFailure: true,
-			onLog: entry => this.logShell(entry),
 		});
 
 		return result.stdout
@@ -1283,14 +2222,16 @@ class HachiManager {
 		// intentionally ignored so Restore/Delete buttons cannot touch them.
 		const paths = this.getPaths();
 
-		if (!fileExists(paths.git)) {
+		if (this.getRuntimeTarget() === "remote" && !await this.remotePathExists(".git", "d")) {
 			return [];
 		}
 
-		const result = await run("git", ["stash", "list", "--format=%H%x09%gd%x09%ct%x09%gs"], {
-			cwd: paths.root,
+		if (this.getRuntimeTarget() !== "remote" && !fileExists(paths.git)) {
+			return [];
+		}
+
+		const result = await this.runGit(["stash", "list", "--format=%H%x09%gd%x09%ct%x09%gs"], {
 			allowFailure: true,
-			onLog: entry => this.logShell(entry),
 		});
 
 		if (result.code !== 0) {
@@ -1308,17 +2249,14 @@ class HachiManager {
 	async getStashChanges(stashRef) {
 		// Read the file list inside a stash. Git versions differ on untracked
 		// stash display, so this tries the richer command and falls back safely.
-		const paths = this.getPaths();
 		const commands = [
 			["stash", "show", "--name-status", "--include-untracked", stashRef],
 			["stash", "show", "--name-status", stashRef],
 		];
 
 		for (const args of commands) {
-			const result = await run("git", args, {
-				cwd: paths.root,
+			const result = await this.runGit(args, {
 				allowFailure: true,
-				onLog: entry => this.logShell(entry),
 			});
 
 			if (result.code === 0) {
@@ -1366,11 +2304,9 @@ class HachiManager {
 		// which are the "??" entries shown in Git status.
 		const message = `${HACHIGEN_STASH_PREFIX} ${new Date().toISOString()}`;
 
-		this.log("Saving local changes to a recoverable Git stash...");
-		await run("git", ["stash", "push", "-u", "-m", message], {
-			cwd: this.getInstallPath(),
+		this.log(`Saving ${this.getRuntimeTarget()} changes to a recoverable Git stash...`);
+		await this.runGit(["stash", "push", "-u", "-m", message], {
 			timeoutMs: 300000,
-			onLog: entry => this.logShell(entry),
 		});
 
 		const stashes = await this.getHachiGenStashes();
@@ -1388,8 +2324,9 @@ class HachiManager {
 		// Fetch and compare local HEAD against the update target. This method reports
 		// update availability and local changes, but never modifies the worktree.
 		const paths = this.getPaths();
+		const hasGit = this.getRuntimeTarget() === "remote" ? await this.remotePathExists(".git", "d") : fileExists(paths.git);
 
-		if (!fileExists(paths.git)) {
+		if (!hasGit) {
 			this.updateState = {
 				...createUncheckedUpdateState("This install is not a Git checkout, so HachiGen cannot check for updates."),
 				status: "not_git",
@@ -1400,41 +2337,28 @@ class HachiManager {
 			return this.updateState;
 		}
 
-		await this.ensureGit(true);
+		if (this.getRuntimeTarget() !== "remote") {
+			await this.ensureGit(true);
+		}
+
 		const repository = await this.getRepositoryInfo({ onLog: entry => this.logShell(entry) });
 		const localChanges = await this.getLocalChanges();
 		const localChangeDetails = localChanges.map(describeGitStatus);
 		const localChangeSummary = summarizeLocalChanges(localChangeDetails);
-		this.log("Checking for Hachi updates...");
+		const sourceLabel = this.getRuntimeTarget() === "remote" ? "Remote" : "Local";
+		this.log(`${sourceLabel}: checking Hachi updates...`);
 
 		// Fetch updates for the configured update target so the comparison below
 		// uses fresh remote data.
-		await run("git", ["fetch", UPDATE_REMOTE, UPDATE_BRANCH], {
-			cwd: paths.root,
+		await this.runGit(["fetch", UPDATE_REMOTE, UPDATE_BRANCH], {
 			timeoutMs: 300000,
-			onLog: entry => this.logShell(entry),
 		});
 
-		const local = (await run("git", ["rev-parse", "HEAD"], {
-			cwd: paths.root,
-			onLog: entry => this.logShell(entry),
-		})).stdout.trim();
-		const remote = (await run("git", ["rev-parse", UPDATE_TARGET], {
-			cwd: paths.root,
-			onLog: entry => this.logShell(entry),
-		})).stdout.trim();
-		const base = (await run("git", ["merge-base", "HEAD", UPDATE_TARGET], {
-			cwd: paths.root,
-			onLog: entry => this.logShell(entry),
-		})).stdout.trim();
-		const localTree = (await run("git", ["rev-parse", "HEAD^{tree}"], {
-			cwd: paths.root,
-			onLog: entry => this.logShell(entry),
-		})).stdout.trim();
-		const remoteTree = (await run("git", ["rev-parse", `${UPDATE_TARGET}^{tree}`], {
-			cwd: paths.root,
-			onLog: entry => this.logShell(entry),
-		})).stdout.trim();
+		const local = (await this.runGit(["rev-parse", "HEAD"])).stdout.trim();
+		const remote = (await this.runGit(["rev-parse", UPDATE_TARGET])).stdout.trim();
+		const base = (await this.runGit(["merge-base", "HEAD", UPDATE_TARGET])).stdout.trim();
+		const localTree = (await this.runGit(["rev-parse", "HEAD^{tree}"])).stdout.trim();
+		const remoteTree = (await this.runGit(["rev-parse", `${UPDATE_TARGET}^{tree}`])).stdout.trim();
 
 		const blocked = localChanges.length > 0;
 		const committedFilesMatchTarget = Boolean(localTree && remoteTree && localTree === remoteTree);
@@ -1488,6 +2412,7 @@ class HachiManager {
 			updateBranch: UPDATE_BRANCH,
 			updateTarget: UPDATE_TARGET,
 			repository,
+			source: this.getRuntimeTarget(),
 			localChanges,
 			localChangeDetails,
 			localChangeSummary,
@@ -1499,10 +2424,20 @@ class HachiManager {
 		};
 
 		await this.refreshActiveStash();
+
+		if (this.getRuntimeTarget() === "remote") {
+			const stashCount = this.updateState.stashes?.length || 0;
+			this.log(`Remote: found ${stashCount} saved HachiGen ${stashCount === 1 ? "stash" : "stashes"}.`);
+		}
+
 		return this.updateState;
 	}
 
-	backupBeforeUpdate() {
+	async backupBeforeUpdate() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.backupRemoteBeforeUpdate();
+		}
+
 		// Copy user-owned runtime files before changing code. This is separate
 		// from Git stash because .env/database files may be ignored by Git.
 		const paths = this.getPaths();
@@ -1531,6 +2466,37 @@ class HachiManager {
 		};
 	}
 
+	async backupRemoteBeforeUpdate() {
+		const backupDir = `manager/backups/${timestampFolderName()}`;
+		const script = `
+const fs = require("node:fs");
+const path = require("node:path");
+const backupDir = ${JSON.stringify(backupDir)};
+const files = [
+	[".env", ".env"],
+	["config/config.json", "config/config.json"],
+	["database/database.sqlite", "database/database.sqlite"],
+];
+const copied = [];
+for (const [source, relativeTarget] of files) {
+	if (!fs.existsSync(source)) {
+		continue;
+	}
+	const target = path.posix.join(backupDir, relativeTarget);
+	fs.mkdirSync(path.posix.dirname(target), { recursive: true });
+	fs.copyFileSync(source, target);
+	copied.push(relativeTarget);
+}
+process.stdout.write(JSON.stringify({ backupDir, copied }));
+`;
+		const backup = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Remote pre-update backup did not return valid JSON.",
+			timeoutMs: 120000,
+		});
+
+		return backup;
+	}
+
 	async applyUpdate() {
 		// Apply an available update by fast-forwarding to the update target. It never
 		// hard-resets; local work is stashed first and runtime files are backed up.
@@ -1549,16 +2515,21 @@ class HachiManager {
 			autoStash = await this.createAutoStash();
 		}
 
-		const backup = this.backupBeforeUpdate();
-		this.log(`Backed up local config before update: ${backup.backupDir}`);
-		await run("git", ["merge", "--ff-only", UPDATE_TARGET], {
-			cwd: this.getInstallPath(),
+		const backup = await this.backupBeforeUpdate();
+		this.log(`Backed up ${this.getRuntimeTarget()} config before update: ${backup.backupDir}`);
+		await this.runGit(["merge", "--ff-only", UPDATE_TARGET], {
 			timeoutMs: 300000,
-			onLog: entry => this.logShell(entry),
 		});
 
 		// New bot code may have new package dependencies.
-		await this.ensureNpmDependencies();
+		if (this.getRuntimeTarget() === "remote") {
+			this.log("Remote: installing npm dependencies after update...");
+			await this.runRemoteHachiCommand("npm install", {
+				timeoutMs: 900000,
+			});
+		} else {
+			await this.ensureNpmDependencies();
+		}
 
 		const refreshedState = await this.checkUpdates();
 
@@ -1584,10 +2555,8 @@ class HachiManager {
 		}
 
 		this.log(`Restoring saved changes from ${activeStash.ref}...`);
-		await run("git", ["stash", "apply", activeStash.ref], {
-			cwd: this.getInstallPath(),
+		await this.runGit(["stash", "apply", activeStash.ref], {
 			timeoutMs: 300000,
-			onLog: entry => this.logShell(entry),
 		});
 
 		await this.checkUpdates();
@@ -1608,10 +2577,8 @@ class HachiManager {
 		}
 
 		this.log(`Deleting saved changes from ${activeStash.ref}...`);
-		await run("git", ["stash", "drop", activeStash.ref], {
-			cwd: this.getInstallPath(),
+		await this.runGit(["stash", "drop", activeStash.ref], {
 			timeoutMs: 300000,
-			onLog: entry => this.logShell(entry),
 		});
 
 		this.settings.activeStash = null;
@@ -1625,6 +2592,10 @@ class HachiManager {
 	}
 
 	async deployCommands() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.deployRemoteCommands();
+		}
+
 		// Redeploy slash commands from a clean Discord state. Deleting first
 		// removes commands that no longer exist locally before the fresh global
 		// and guild command lists are uploaded.
@@ -1654,6 +2625,28 @@ class HachiManager {
 		return { ok: true, message: "Commands deployed." };
 	}
 
+	async deployRemoteCommands() {
+		const validation = await this.validateRemoteInstall({ repair: false });
+
+		if (!validation.ok) {
+			throw new Error(validation.config?.message || validation.message || "Remote Hachi validation failed.");
+		}
+
+		this.log("Deleting existing Hachi slash commands from remote source...");
+		await this.runRemoteHachiCommand("node delete-all-commands.js", {
+			timeoutMs: 300000,
+		});
+		this.log("Deploying fresh Hachi slash commands from remote source...");
+		await this.runRemoteHachiCommand("node deploy-global-commands.js", {
+			timeoutMs: 300000,
+		});
+		await this.runRemoteHachiCommand("node deploy-guild-commands.js", {
+			timeoutMs: 300000,
+		});
+		this.log("Remote slash commands deployed.");
+		return { ok: true, message: "Remote commands deployed." };
+	}
+
 	async pm2Describe() {
 		// Ask PM2 whether the Hachi process is already registered. Start/restart
 		// uses this to choose between registering a new process and restarting it.
@@ -1665,6 +2658,14 @@ class HachiManager {
 	}
 
 	async getPm2Status() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.getRemotePm2Status();
+		}
+
+		return this.getLocalPm2Status();
+	}
+
+	async getLocalPm2Status() {
 		// Convert PM2's process list into the small status object used by
 		// Dashboard cards, status dots, and runtime details.
 		const hasPm2 = await commandExists("pm2");
@@ -1728,6 +2729,10 @@ class HachiManager {
 	}
 
 	async startBot() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.startRemoteBot();
+		}
+
 		// Validate and repair before starting so PM2 is never asked to run a
 		// half-installed or misconfigured bot.
 		const validation = await this.validateInstall({ repair: true });
@@ -1768,6 +2773,10 @@ class HachiManager {
 	}
 
 	async stopBot() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.stopRemoteBot();
+		}
+
 		// Stop the PM2 process without deleting its registration. That keeps
 		// future Start/Restart behavior predictable.
 		await this.ensurePm2(false);
@@ -1780,6 +2789,10 @@ class HachiManager {
 	}
 
 	async restartBot() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.restartRemoteBot();
+		}
+
 		// Restart the PM2 process when it exists. If Hachi has not been
 		// registered yet, fall back to the full Start path.
 		await this.ensurePm2(true);
@@ -1826,6 +2839,23 @@ class HachiManager {
 	async getLogs() {
 		// Build the combined Logs tab payload: local Hachi logs, PM2 snapshot
 		// output, and HachiGen's in-memory operation log.
+		if (this.getRuntimeTarget() === "remote") {
+			let pm2 = "";
+
+			try {
+				pm2 = await this.readRemoteLogs();
+			} catch (error) {
+				pm2 = error.message || "Could not read remote logs.";
+			}
+
+			return {
+				local: "",
+				pm2,
+				target: "remote",
+				events: this.operationLog.slice(-160),
+			};
+		}
+
 		const local = this.readLocalLogs();
 		let pm2 = "";
 
@@ -1841,6 +2871,7 @@ class HachiManager {
 		return {
 			local,
 			pm2,
+			target: "local",
 			events: this.operationLog.slice(-160),
 		};
 	}

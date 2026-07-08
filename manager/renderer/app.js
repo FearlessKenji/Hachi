@@ -8,6 +8,7 @@ const api = window.hachiGen;
 const viewTitles = {
 	dashboard: "Dashboard",
 	setup: "Setup",
+	remote: "Remote",
 	updates: "Updates",
 	database: "Database",
 	logs: "Logs",
@@ -80,6 +81,14 @@ function setText(selector, value) {
 
 	if (element) {
 		element.textContent = value ?? "";
+	}
+}
+
+function setInputValue(selector, value) {
+	const element = $(selector);
+
+	if (element && document.activeElement !== element) {
+		element.value = value ?? "";
 	}
 }
 
@@ -172,6 +181,21 @@ function repositoryBranchLabel(repository) {
 	}
 
 	return `Branch: ${repository.currentBranch || "Unknown"}`;
+}
+
+function remoteRuntimeLabel(remote) {
+	const settings = remote?.settings || {};
+	const target = settings.host ? `${settings.username || "user"}@${settings.host}` : "Remote not configured";
+	const remotePath = settings.remotePath ? ` | ${settings.remotePath}` : "";
+	return `${target}${remotePath}`;
+}
+
+function activeTargetPathLabel(nextState) {
+	if (nextState?.runtimeTarget === "remote") {
+		return `Remote: ${remoteRuntimeLabel(nextState.remote)}`;
+	}
+
+	return `Local: ${nextState?.installPath || "Not set"}`;
 }
 
 function updateTargetLabel(updates) {
@@ -346,16 +370,25 @@ function databaseHealth(database) {
 function botHealth(pm2) {
 	// Translate PM2 process data into a Dashboard status. HachiGen treats a
 	// missing or unregistered PM2 process as Stopped rather than an app crash.
+	if (pm2?.target === "remote" && pm2.status === "remote-error") {
+		return { label: "Remote Error", dot: "bad", detail: pm2.message || "Remote PM2 status unavailable" };
+	}
+
 	if (!pm2?.installed) {
-		return { label: "PM2 missing", dot: "warn", detail: "PM2 installs during validation or start" };
+		return {
+			label: "PM2 missing",
+			dot: "warn",
+			detail: pm2?.target === "remote" ? pm2.message || "Remote PM2 is unavailable" : "PM2 installs during validation or start",
+		};
 	}
 
 	if (!pm2.registered) {
-		return { label: "Stopped", dot: "bad", detail: "Hachi is not registered" };
+		return { label: "Stopped", dot: "bad", detail: pm2.message || "Hachi is not registered" };
 	}
 
 	if (pm2.status === "online") {
-		return { label: "Online", dot: "good", detail: `PID ${pm2.pid || "n/a"} | ${formatBytes(pm2.memory)}` };
+		const prefix = pm2.target === "remote" ? "Remote " : "";
+		return { label: "Online", dot: "good", detail: `${prefix}PID ${pm2.pid || "n/a"} | ${formatBytes(pm2.memory)}` };
 	}
 
 	if (pm2.status === "stopped") {
@@ -422,6 +455,75 @@ function renderConfig(config) {
 			input.value = config.values[field] || "";
 		}
 	}
+}
+
+function selectedRemotePortMode() {
+	return $("input[name=\"remotePortMode\"]:checked")?.value === "custom" ? "custom" : "default";
+}
+
+function updateRemotePortMode() {
+	const portInput = $("#remotePortInput");
+
+	if (portInput) {
+		portInput.disabled = selectedRemotePortMode() !== "custom";
+	}
+}
+
+function readRemoteForm() {
+	return {
+		host: $("#remoteHostInput")?.value || "",
+		username: $("#remoteUsernameInput")?.value || "",
+		sshKeyPath: $("#remoteSshKeyInput")?.value || "",
+		portMode: selectedRemotePortMode(),
+		port: $("#remotePortInput")?.value || "22",
+		remotePath: $("#remotePathInput")?.value || "",
+		pm2Name: $("#remotePm2Input")?.value || "Hachi",
+	};
+}
+
+function renderRemote(remote, runtimeTarget = "local") {
+	const settings = remote?.settings || {};
+	const portMode = settings.portMode === "custom" ? "custom" : "default";
+	const target = settings.host ? `${settings.username || "user"}@${settings.host}` : "Not configured";
+	const portLabel = portMode === "custom" ? String(settings.port || "") : "22 (default)";
+	const errors = remote?.errors || [];
+
+	setInputValue("#remoteHostInput", settings.host || "");
+	setInputValue("#remoteUsernameInput", settings.username || "");
+	setInputValue("#remoteSshKeyInput", settings.sshKeyPath || "");
+	setInputValue("#remotePortInput", settings.port || 22);
+	setInputValue("#remotePathInput", settings.remotePath || "");
+	setInputValue("#remotePm2Input", settings.pm2Name || "Hachi");
+
+	$all("input[name=\"remotePortMode\"]").forEach(input => {
+		input.checked = input.value === portMode;
+	});
+	$all("input[name=\"runtimeTarget\"]").forEach(input => {
+		input.checked = input.value === runtimeTarget;
+	});
+	updateRemotePortMode();
+
+	setText("#remoteMeta", remote?.configured ? `Ready: ${target}` : errors[0] || "Not configured");
+	setText("#remotePreviewTarget", target);
+	setText("#remotePreviewPort", portLabel);
+	setText("#remotePreviewPath", settings.remotePath || "Not configured");
+	setText("#remotePreviewPm2", settings.pm2Name || "Hachi");
+}
+
+function formatRemoteTestOutput(result) {
+	const lines = [`Exit code: ${result.code}`];
+	const stdout = String(result.stdout || "").trim();
+	const stderr = String(result.stderr || "").trim();
+
+	if (stdout) {
+		lines.push(`stdout:\n${stdout}`);
+	}
+
+	if (stderr) {
+		lines.push(`stderr:\n${stderr}`);
+	}
+
+	return lines.join("\n\n");
 }
 
 function pluralize(count, singular, plural = `${singular}s`) {
@@ -585,6 +687,7 @@ function renderLocalChanges(updates) {
 	const changes = updates?.localChangeDetails || [];
 	const summary = $("#localChangesSummary");
 	const list = $("#localChangesList");
+	const sourceLabel = updates?.source === "remote" ? "Remote" : "Local";
 
 	if (!summary || !list) {
 		return;
@@ -597,14 +700,14 @@ function renderLocalChanges(updates) {
 	}
 
 	if (!changes.length) {
-		summary.textContent = "Clean working tree. Local files will not block updates.";
+		summary.textContent = `Clean working tree. ${sourceLabel} files will not block updates.`;
 		renderSimpleList("#localChangesList", [], "No local changes.", () => document.createElement("li"));
 		return;
 	}
 
 	summary.textContent = updates?.available ?
-		`${pluralize(changes.length, "local file")} changed. These files will be saved to a recoverable stash before updating.` :
-		`${pluralize(changes.length, "local file")} changed.`;
+		`${pluralize(changes.length, `${sourceLabel.toLowerCase()} file`)} changed. These files will be saved to a recoverable stash before updating.` :
+		`${pluralize(changes.length, `${sourceLabel.toLowerCase()} file`)} changed.`;
 
 	renderGroupedChangesList("#localChangesList", changes, "No local changes.");
 }
@@ -648,8 +751,9 @@ function renderDatabase(database) {
 	const exists = Boolean(database?.exists);
 	const backups = database?.backups || [];
 	const audit = database?.audit;
+	const sourcePrefix = database?.source === "remote" ? "Remote " : "";
 
-	setText("#databaseMeta", exists ? `SQLite database ${audit?.label || "ready"}` : "No database found");
+	setText("#databaseMeta", exists ? `${sourcePrefix}SQLite database ${audit?.label || "ready"}` : `No ${sourcePrefix.toLowerCase()}database found`);
 	setText("#databaseMessage", exists ? audit?.detail || "Maintenance actions create safety backups before risky changes." : "Start Hachi once to create the database.");
 	setText("#databaseStatus", exists ? "Found" : "Missing");
 	setText("#databasePath", database?.path || "Not found");
@@ -658,6 +762,7 @@ function renderDatabase(database) {
 	setText("#databaseAuditStatus", audit ? `${audit.label}: ${audit.detail}` : "Not checked");
 	setDisabled("#migrateDatabaseButton", !audit?.migrationAvailable);
 	setDisabled("#forceMigrateDatabaseButton", !(audit?.forceMigrationAvailable || forceMigrationUnlocked));
+	setDisabled("button[data-action=\"restore-database\"]", database?.source === "remote");
 
 	const latest = database?.latestBackup;
 	setText(
@@ -1181,7 +1286,7 @@ function renderState(nextState) {
 	const dashboardUpdateButtonText = state.updates?.available ? "View Updates" : "Check Updates";
 
 	// Sidebar.
-	setText("#activeInstallPath", state.installPath);
+	setText("#activeInstallPath", activeTargetPathLabel(state));
 	setText("#sidebarInstallPath", shortPath(state.installPath));
 	setText("#sidebarRepoRemote", repositoryRemoteLabel(state.repository));
 	setText("#sidebarRepoBranch", repositoryBranchLabel(state.repository));
@@ -1210,12 +1315,15 @@ function renderState(nextState) {
 	setDot("#dashboardDatabaseDot", database.dot);
 
 	// Dashboard/panel metadata.
-	setText("#runtimeMeta", state.pm2?.message || "PM2 process: Hachi");
+	setText("#runtimeMeta", state.pm2?.message || (state.runtimeTarget === "remote" ? "Remote PM2 process: Hachi" : "PM2 process: Hachi"));
 	setText("#updatesMeta", updateMetaLabel(state.updates, state.repository, scan));
 	setText("#incomingHeading", `Available from ${updateTargetLabel(state.updates)}`);
 	setText("#updateMessage", state.updates?.message || "");
 	setText("#dashboardUpdateButton", dashboardUpdateButtonText);
 	setText("#updatesButton", updateButtonText);
+	setDisabled("#openFolderButton", state.runtimeTarget === "remote");
+	setDisabled("#browseInstallButton", state.runtimeTarget === "remote");
+	setDisabled("#saveInstallPathButton", state.runtimeTarget === "remote");
 	renderIncomingUpdates(state.updates);
 	renderLocalChanges(state.updates);
 	renderStashedChanges(state.updates);
@@ -1225,6 +1333,7 @@ function renderState(nextState) {
 	renderDatabase(state.database);
 	renderDatabaseViewer(databaseView);
 	renderSanitizeSummary(sanitizeReport);
+	renderRemote(state.remote, state.runtimeTarget);
 
 	if (!state.database?.exists) {
 		databaseView = null;
@@ -1237,7 +1346,7 @@ function renderState(nextState) {
 
 	// Do not overwrite the user's typing while the install path input has focus.
 	if (installInput && document.activeElement !== installInput) {
-		installInput.value = state.installPath || "";
+		installInput.value = state.runtimeTarget === "remote" ? state.scan?.installPath || "" : state.installPath || "";
 	}
 
 	renderInstallChecks(scan);
@@ -1360,6 +1469,10 @@ async function runAction(label, action, options = {}) {
 		renderStashedChanges(state?.updates);
 		renderDatabase(state?.database);
 		renderDatabaseViewer(databaseView);
+		setDisabled("#openFolderButton", state?.runtimeTarget === "remote");
+		setDisabled("#browseInstallButton", state?.runtimeTarget === "remote");
+		setDisabled("#saveInstallPathButton", state?.runtimeTarget === "remote");
+		setDisabled("button[data-action=\"restore-database\"]", state?.database?.source === "remote");
 	}
 }
 
@@ -1397,6 +1510,29 @@ function handleChange(event) {
 		setDatabaseSort({ column: "", direction: "" });
 		loadDatabaseViewer(tableSelect.value);
 	}
+
+	if (event.target.name === "remotePortMode") {
+		updateRemotePortMode();
+	}
+
+	if (event.target.name === "runtimeTarget") {
+		const nextTarget = event.target.value === "remote" ? "remote" : "local";
+
+		runAction("Set runtime target", () => api.setRuntimeTarget(nextTarget))
+			.then(async result => {
+				if (!result) {
+					renderRemote(state?.remote, state?.runtimeTarget);
+					return;
+				}
+
+				databaseView = null;
+				sanitizeReport = null;
+				await refreshConfig();
+				if (activeView === "database" && state?.database?.exists) {
+					loadDatabaseViewer();
+				}
+			});
+	}
 }
 
 function handleAction(event) {
@@ -1424,6 +1560,43 @@ function handleAction(event) {
 	if (action === "save-path") {
 		// Save whatever the user typed into the install path text field.
 		runAction("Save path", async () => api.setInstallPath($("#installPathInput").value));
+		return;
+	}
+
+	if (action === "browse-ssh-key") {
+		// Pick a private key without saving it until the user chooses Save/Test.
+		runAction("Choose SSH key", () => api.chooseSshKey(), { toast: false })
+			.then(result => {
+				if (result?.ok) {
+					setInputValue("#remoteSshKeyInput", result.sshKeyPath);
+					toast(result.message || "SSH key selected.");
+				} else if (result?.message) {
+					toast(result.message);
+				}
+			});
+		return;
+	}
+
+	if (action === "save-remote-settings") {
+		runAction("Save remote settings", () => api.saveRemoteSettings(readRemoteForm()));
+		return;
+	}
+
+	if (action === "test-remote") {
+		setText("#remoteTestOutput", "Testing remote connection...");
+		runAction("Test remote connection", async () => {
+			await api.saveRemoteSettings(readRemoteForm());
+			return api.testRemoteConnection();
+		}, { toast: false })
+			.then(result => {
+				if (!result) {
+					setText("#remoteTestOutput", "Remote test failed. Check HachiGen logs for details.");
+					return;
+				}
+
+				setText("#remoteTestOutput", formatRemoteTestOutput(result));
+				toast(result.message, result.ok ? "info" : "error");
+			});
 		return;
 	}
 

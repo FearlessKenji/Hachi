@@ -71,10 +71,30 @@ function registerIpc() {
 		return manager.getState();
 	});
 
+	ipcMain.handle("manager:choose-ssh-key", async () => {
+		const result = await dialog.showOpenDialog(mainWindow, {
+			filters: [
+				{ name: "SSH private keys", extensions: ["key", "pem", "ppk"] },
+				{ name: "All files", extensions: ["*"] },
+			],
+			properties: ["openFile"],
+			title: "Choose SSH private key",
+		});
+
+		if (result.canceled || !result.filePaths.length) {
+			return { ok: false, message: "SSH key selection canceled." };
+		}
+
+		return manager.validateSshKeyPath(result.filePaths[0]);
+	});
+
 	ipcMain.handle("manager:install-or-validate", () => manager.installOrValidate());
 	ipcMain.handle("manager:validate-install", () => manager.validateInstall({ repair: true }));
-	ipcMain.handle("manager:read-config", () => manager.readConfiguration());
+	ipcMain.handle("manager:read-config", () => manager.readActiveConfiguration());
 	ipcMain.handle("manager:save-config", (_event, values) => manager.writeConfiguration(values));
+	ipcMain.handle("manager:save-remote-settings", (_event, values) => manager.saveRemoteSettings(values));
+	ipcMain.handle("manager:set-runtime-target", (_event, target) => manager.setRuntimeTarget(target));
+	ipcMain.handle("manager:test-remote-connection", () => manager.testRemoteConnection());
 	ipcMain.handle("manager:check-updates", () => manager.checkUpdates());
 	ipcMain.handle("manager:apply-update", () => manager.applyUpdate());
 	ipcMain.handle("manager:restore-stashed-changes", () => manager.restoreStashedChanges());

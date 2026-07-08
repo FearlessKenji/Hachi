@@ -351,14 +351,14 @@ function quoteIdentifier(value) {
 function loadSqlite3(root) {
 	// sqlite3 is installed in the Hachi root project, not inside HachiGen.
 	// createRequire lets this worker load the dependency from that root package.
-	const rootRequire = createRequire(path.join(root, "package.json"));
+	const rootRequire = createRequire(path.join(path.resolve(root || "."), "package.json"));
 	return rootRequire("sqlite3").verbose();
 }
 
 function loadExpectedSchema(root) {
 	// Use database/dbAudit.js as the schema source of truth. HachiGen only needs
 	// table order and column names for its viewer/sanitize review.
-	const rootRequire = createRequire(path.join(root, "package.json"));
+	const rootRequire = createRequire(path.join(path.resolve(root || "."), "package.json"));
 	const { EXPECTED_SCHEMA } = rootRequire("./database/dbAudit.js");
 
 	return Object.fromEntries(EXPECTED_SCHEMA.map(tableSpec => [
