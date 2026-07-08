@@ -35,6 +35,7 @@ const {
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const RAID_COLOR = 0xed4245;
+const QUARANTINE_ROLE_NAME = `Quarantine`;
 const pendingRaidSetups = new Map();
 const pendingRaidSyncs = new Map();
 const textChannelTypes = [
@@ -201,10 +202,21 @@ function buildBackRow(setupId, parentSetupId = null) {
 }
 
 function buildRolesContent(config) {
+	const status = config.statusMessage ? `\n### ${config.statusMessage}` : ``;
+
 	return `## Raid Roles
 - Enabled: ${formatYesNo(config.enabled)}
 - Quarantine Role: ${formatRole(config.quarantineRoleId)}
-- Moderator Role: ${formatRole(config.moderatorRoleId)}`;
+- Moderator Role: ${formatRole(config.moderatorRoleId)}${status}`;
+}
+
+function buildCreateQuarantineRoleRow(setupId) {
+	return new ActionRowBuilder().addComponents(
+		new ButtonBuilder()
+			.setCustomId(`raid:${setupId}:setup:createQuarantineRole`)
+			.setLabel(`Create Quarantine Role`)
+			.setStyle(ButtonStyle.Secondary),
+	);
 }
 
 function buildRolesComponents(setupId, parentSetupId = null) {
@@ -212,6 +224,7 @@ function buildRolesComponents(setupId, parentSetupId = null) {
 		buildYesNoSelect(`raid:${setupId}:setup:enabled`, `Raid protection enabled?`),
 		buildRoleSelect(`raid:${setupId}:setup:quarantineRole`, `Quarantine role:`),
 		buildRoleSelect(`raid:${setupId}:setup:moderatorRole`, `Moderator alert role:`),
+		buildCreateQuarantineRoleRow(setupId),
 		buildBackRow(setupId, parentSetupId),
 	];
 }
@@ -308,6 +321,59 @@ function validateSetup(pendingSetup) {
 	return getRaidConfigurationError(pendingSetup);
 }
 
+async function createOrSelectQuarantineRole(interaction, selectedRoleId) {
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageRoles)) {
+		return { statusMessage: `You need Manage Roles to create a quarantine role.` };
+	}
+
+	const botMember = interaction.guild.members.me || await interaction.guild.members.fetchMe().catch(() => null);
+
+	if (!botMember?.permissions.has(PermissionFlagsBits.ManageRoles)) {
+		return { statusMessage: `Hachi needs Manage Roles to create a quarantine role.` };
+	}
+
+	await interaction.guild.roles.fetch().catch(() => null);
+
+	const selectedRole = selectedRoleId ? interaction.guild.roles.cache.get(selectedRoleId) : null;
+
+	if (selectedRole) {
+		return { statusMessage: `Quarantine role is already set to ${selectedRole}.` };
+	}
+
+	const existingRole = interaction.guild.roles.cache.find(role =>
+		!role.managed && role.name.toLowerCase() === QUARANTINE_ROLE_NAME.toLowerCase(),
+	);
+	let role = existingRole;
+	let created = false;
+
+	if (!role) {
+		try {
+			role = await interaction.guild.roles.create({
+				name: QUARANTINE_ROLE_NAME,
+				permissions: [],
+				mentionable: false,
+				reason: `Raid protection quarantine role created by ${interaction.user.tag}`,
+			});
+			created = true;
+		} catch (err) {
+			logError(`Failed to create quarantine role:`, err);
+			return { statusMessage: `Hachi could not create the quarantine role. Check Manage Roles and role hierarchy.` };
+		}
+	}
+
+	const actionText = created ?
+		`Created and selected ${role} with no server-wide permissions.` :
+		`Selected existing ${role}.`;
+	const hierarchyText = role.comparePositionTo(botMember.roles.highest) >= 0 ?
+		` Move it below Hachi before raid protection can assign it.` :
+		` Save settings, then use \`/raid sync\` to apply channel/category denies.`;
+
+	return {
+		quarantineRoleId: role.id,
+		statusMessage: `${actionText}${hierarchyText}`,
+	};
+}
+
 async function submitSetup(interaction, setupId, pendingSetup) {
 	const validationError = validateSetup(pendingSetup);
 
@@ -341,6 +407,12 @@ async function handleSetupField(interaction, setupId, pendingSetup, action, fiel
 
 	if (action === `submit`) {
 		await submitSetup(interaction, setupId, pendingSetup);
+		return;
+	}
+
+	if (action === `createQuarantineRole`) {
+		Object.assign(pendingSetup, await createOrSelectQuarantineRole(interaction, pendingSetup.quarantineRoleId));
+		await showPage(interaction, setupId, pendingSetup, `toggles`);
 		return;
 	}
 
