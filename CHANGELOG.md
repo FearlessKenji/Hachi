@@ -2,6 +2,19 @@
 
 Notable changes to Hachi are documented here.
 
+## Unreleased
+
+### Added
+
+- Added `leftAt` tracking for servers Hachi leaves so server data is retained briefly instead of being removed immediately.
+- Added a seven-day cleanup window for left servers, including guild-scoped database rows and archived raid evidence under `data/evidence/<guildId>/`.
+- Startup reconciliation now marks active server rows as left when Hachi is no longer in those guilds, covering missed leave events while offline.
+
+### Fixed
+
+- Added startup server-row reconciliation so Hachi creates missing `servers` table rows for guilds it is already in, recovering from missed join events or local/production database swaps.
+- Rejoining a server now clears its `leftAt` marker before the cleanup window can remove its data.
+
 ## v3.2.0 - 2026-07-08
 
 ### Added
