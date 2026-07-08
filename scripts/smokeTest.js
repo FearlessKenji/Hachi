@@ -458,6 +458,7 @@ function validateRuntimeDependencies() {
 }
 
 function validatePureHelpers() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
@@ -466,6 +467,7 @@ function validatePureHelpers() {
 		getTimezoneRegionId,
 	} = requireFresh(`utils`, `timezones.js`);
 
+	assert(typeof HachiManager.prototype.updateStateMatchesRepository === `function`, `HachiManager update-state repository guard is missing.`);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(timezoneAutocompletes(`new_york`).some(choice => choice.value === `America/New_York`), `Timezone autocomplete did not find America/New_York.`);
 	assert(normalizeColorInput(`#abc`)?.color === 0xaabbcc, `Short hex color normalization failed.`);
