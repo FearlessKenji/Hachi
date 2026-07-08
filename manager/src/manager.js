@@ -418,7 +418,13 @@ class HachiManager {
 			throw new Error("Install path cannot be empty.");
 		}
 
-		this.settings.installPath = path.resolve(String(installPath));
+		const nextInstallPath = path.resolve(String(installPath));
+
+		if (this.settings.installPath !== nextInstallPath) {
+			this.updateState = createUncheckedUpdateState("Updates have not been checked for this install path yet.");
+		}
+
+		this.settings.installPath = nextInstallPath;
 		this.saveSettings();
 		this.log(`Install path set to ${this.settings.installPath}`);
 	}
@@ -933,6 +939,12 @@ class HachiManager {
 		// Build the complete state object consumed by renderer/app.js. This keeps
 		// the renderer simple: it redraws from one object instead of coordinating
 		// several backend calls itself.
+		const repository = await this.getRepositoryInfo();
+
+		if (!this.updateStateMatchesRepository(repository)) {
+			this.updateState = createUncheckedUpdateState("Updates have not been checked for this install path yet.");
+		}
+
 		try {
 			await this.refreshActiveStash();
 		} catch {
@@ -1375,8 +1387,8 @@ class HachiManager {
 
 		if (!fileExists(paths.git)) {
 			this.updateState = {
+				...createUncheckedUpdateState("This install is not a Git checkout, so HachiGen cannot check for updates."),
 				status: "not_git",
-				available: false,
 				checkedAt: new Date().toISOString(),
 				updateTarget: UPDATE_TARGET,
 				message: "This install is not a Git checkout, so HachiGen cannot check for updates.",
@@ -1457,6 +1469,7 @@ class HachiManager {
 			blocked,
 			diverged: historyDiverged,
 			checkedAt: new Date().toISOString(),
+			installPath: paths.root,
 			local,
 			remote,
 			base,
