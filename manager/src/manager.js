@@ -13,6 +13,16 @@ const UPDATE_REMOTE = "origin";
 const UPDATE_BRANCH = "main";
 const UPDATE_TARGET = `${UPDATE_REMOTE}/${UPDATE_BRANCH}`;
 
+function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
+	return {
+		status: "unchecked",
+		available: false,
+		checkedAt: null,
+		updateTarget: UPDATE_TARGET,
+		message,
+	};
+}
+
 // PM2 process name used by the bot itself. If this changes in Hachi's
 // ecosystem config, it should change here too.
 const PROCESS_NAME = "Hachi";
@@ -343,13 +353,7 @@ class HachiManager {
 
 		// updateState stores the most recent update check so the UI can redraw
 		// without running Git commands every time it needs a label.
-		this.updateState = {
-			status: "unchecked",
-			available: false,
-			checkedAt: null,
-			updateTarget: UPDATE_TARGET,
-			message: "Updates have not been checked yet.",
-		};
+		this.updateState = createUncheckedUpdateState();
 
 		ensureDir(this.userDataPath);
 		this.settings = this.loadSettings();
