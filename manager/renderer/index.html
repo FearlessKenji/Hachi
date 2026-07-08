@@ -29,6 +29,7 @@
 					<button class="nav-item" type="button" data-view="setup">Setup</button>
 					<button class="nav-item" type="button" data-view="updates">Updates</button>
 					<button class="nav-item" type="button" data-view="database">Database</button>
+					<button class="nav-item" type="button" data-view="remote">Remote</button>
 					<button class="nav-item" type="button" data-view="logs">Logs</button>
 				</nav>
 
@@ -53,7 +54,7 @@
 						<div class="path-line" id="activeInstallPath">Install path loading...</div>
 					</div>
 					<div class="topbar-actions">
-						<button class="button secondary" type="button" data-action="open-folder">Open Folder</button>
+						<button class="button secondary" type="button" data-action="open-folder" id="openFolderButton">Open Folder</button>
 						<button class="button secondary" type="button" data-action="refresh">Refresh</button>
 					</div>
 				</header>
@@ -136,13 +137,13 @@
 									<span>Install path</span>
 									<div class="input-row">
 										<input id="installPathInput" type="text" spellcheck="false">
-										<button class="button secondary compact" type="button" data-action="browse">Browse</button>
+										<button class="button secondary compact" type="button" data-action="browse" id="browseInstallButton">Browse</button>
 									</div>
 								</label>
 								<!-- app.js fills this checklist from quickScan(): files, config, npm packages, and Git status. -->
 								<div class="button-row wrap install-actions">
 									<button class="button primary" type="button" data-action="install-validate">Install / Validate</button>
-									<button class="button secondary" type="button" data-action="save-path">Save Path</button>
+									<button class="button secondary" type="button" data-action="save-path" id="saveInstallPathButton">Save Path</button>
 								</div>
 								<div class="check-list" id="installChecks"></div>
 							</div>
@@ -228,6 +229,105 @@
 								</label>
 							</div>
 						</form>
+					</div>
+				</section>
+
+				<!-- Remote: saved SSH details for the production server. -->
+				<section class="view" data-view-panel="remote">
+					<div class="remote-grid">
+						<div class="panel remote-settings-panel">
+							<div class="form-header">
+								<div>
+									<h2>Remote Connection</h2>
+									<div class="panel-meta" id="remoteMeta">Not configured</div>
+								</div>
+								<button class="button primary compact" type="button" data-action="save-remote-settings">Save Remote</button>
+							</div>
+
+							<div class="target-row">
+								<span>Runtime target</span>
+								<div class="radio-row" role="radiogroup" aria-label="Runtime target">
+									<label class="radio-option">
+										<input type="radio" name="runtimeTarget" value="local" checked>
+										<span>Local Development</span>
+									</label>
+									<label class="radio-option">
+										<input type="radio" name="runtimeTarget" value="remote">
+										<span>Remote Server</span>
+									</label>
+								</div>
+							</div>
+
+							<div class="form-grid">
+								<label class="field">
+									<span>Host</span>
+									<input id="remoteHostInput" type="text" spellcheck="false" placeholder="IP Address">
+								</label>
+								<label class="field">
+									<span>Username</span>
+									<input id="remoteUsernameInput" type="text" spellcheck="false" placeholder="ubuntu">
+								</label>
+								<label class="field wide">
+									<span>SSH private key</span>
+									<div class="input-row">
+										<input id="remoteSshKeyInput" type="text" spellcheck="false" placeholder="Choose a private key file" readonly data-action="browse-ssh-key">
+										<button class="button secondary compact" type="button" data-action="browse-ssh-key">Choose Key</button>
+									</div>
+								</label>
+								<div class="field">
+									<span>SSH port</span>
+									<div class="radio-row" role="radiogroup" aria-label="SSH port">
+										<label class="radio-option">
+											<input type="radio" name="remotePortMode" value="default" checked>
+											<span>Default 22</span>
+										</label>
+										<label class="radio-option">
+											<input type="radio" name="remotePortMode" value="custom">
+											<span>Custom</span>
+										</label>
+									</div>
+								</div>
+								<label class="field">
+									<span>Custom port</span>
+									<input id="remotePortInput" type="number" min="1" max="65535" step="1" value="22" disabled>
+								</label>
+								<label class="field">
+									<span>Remote Hachi path</span>
+									<input id="remotePathInput" type="text" spellcheck="false" placeholder="bots/Hachi">
+								</label>
+								<label class="field">
+									<span>PM2 process name</span>
+									<input id="remotePm2Input" type="text" spellcheck="false" placeholder="Hachi">
+								</label>
+							</div>
+
+							<div class="button-row wrap remote-actions">
+								<button class="button info" type="button" data-action="test-remote">Test Connection</button>
+							</div>
+						</div>
+
+						<div class="panel remote-preview-panel">
+							<h2>Connection Preview</h2>
+							<dl class="detail-list">
+								<div>
+									<dt>Target</dt>
+									<dd id="remotePreviewTarget">Not configured</dd>
+								</div>
+								<div>
+									<dt>Port</dt>
+									<dd id="remotePreviewPort">22</dd>
+								</div>
+								<div>
+									<dt>Path</dt>
+									<dd id="remotePreviewPath">Not configured</dd>
+								</div>
+								<div>
+									<dt>PM2</dt>
+									<dd id="remotePreviewPm2">Hachi</dd>
+								</div>
+							</dl>
+							<pre class="output compact-output" id="remoteTestOutput">No remote test has run yet.</pre>
+						</div>
 					</div>
 				</section>
 

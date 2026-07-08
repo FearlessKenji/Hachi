@@ -439,6 +439,10 @@ h2 {
 	outline: 3px solid rgba(63, 111, 159, 0.18);
 }
 
+.field input[readonly] {
+	cursor: pointer;
+}
+
 .select-field {
 	display: grid;
 	gap: 6px;
@@ -484,6 +488,68 @@ h2 {
 
 .field.wide {
 	grid-column: 1 / -1;
+}
+
+.remote-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 16px;
+	align-items: stretch;
+}
+
+.remote-actions {
+	margin-top: 18px;
+}
+
+.remote-settings-panel,
+.remote-preview-panel {
+	display: flex;
+	flex-direction: column;
+}
+
+.remote-preview-panel .output {
+	flex: 1;
+}
+
+.target-row {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	align-items: center;
+	margin-top: 18px;
+	color: var(--text);
+	font-size: 12px;
+	font-weight: 750;
+}
+
+.radio-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	min-height: 38px;
+	align-items: center;
+}
+
+.radio-option {
+	display: inline-flex;
+	gap: 8px;
+	align-items: center;
+	min-height: 34px;
+	border: 1px solid rgba(216, 225, 229, 0.32);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.06);
+	color: var(--muted);
+	padding: 0 12px;
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.radio-option input {
+	width: 15px;
+	height: 15px;
+	margin: 0;
+	padding: 0;
+	accent-color: var(--primary);
 }
 
 /* Setup checklist under Install. */
@@ -1011,6 +1077,7 @@ h2 {
 	.status-grid,
 	.two-column,
 	.database-grid,
+	.remote-grid,
 	.updates-grid,
 	.logs-grid {
 		grid-template-columns: 1fr;
