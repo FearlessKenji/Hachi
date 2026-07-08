@@ -13,6 +13,7 @@ Notable changes to Hachi are documented here.
 - Added Local Development / Remote Server runtime switching in HachiGen.
 - Added remote support for HachiGen dashboard runtime controls, setup configuration, update checks, command deployment, database tools, PM2 status, and logs.
 - Added remote database viewing, backup, audit, migration, sanitation, and status support.
+- Added automatic HachiGen releases when `main` receives a `package.json` version bump.
 
 ### Changed
 
