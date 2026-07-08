@@ -360,7 +360,6 @@ function validateProjectFiles() {
 		`database/dbAudit.js`,
 		`database/dbInit.js`,
 		`docs/_config.yml`,
-		`docs/changelog.md`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
 		`events/ready.js`,
@@ -381,8 +380,8 @@ function validateProjectFiles() {
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
 	const releaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
 
-	assert(rootChangelog.includes(`docs/changelog.md`), `Root CHANGELOG.md should point to docs/changelog.md.`);
-	assert(docsIndex.includes(`changelog.html`), `docs/index.md should link to the rendered changelog page.`);
+	assert(rootChangelog.includes(`## v3.2.0`), `Root CHANGELOG.md should include the latest release entry.`);
+	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(releaseWorkflow.includes(`tags:`) && releaseWorkflow.includes(`"v*"`), `HachiGen release workflow should run for v* tags.`);
 	assert(releaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
