@@ -383,6 +383,8 @@ function validateProjectFiles() {
 	assert(rootChangelog.includes(`## v3.2.0`), `Root CHANGELOG.md should include the latest release entry.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
+	assert(releaseWorkflow.includes(`branches:`) && releaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
+	assert(releaseWorkflow.includes(`Resolve release tag`) && releaseWorkflow.includes(`package.json`), `HachiGen release workflow should resolve tags from package.json version bumps.`);
 	assert(releaseWorkflow.includes(`tags:`) && releaseWorkflow.includes(`"v*"`), `HachiGen release workflow should run for v* tags.`);
 	assert(releaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
 	assert(releaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
