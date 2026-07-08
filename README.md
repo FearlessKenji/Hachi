@@ -572,6 +572,10 @@ When changing the icon, generate a fresh `manager/icon.ico` from the desired sou
 	</tbody>
 </table>
 
+## Branding
+
+The Hachi source code is licensed under the MIT License. The Hachi name, logo, icons, official bot identity, and hosted service identity are project branding and are not licensed for use in a way that suggests an unofficial fork or derivative is the official Hachi bot.
+
 ## GitHub Pages
 
 The `docs` folder contains the public legal pages for GitHub Pages:
