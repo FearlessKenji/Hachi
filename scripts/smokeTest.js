@@ -269,6 +269,11 @@ function validateEventFiles() {
 
 		assert(event.name, `${relative(filePath)} is missing event name.`);
 		assert(typeof event.execute === `function`, `${relative(filePath)} is missing execute().`);
+
+		if (relative(filePath) === `events/ready.js`) {
+			assert(typeof event.reconcileServerRows === `function`, `events/ready.js is missing server-row reconciliation.`);
+		}
+
 		assert(!eventNames.has(event.name), `Duplicate event handler name: ${event.name}.`);
 		eventNames.add(event.name);
 	}

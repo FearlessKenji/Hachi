@@ -2,6 +2,12 @@
 
 Notable changes to Hachi are documented here.
 
+## Unreleased
+
+### Fixed
+
+- Added startup server-row reconciliation so Hachi creates missing `servers` table rows for guilds it is already in, recovering from missed join events or local/production database swaps.
+
 ## v3.2.0 - 2026-07-08
 
 ### Added
