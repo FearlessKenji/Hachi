@@ -367,6 +367,7 @@ function validateProjectFiles() {
 		`docs/_config.yml`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
+		`events/guildDelete.js`,
 		`events/ready.js`,
 		`index.js`,
 	];
@@ -467,12 +468,15 @@ function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
+	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
 	const {
 		getTimezoneChoicesForRegion,
 		getTimezoneRegionId,
 	} = requireFresh(`utils`, `timezones.js`);
 
 	assert(typeof HachiManager.prototype.updateStateMatchesRepository === `function`, `HachiManager update-state repository guard is missing.`);
+	assert(typeof serverLifecycle.reconcileServerRows === `function`, `server lifecycle reconciliation helper is missing.`);
+	assert(typeof serverLifecycle.markServerLeft === `function`, `server lifecycle leave tracker is missing.`);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(timezoneAutocompletes(`new_york`).some(choice => choice.value === `America/New_York`), `Timezone autocomplete did not find America/New_York.`);
 	assert(normalizeColorInput(`#abc`)?.color === 0xaabbcc, `Short hex color normalization failed.`);

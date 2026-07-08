@@ -4,6 +4,10 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.STRING,
 			primaryKey: true,
 		},
+		leftAt: {
+			type: DataTypes.DATE,
+			allowNull: true,
+		},
 		selfTwitchChannelId: {
 			type: DataTypes.STRING,
 			allowNull: true,

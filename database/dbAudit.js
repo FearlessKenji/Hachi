@@ -15,6 +15,7 @@ const EXPECTED_SCHEMA = [
 		name: `servers`,
 		columns: [
 			column(`guildId`, `VARCHAR(255)`, { primaryKey: true }),
+			column(`leftAt`, `DATETIME`, { nullable: true }),
 			column(`selfTwitchChannelId`, `VARCHAR(255)`, { nullable: true }),
 			column(`selfKickChannelId`, `VARCHAR(255)`, { nullable: true }),
 			column(`affiliateChannelId`, `VARCHAR(255)`, { nullable: true }),
