@@ -1339,31 +1339,6 @@ process.exit(child.status === null ? 1 : child.status);
 		}
 	}
 
-	async runRemoteDatabaseAuditCommand(args = []) {
-		const result = await this.runRemoteHachiCommand(`node database/dbAudit.js --json ${args.map(arg => quotePosix(arg)).join(" ")}`, {
-			allowFailure: true,
-			log: false,
-			timeoutMs: 300000,
-		});
-		const output = (result.stdout || "").trim();
-
-		try {
-			return JSON.parse(output);
-		} catch {
-			return {
-				detail: "Remote database audit did not return valid JSON.",
-				dot: "bad",
-				error: result.stderr || output || "Remote database audit failed.",
-				exists: true,
-				forceMigrationAvailable: false,
-				label: "Audit Error",
-				migrationAvailable: false,
-				ok: false,
-				status: "error",
-			};
-		}
-	}
-
 	async auditDatabase(options = {}) {
 		// Audit only. This powers the Dashboard database card and button states.
 		return this.runDatabaseAuditCommand([], options);
