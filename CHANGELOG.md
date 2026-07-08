@@ -19,6 +19,7 @@ Notable changes to Hachi are documented here.
 
 - Normalized remote paths so entries like `bots/Hachi` resolve as `~/bots/Hachi`.
 - Updated HachiGen remote command logging so routine SSH/Git/database checks use readable status messages instead of full command transcripts.
+- Updated automatic releases to create the current version tag when it is missing, even if the workflow was added after the version bump.
 - Redacted SSH command details and key paths when remote shell commands are logged.
 - Updated the project version to `3.2.0`.
 
