@@ -63,16 +63,24 @@ jobs:
               }
             }
 
-            if ($previousVersion -eq $version) {
-              Write-Host "package.json version is still $version; skipping release."
-              $shouldRelease = "false"
-            }
-
-            git ls-remote --exit-code --tags origin "refs/tags/$tag" *> $null
+            $tagMatches = @(git ls-remote --tags origin "refs/tags/$tag")
 
             if ($LASTEXITCODE -eq 0) {
+              $tagExists = $tagMatches.Count -gt 0
+            } else {
+              Write-Error "Could not query remote tags."
+              exit 1
+            }
+
+            if ($tagExists) {
               Write-Host "Release tag $tag already exists; skipping automatic release."
               $shouldRelease = "false"
+            } elseif ($previousVersion -eq $version) {
+              Write-Host "package.json version is still $version, but $tag does not exist; creating release for the current version."
+            } elseif ($previousVersion) {
+              Write-Host "package.json version changed from $previousVersion to $version; creating $tag."
+            } else {
+              Write-Host "Could not read the previous package.json version; creating $tag because the tag does not exist."
             }
           }
 
@@ -85,6 +93,7 @@ jobs:
           "should_release=$shouldRelease" >> $env:GITHUB_OUTPUT
           Write-Host "release_tag=$tag"
           Write-Host "should_release=$shouldRelease"
+          exit 0
 
       - name: Set up Node.js
         if: steps.release.outputs.should_release == 'true'

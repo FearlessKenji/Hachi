@@ -385,6 +385,8 @@ function validateProjectFiles() {
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(releaseWorkflow.includes(`branches:`) && releaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
 	assert(releaseWorkflow.includes(`Resolve release tag`) && releaseWorkflow.includes(`package.json`), `HachiGen release workflow should resolve tags from package.json version bumps.`);
+	assert(releaseWorkflow.includes(`version is still $version, but $tag does not exist`), `HachiGen release workflow should release the current version when its tag is missing.`);
+	assert(!releaseWorkflow.includes(`ls-remote --exit-code --tags`), `HachiGen release workflow should not fail when a release tag is missing.`);
 	assert(releaseWorkflow.includes(`tags:`) && releaseWorkflow.includes(`"v*"`), `HachiGen release workflow should run for v* tags.`);
 	assert(releaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
 	assert(releaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
