@@ -638,6 +638,12 @@ class HachiManager {
 		return this.settings.runtimeTarget === "remote" ? "remote" : "local";
 	}
 
+	getActiveInstallIdentifier() {
+		return this.getRuntimeTarget() === "remote" ?
+			this.getRemoteSettings().remotePath :
+			this.getInstallPath();
+	}
+
 	getRemoteState() {
 		const settings = this.getRemoteSettings();
 		const errors = validateRemoteSettings(settings);
@@ -1828,6 +1834,48 @@ process.stdout.write(JSON.stringify({
 		return this.readRemoteConfiguration();
 	}
 
+	updateStateMatchesRepository(repository) {
+		const state = this.updateState || {};
+
+		if (!state.checkedAt || state.status === "unchecked") {
+			return true;
+		}
+
+		if (state.source && state.source !== this.getRuntimeTarget()) {
+			return false;
+		}
+
+		if (state.installPath && state.installPath !== this.getActiveInstallIdentifier()) {
+			return false;
+		}
+
+		const checkedRepository = state.repository || {};
+
+		if (typeof checkedRepository.isGit === "boolean" && checkedRepository.isGit !== repository.isGit) {
+			return false;
+		}
+
+		const checkedSource = checkedRepository.source || state.source;
+
+		if (checkedSource && checkedSource !== repository.source) {
+			return false;
+		}
+
+		const checkedBranch = checkedRepository.currentBranch || state.currentBranch;
+
+		if (checkedBranch && repository.currentBranch && checkedBranch !== repository.currentBranch) {
+			return false;
+		}
+
+		const checkedOrigin = checkedRepository.originUrl || state.originUrl;
+
+		if (checkedOrigin && repository.originUrl && checkedOrigin !== repository.originUrl) {
+			return false;
+		}
+
+		return true;
+	}
+
 	async getState() {
 		// Build the complete state object consumed by renderer/app.js. This keeps
 		// the renderer simple: it redraws from one object instead of coordinating
@@ -1852,7 +1900,7 @@ process.stdout.write(JSON.stringify({
 			appName: "HachiGen",
 			database: await this.getDatabaseState(),
 			installPath: this.getInstallPath(),
-			repository: await this.getRepositoryInfo(),
+			repository,
 			remote: this.getRemoteState(),
 			runtimeTarget: this.getRuntimeTarget(),
 			scan,
@@ -2324,6 +2372,7 @@ process.stdout.write(JSON.stringify({
 		// Fetch and compare local HEAD against the update target. This method reports
 		// update availability and local changes, but never modifies the worktree.
 		const paths = this.getPaths();
+		const installPath = this.getActiveInstallIdentifier();
 		const hasGit = this.getRuntimeTarget() === "remote" ? await this.remotePathExists(".git", "d") : fileExists(paths.git);
 
 		if (!hasGit) {
@@ -2397,7 +2446,7 @@ process.stdout.write(JSON.stringify({
 			blocked,
 			diverged: historyDiverged,
 			checkedAt: new Date().toISOString(),
-			installPath: paths.root,
+			installPath,
 			local,
 			remote,
 			base,
