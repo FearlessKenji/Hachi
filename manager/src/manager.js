@@ -961,7 +961,7 @@ class HachiManager {
 			appName: "HachiGen",
 			database: await this.getDatabaseState(),
 			installPath: this.getInstallPath(),
-			repository,
+			repository: await this.getRepositoryInfo(),
 			scan: this.quickScan(),
 			updates: this.updateState,
 			pm2: await this.getPm2Status(),
@@ -1261,24 +1261,6 @@ class HachiManager {
 		return info;
 	}
 
-	updateStateMatchesRepository(repository) {
-		if (!this.updateState?.checkedAt) {
-			return true;
-		}
-
-		if (this.updateState.installPath && this.updateState.installPath !== this.getInstallPath()) {
-			return false;
-		}
-
-		if (!repository?.isGit) {
-			return this.updateState.status === "not_git";
-		}
-
-		return this.updateState.currentBranch === repository.currentBranch &&
-			this.updateState.originUrl === repository.originUrl &&
-			this.updateState.updateTarget === repository.updateTarget;
-	}
-
 	async getIncomingCommits() {
 		// Return commits on the update target that are not present locally, giving the
 		// Updates panel a concrete list of incoming work.
@@ -1412,7 +1394,8 @@ class HachiManager {
 				...createUncheckedUpdateState("This install is not a Git checkout, so HachiGen cannot check for updates."),
 				status: "not_git",
 				checkedAt: new Date().toISOString(),
-				installPath: paths.root,
+				updateTarget: UPDATE_TARGET,
+				message: "This install is not a Git checkout, so HachiGen cannot check for updates.",
 			};
 			return this.updateState;
 		}
