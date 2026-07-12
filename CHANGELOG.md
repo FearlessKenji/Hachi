@@ -6,6 +6,21 @@ Notable changes to Hachi are documented here.
 
 No unreleased changes yet.
 
+## v3.3.1 - 2026-07-12
+
+### Changed
+
+- Moved `/setup` Hachi Updates to the first setup button and made it the primary setup entry point.
+- Updated HachiGen package metadata to version `1.0.0`.
+- Updated the project version to `3.3.1`.
+
+### Fixed
+
+- Fixed HachiGen renderer-side errors so they are written to the HachiGen event log while still showing popup feedback.
+- Fixed `/setup` Hachi Updates channel selection by normalizing Discord guild/channel IDs before writing announcement settings to SQLite.
+- Fixed Kick VoD polling so Kick security-policy blocks do not leave ended streams marked live and do not spam repeated errors.
+- Hachi now clears stale Kick live state when an existing notification already contains a valid Kick VoD link.
+
 ## v3.3.0 - 2026-07-12
 
 ### Added

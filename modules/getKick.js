@@ -21,6 +21,18 @@ const {
 const kickClientId = process.env.kickClientId;
 const provider = `Kick`;
 
+function findKickVodUrl(embed) {
+	const candidates = [
+		embed?.url,
+		...(embed?.fields || []).map(field => field.value),
+	].filter(Boolean);
+	const match = candidates
+		.map(value => String(value).match(/https?:\/\/(?:www\.)?kick\.com\/[^\s)\]]+\/videos\/[A-Za-z0-9_-]+/iu)?.[0])
+		.find(Boolean);
+
+	return match || null;
+}
+
 async function updateVodMessage(chan, server, guild, client) {
 	if (!chan.kickMessageId || !chan.kickIsLive || !chan.kickNotif) {
 		return;
@@ -33,16 +45,28 @@ async function updateVodMessage(chan, server, guild, client) {
 		return;
 	}
 
-	const vod = await kickVods.getLatest(chan.channelName);
-
-	if (!vod?.url) {
-		return;
-	}
-
 	const existingMessage = await fetchMessage(discordChannel, chan.kickMessageId);
 
 	if (!existingMessage) {
 		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		return;
+	}
+
+	const existingVodUrl = findKickVodUrl(existingMessage.embeds[0]);
+
+	if (existingVodUrl) {
+		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		return;
+	}
+
+	const vod = await kickVods.getLatest(chan.channelName);
+
+	if (!vod?.url) {
+		if (vod?.blocked && vod.retryable === false) {
+			warn(`Kick VoD update skipped for ${chan.channelName}; Kick blocked the replay lookup, so Hachi marked the stream offline without retrying.`);
+			await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		}
+
 		return;
 	}
 
@@ -158,4 +182,7 @@ async function getKick(client) {
 	}
 }
 
-module.exports = { getKick };
+module.exports = {
+	findKickVodUrl,
+	getKick,
+};

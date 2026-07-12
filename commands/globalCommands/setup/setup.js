@@ -188,7 +188,8 @@ async function showAnnouncementsPanel(interaction, setupId, statusMessage = null
 }
 
 async function saveAnnouncementChannelSelection(interaction, setupId) {
-	const channelId = interaction.values[0] || null;
+	const selectedChannel = interaction.channels?.first?.();
+	const channelId = interaction.values?.[0] || selectedChannel?.id || null;
 	const settings = await saveAnnouncementChannel(interaction.guild.id, channelId);
 
 	await interaction.update({

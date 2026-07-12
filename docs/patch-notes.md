@@ -4,6 +4,24 @@ These notes are written for server owners and moderators. They include changes
 that affect setup, security, day-to-day use, or visible bot behavior. For the
 full developer history, see `CHANGELOG.md`.
 
+## v3.3.1 - 2026-07-12
+
+### Setup
+
+- Hachi Updates is now the first button in `/setup`, making patch-note channel
+  setup easier to find.
+- Fixed Hachi Updates channel selection so saving an announcement channel no
+  longer fails with a database binding error.
+- HachiGen now uses `1.0.0` for its packaged app metadata.
+
+### Reliability
+
+- Kick stream notifications now stop retrying the VoD lookup when Kick blocks
+  the replay endpoint after a stream ends.
+- If a Kick notification already has a valid VoD link, Hachi now clears the
+  stale live state without making another blocked lookup.
+- HachiGen errors now appear in its log as well as popup notifications.
+
 ## v3.3.0 - 2026-07-12
 
 ### Security and Setup
