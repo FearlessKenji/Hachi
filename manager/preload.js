@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	restartBot: () => invoke("manager:restart-bot"),
 	getLogs: () => invoke("manager:get-logs"),
 	getPm2Status: () => invoke("manager:get-pm2-status"),
+	recordRendererEvent: payload => invoke("manager:record-renderer-event", payload),
 
 	// Database viewing, maintenance, encryption, and backup actions.
 	readDatabaseTable: (tableName, sort) => invoke("manager:read-database-table", tableName, sort),

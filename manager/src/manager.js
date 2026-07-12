@@ -1227,6 +1227,27 @@ class HachiManager {
 		this.event("log", message, details);
 	}
 
+	recordRendererEvent(payload = {}) {
+		// Renderer-side validation failures and UI-only exceptions should land in
+		// the same operation log as backend work. The renderer cannot write that
+		// log directly, so it sends a narrow event payload through IPC.
+		const type = payload.type === "error" ? "error" : "log";
+		const message = redactKnownSecretText(payload.message || "").trim() || "HachiGen renderer event recorded without a message.";
+		const rawDetails = payload.details && typeof payload.details === "object" && !Array.isArray(payload.details) ?
+			payload.details :
+			{};
+		const details = {
+			...Object.fromEntries(Object.entries(rawDetails).map(([key, value]) => [
+				key,
+				typeof value === "string" ? redactKnownSecretText(value) : value,
+			])),
+			source: "renderer",
+		};
+
+		this.event(type, message, details);
+		return { ok: true };
+	}
+
 	logDatabase(message, details = {}) {
 		this.log(`Database protection: ${message}`, {
 			area: "database-protection",
