@@ -50,10 +50,14 @@ jobs:
         run: npm ci
 
       - name: Create CI config
-        run: cp config/blank.json config/config.json
+        run: node -e "const fs = require('fs'); const config = require('./config/blank.json'); config.botOwners = ['111111111111111111']; config.guildIds = ['222222222222222222']; fs.writeFileSync('config/config.json', JSON.stringify(config, null, '\t') + '\n');"
 
       - name: Run smoke test
         env:
+          HACHI_DB_ENCRYPTION: encrypted
+          HACHI_DB_KEY: smoke-db-key
+          HACHI_SECRETS_ENCRYPTION: encrypted
+          HACHI_SECRETS_KEY: smoke-secret-key
           TOKEN: smoke-token
           clientId: smoke-client-id
           kickClientId: smoke-kick-client-id

@@ -437,14 +437,26 @@ function validateBlankConfig() {
 
 function validateConfigCheckIfConfigured() {
 	const configPath = resolveProject(`config`, `config.json`);
+	const databasePath = resolveProject(`database`, `database.sqlite`);
 
 	if (!fs.existsSync(configPath)) {
 		warn(`config/config.json not found; skipped configCheck smoke validation.`);
 		return;
 	}
 
+	// CI does not keep a real runtime database in the repository. When the
+	// database is absent, give configCheck a temporary direct database key so it
+	// can verify the mandatory-encryption settings without opening a live file.
+	const databaseEnv = fs.existsSync(databasePath) ?
+		{} :
+		{
+			HACHI_DB_ENCRYPTION: `encrypted`,
+			HACHI_DB_KEY: `smoke-db-key`,
+		};
+
 	const result = spawnNode([`-e`, `require('./config/configCheck.js')`], {
 		env: {
+			...databaseEnv,
 			TOKEN: `smoke-token`,
 			clientId: `smoke-client-id`,
 			HACHI_SECRETS_ENCRYPTION: `encrypted`,
