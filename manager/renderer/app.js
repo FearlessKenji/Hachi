@@ -241,11 +241,11 @@ function updateMetaLabel(updates, repository, scan) {
 	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target} | Version: ${version}`;
 }
 
-// Disable every button while a backend action is running. This prevents stacked
-// clicks, such as running validation and update commands at the same time.
+// Disable action buttons while a backend action is running. Sidebar navigation
+// stays enabled so the user can keep reading status/logs during long work.
 function setBusy(nextBusy) {
 	busy = nextBusy;
-	$all("button").forEach(button => {
+	$all("button:not([data-view])").forEach(button => {
 		button.disabled = busy;
 	});
 }
