@@ -579,6 +579,40 @@ async function validateHachiGenSecretConfigurationRoundTrip() {
 	}
 }
 
+function validateHachiGenRendererEventLogging() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-events-`));
+	const liveEvents = [];
+
+	try {
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: resolveProject(`manager`),
+			userDataPath: path.join(tempDir, `userData`),
+			sendEvent: event => liveEvents.push(event),
+		});
+		const result = manager.recordRendererEvent({
+			type: `error`,
+			message: `TOKEN="smoke-secret-token" failed in renderer`,
+			details: {
+				label: `TOKEN="smoke-secret-token"`,
+			},
+		});
+		const logged = manager.operationLog[0];
+
+		assert(result.ok, `Renderer event logger did not report success.`);
+		assert(manager.operationLog.length === 1, `Renderer event was not written to HachiGen operationLog.`);
+		assert(liveEvents.length === 1, `Renderer event was not echoed as a live manager event.`);
+		assert(logged.type === `error`, `Renderer error event was not logged as an error.`);
+		assert(logged.details.source === `renderer`, `Renderer event source detail was not preserved.`);
+		assert(!logged.message.includes(`smoke-secret-token`), `Renderer event message leaked a secret.`);
+		assert(logged.message.includes(`[redacted]`), `Renderer event message was not redacted.`);
+		assert(!logged.details.label.includes(`smoke-secret-token`), `Renderer event details leaked a secret.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 function validateRuntimeDependencies() {
 	const dependencies = [
 		`better-sqlite3-multiple-ciphers`,
@@ -875,6 +909,7 @@ async function main() {
 	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
 	await test(`HachiGen saves setup env values encrypted`, validateHachiGenSecretConfigurationRoundTrip);
+	await test(`HachiGen records renderer errors in event log`, validateHachiGenRendererEventLogging);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`git hygiene checks pass`, validateGitHygiene);

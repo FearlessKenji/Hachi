@@ -181,6 +181,7 @@ function registerIpc() {
 	ipcMain.handle("manager:restart-bot", () => manager.restartBot());
 	ipcMain.handle("manager:get-logs", () => manager.getLogs());
 	ipcMain.handle("manager:get-pm2-status", () => manager.getPm2Status());
+	ipcMain.handle("manager:record-renderer-event", (_event, payload) => manager.recordRendererEvent(payload));
 
 	// Database viewer and maintenance channels. The renderer controls what the
 	// user sees and confirms; HachiManager owns actual file/database mutations.

@@ -250,13 +250,60 @@ function setBusy(nextBusy) {
 	});
 }
 
-// Show a small temporary message in the bottom-right corner. Toasts are for
-// quick feedback; longer details still go into the Logs tab.
-function toast(message, type = "info") {
+function rendererLogMessage(message, fallback = "HachiGen event recorded without a message.") {
+	// UI-generated errors may include exception text from many places. Redact the
+	// common secret shapes before showing a fallback log entry in the renderer.
+	return String(message || fallback)
+		.replace(/((?:TOKEN|clientId|twitchClientId|twitchSecret|kickClientId|kickSecret|HACHI_DB_KEY|HACHI_SECRETS_KEY)=)(?:"[^"]*"|'[^']*'|\S+)/giu, "$1[redacted]")
+		.replace(/(client(?:ID|Id|id|Secret)|token|secret)(["':=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu, "$1$2[redacted]");
+}
+
+function recordRendererEvent(type, message, details = {}) {
+	// Send renderer-only events to the backend operation log. main.js will echo
+	// the saved event back through api.onEvent(), so the visible Logs panel and
+	// the actual HachiGen event history stay in sync.
+	const safeMessage = rendererLogMessage(message, type === "error" ? "Unexpected HachiGen error." : "HachiGen event recorded.");
+
+	if (!api.recordRendererEvent) {
+		appendEvent({
+			type,
+			message: safeMessage,
+			details,
+			time: new Date().toISOString(),
+		});
+		return;
+	}
+
+	api.recordRendererEvent({
+		type,
+		message: safeMessage,
+		details,
+	}).catch(error => {
+		// If the IPC bridge itself failed, still leave something visible in the
+		// current window instead of letting the error disappear.
+		appendEvent({
+			type: "error",
+			message: `Could not write HachiGen event log: ${rendererLogMessage(error.message || error)} Original event: ${safeMessage}`,
+			time: new Date().toISOString(),
+		});
+	});
+}
+
+// Show a small temporary message in the bottom-right corner. Error toasts also
+// write to the backend event log so the popup is never the only record.
+function toast(message, type = "info", options = {}) {
+	const text = rendererLogMessage(message, type === "error" ? "Unexpected HachiGen error." : "");
+
+	if (type === "error" && options.log !== false) {
+		recordRendererEvent("error", text, {
+			label: options.label || "UI error",
+		});
+	}
+
 	const region = $("#toastRegion");
 	const item = document.createElement("div");
 	item.className = `toast ${type}`;
-	item.textContent = message;
+	item.textContent = text;
 	region.append(item);
 	setTimeout(() => item.remove(), 4200);
 }
@@ -1486,12 +1533,7 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 	} catch (error) {
 		const message = error.message || "Database viewer failed.";
 		setText("#databaseViewerMeta", message);
-		toast(message, "error");
-		appendEvent({
-			type: "error",
-			message,
-			time: new Date().toISOString(),
-		});
+		toast(message, "error", { label: "Database viewer" });
 		return null;
 	} finally {
 		setDatabaseViewerLoading(false);
@@ -1616,10 +1658,10 @@ function updateLogPolling() {
 	if (activeView === "logs" && !logPollTimer) {
 		logPollTimer = setInterval(() => {
 			refreshLogs().catch(error => {
-				appendEvent({
-					type: "error",
-					message: `Log refresh failed: ${error.message || error}`,
-					time: new Date().toISOString(),
+				// Polling runs in the background, so log the failure without a
+				// repeating popup if the Logs panel cannot refresh.
+				recordRendererEvent("error", `Log refresh failed: ${error.message || error}`, {
+					label: "Refresh logs",
 				});
 			});
 		}, 5000);
@@ -1639,10 +1681,8 @@ async function checkUpdatesOnStartup() {
 		await api.checkUpdates();
 		await refreshState();
 	} catch (error) {
-		appendEvent({
-			type: "error",
-			message: `Startup update check failed: ${error.message || error}`,
-			time: new Date().toISOString(),
+		recordRendererEvent("error", `Startup update check failed: ${error.message || error}`, {
+			label: "Startup update check",
 		});
 	}
 }
@@ -1682,12 +1722,7 @@ async function runAction(label, action, options = {}) {
 		}
 		return result;
 	} catch (error) {
-		toast(error.message || `${label} failed.`, "error");
-		appendEvent({
-			type: "error",
-			message: error.message || String(error),
-			time: new Date().toISOString(),
-		});
+		toast(error.message || `${label} failed.`, "error", { label });
 		return null;
 	} finally {
 		setBusy(false);
@@ -1835,7 +1870,7 @@ function handleAction(event) {
 				}
 
 				setText("#remoteTestOutput", formatRemoteTestOutput(result));
-				toast(result.message, result.ok ? "info" : "error");
+				toast(result.message, result.ok ? "info" : "error", { label: "Test remote connection" });
 			});
 		return;
 	}
@@ -2118,7 +2153,7 @@ function handleAction(event) {
 		const actionIds = selectedSanitizeActionIds();
 
 		if (!actionIds.length) {
-			toast("No cleanable database findings selected.", "error");
+			toast("No cleanable database findings selected.", "error", { label: "Database sanitation" });
 			return;
 		}
 
