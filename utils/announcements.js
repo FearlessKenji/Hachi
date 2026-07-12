@@ -50,7 +50,7 @@ function parseLatestPatchNotes(documentText) {
 	return {
 		body,
 		heading,
-		id: version ? version.replace(/^v/u, `v`) : slugify(heading),
+		id: version ? (version.startsWith(`v`) ? version : `v${version}`) : slugify(heading),
 		version,
 	};
 }
