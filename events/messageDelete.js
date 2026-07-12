@@ -1,3 +1,7 @@
+// Message delete event.
+//
+// Reaction-role and rules-verification records point at Discord messages. When
+// those messages disappear, the database must stop treating them as live panels.
 const { Events } = require(`discord.js`);
 const { ReactionRoleMessages, RulesVerificationMessages } = require(`../database/dbObjects.js`);
 const { deletePanelRecords } = require(`../utils/reactionRoles.js`);

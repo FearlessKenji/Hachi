@@ -1,3 +1,8 @@
+// Scheduled provider-token refresh.
+//
+// Hachi keeps Twitch/Kick developer credentials in process.env after startup
+// decryption. This module exchanges those credentials for short-lived provider
+// access tokens and stores them in authTokens.js for stream polling.
 const { fetchAuthToken } = require(`./fetchAuthToken.js`);
 const { updateAuthTokens } = require(`./authTokens.js`);
 

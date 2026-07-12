@@ -1,3 +1,8 @@
+// HachiGen renderer controller.
+//
+// This file owns browser-window state only. It never reads files or runs shell
+// commands directly; every privileged action goes through window.hachiGen, which
+// preload.js maps to IPC handlers in the Electron main process.
 const api = window.hachiGen;
 
 // renderer/app.js runs inside the visible HachiGen window.
@@ -19,8 +24,8 @@ const viewTitles = {
 const configFields = [
 	"TOKEN",
 	"clientId",
-	"guildId",
-	"botOwner",
+	"guildIds",
+	"botOwners",
 	"twitchClientId",
 	"twitchSecret",
 	"kickClientId",
@@ -31,9 +36,27 @@ const configFields = [
 	"statusCron",
 	"authCron",
 ];
+const envConfigFields = [
+	"TOKEN",
+	"clientId",
+	"twitchClientId",
+	"twitchSecret",
+	"kickClientId",
+	"kickSecret",
+];
 
 // Shared UI state. Keeping these values here avoids reading the DOM to figure
 // out what the app is currently showing.
+//
+// state: latest backend snapshot from manager.getState().
+// activeView: sidebar view currently visible.
+// busy: global action lock that disables buttons during backend work.
+// logPollTimer/pm2LogBaseline: live log polling and "clear visible logs" offset.
+// sanitizeReport: last database sanitation review/apply result.
+// databaseView/databaseSort/databaseViewerLoading: table preview state.
+// forceMigrationUnlocked: one-session flag for the dangerous migration button.
+// confirmationResolve: current modal promise resolver.
+// lastConfig: latest Setup config metadata, used to restore copy-button state.
 let state = null;
 let activeView = "dashboard";
 let busy = false;
@@ -47,6 +70,7 @@ let databaseViewerLoading = false;
 let databaseSort = { column: "", direction: "" };
 let forceMigrationUnlocked = false;
 let confirmationResolve = null;
+let lastConfig = null;
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -241,7 +265,19 @@ function toast(message, type = "info") {
 // log window. Shell output keeps its stdout/stderr/command prefix.
 function eventLine(event) {
 	const time = event.time ? new Date(event.time).toLocaleTimeString() : new Date().toLocaleTimeString();
-	const prefix = event.type === "shell" && event.details?.stream ? event.details.stream : event.type;
+	const streamLabels = {
+		command: "Command",
+		stderr: "Error",
+		stdout: "Output",
+	};
+	const typeLabels = {
+		error: "Error",
+		log: "HachiGen",
+		shell: "Shell",
+	};
+	const prefix = event.type === "shell" && event.details?.stream ?
+		streamLabels[event.details.stream] || "Shell" :
+		typeLabels[event.type] || event.type;
 	return `[${time}] ${prefix}: ${event.message}`;
 }
 
@@ -300,6 +336,10 @@ function installHealth(scan) {
 
 	if (!scan.hasNodeModules) {
 		return { label: "Needs deps", dot: "warn", detail: "Dependencies install during validation or start" };
+	}
+
+	if (scan.dependenciesReady === false) {
+		return { label: "Needs deps", dot: "warn", detail: `${scan.missingDependencies?.length || 0} package dependencies missing` };
 	}
 
 	return { label: "Validated", dot: "good", detail: "Project files and config found" };
@@ -416,6 +456,7 @@ function renderInstallChecks(scan) {
 		["Project files", scan.projectFound, scan.missingFiles.length ? scan.missingFiles.join(", ") : "Found"],
 		["Configuration", scan.configurationReady, scan.configurationReady ? "Ready" : scan.configurationMissing.join(", ")],
 		["Node modules", scan.hasNodeModules, scan.hasNodeModules ? "Installed" : "Not installed yet"],
+		["Dependencies", scan.dependenciesReady !== false, scan.dependenciesReady === false ? (scan.missingDependencies || []).join(", ") || "Missing packages" : "Ready"],
 		["Git checkout", scan.hasGit, scan.hasGit ? "Available" : "Manual update mode"],
 	];
 
@@ -448,11 +489,33 @@ function renderConfig(config) {
 		return;
 	}
 
+	lastConfig = config;
+
 	for (const field of configFields) {
 		const input = form.elements[field];
+		const protection = config.envProtection?.fields?.[field];
 
 		if (input) {
-			input.value = config.values[field] || "";
+			if (protection?.hasValue) {
+				input.value = "";
+				input.placeholder = protection.encrypted ? "Encrypted value saved" : "Saved value will be encrypted on save";
+				input.dataset.protectedValue = "true";
+			} else {
+				input.value = config.values[field] || "";
+				input.placeholder = "";
+				delete input.dataset.protectedValue;
+			}
+		}
+
+		if (envConfigFields.includes(field)) {
+			const copyButton = form.querySelector(`[data-action="copy-secret"][data-secret-field="${field}"]`);
+
+			if (copyButton) {
+				copyButton.disabled = !protection?.copyable;
+				copyButton.title = protection?.copyable ?
+					"Copy saved value to clipboard for 60 seconds" :
+					"Save an encrypted value before copying";
+			}
 		}
 	}
 }
@@ -744,6 +807,127 @@ function formatDateTime(value) {
 	return new Date(value).toLocaleString();
 }
 
+function describeProtectionItem(item) {
+	if (!item) {
+		return "Not checked";
+	}
+
+	const version = item.version ? ` ${item.version}` : "";
+	return `${item.label || "Not Verified"}${version}: ${item.detail || "No detail available."}`;
+}
+
+function renderDatabaseProtection(protection) {
+	const sourceLabel = protection?.source === "remote" ? "Remote" : "Local";
+	const keyFile = protection?.configuredKeyFile || (protection?.directKeyConfigured ? "Direct key configured" : "Not configured");
+	const recommended = protection?.locations?.recommended?.path || "Not resolved";
+	const detail = protection?.detail || "No protection state loaded.";
+	const keyReady = [`key-ready`, `direct-key`].includes(protection?.status);
+	const databaseFile = protection?.databaseFile;
+	const driver = protection?.driver;
+	const cipherTest = protection?.cipherTest;
+	const runtime = protection?.runtime;
+	const databasePlain = databaseFile?.status === "plaintext";
+	const databaseEncrypted = Boolean(databaseFile?.encryptedLikely);
+	const keyActionLabel = keyReady ? "Rotate Key" : "Generate Key";
+	let message = "Generate a key so Hachi can create or use encrypted databases.";
+
+	if (databaseEncrypted) {
+		message = "Database is encrypted. Keep the key backup somewhere protected.";
+	} else if (databaseFile?.status === "missing" && keyReady) {
+		message = "No database exists yet. Hachi will create an encrypted database on first start.";
+	} else if (databaseFile?.status === "invalid") {
+		message = "Database file could not be opened with the configured key. Restore a valid encrypted backup.";
+	} else if (databasePlain && keyReady) {
+		message = "Plaintext database detected. HachiGen will convert it during validation/start, or Hachi will refuse to start.";
+	} else if (keyReady) {
+		message = "Key and runtime are ready.";
+	}
+
+	if (cipherTest) {
+		message = `${cipherTest.label || "Cipher Test"}: ${cipherTest.detail || "No detail available."}`;
+	}
+
+	setText("#databaseProtectionMeta", `${sourceLabel} key management`);
+	setDot("#databaseProtectionDot", protection?.dot || "muted");
+	setText("#databaseProtectionStatus", protection?.label || "Checking");
+	setText("#databaseProtectionDetail", detail);
+	setText("#databaseProtectionKeyFile", keyFile);
+	setText("#databaseProtectionRecommendedPath", recommended);
+	setText("#databaseProtectionDatabaseFile", describeProtectionItem(databaseFile));
+	setText("#databaseProtectionDriver", describeProtectionItem(driver));
+	setText("#databaseProtectionCipherTest", describeProtectionItem(cipherTest));
+	setText("#databaseProtectionRuntime", describeProtectionItem(runtime));
+	setText("#databaseProtectionChecked", protection?.updatedAt ? formatDateTime(protection.updatedAt) : "Not checked");
+	setText("#databaseProtectionMessage", message);
+	setText("#databaseKeyActionButton", keyActionLabel);
+	setDisabled("#exportDatabaseKeyBackupButton", !keyReady);
+}
+
+function databaseBackupProtectionSummary(backups) {
+	const counts = {
+		current: 0,
+		invalid: 0,
+		older: 0,
+		plaintext: 0,
+		unverified: 0,
+	};
+
+	for (const backup of backups) {
+		const status = backup?.protection?.status;
+
+		if (status === "current-key") {
+			counts.current += 1;
+		} else if (status === "older-key" || status === "tracked-key") {
+			counts.older += 1;
+		} else if (status === "plaintext") {
+			counts.plaintext += 1;
+		} else if (status === "invalid") {
+			counts.invalid += 1;
+		} else {
+			counts.unverified += 1;
+		}
+	}
+
+	const parts = [];
+
+	if (counts.current) {
+		parts.push(`${counts.current} current`);
+	}
+
+	if (counts.older) {
+		parts.push(`${counts.older} older-key`);
+	}
+
+	if (counts.plaintext) {
+		parts.push(`${counts.plaintext} plaintext`);
+	}
+
+	if (counts.invalid) {
+		parts.push(`${counts.invalid} invalid`);
+	}
+
+	if (counts.unverified) {
+		parts.push(`${counts.unverified} not verified`);
+	}
+
+	return parts.length ? `Protection: ${parts.join(", ")}.` : "";
+}
+
+function databaseBackupProtectionLabel(backup) {
+	const protection = backup?.protection;
+
+	if (!protection) {
+		return "Protection not verified";
+	}
+
+	const preview = protection.keyFingerprintPreview &&
+		["older-key", "tracked-key"].includes(protection.status) ?
+		` ${protection.keyFingerprintPreview}` :
+		"";
+
+	return `${protection.label || "Protection not verified"}${preview}`;
+}
+
 function renderDatabase(database) {
 	// Render database file status and known backups. Database actions handle
 	// their own shared confirmation prompts before changing files.
@@ -752,6 +936,8 @@ function renderDatabase(database) {
 	const backups = database?.backups || [];
 	const audit = database?.audit;
 	const sourcePrefix = database?.source === "remote" ? "Remote " : "";
+	const keyReady = ["key-ready", "direct-key"].includes(database?.protection?.status);
+	const backupSummary = databaseBackupProtectionSummary(backups);
 
 	setText("#databaseMeta", exists ? `${sourcePrefix}SQLite database ${audit?.label || "ready"}` : `No ${sourcePrefix.toLowerCase()}database found`);
 	setText("#databaseMessage", exists ? audit?.detail || "Maintenance actions create safety backups before risky changes." : "Start Hachi once to create the database.");
@@ -763,12 +949,14 @@ function renderDatabase(database) {
 	setDisabled("#migrateDatabaseButton", !audit?.migrationAvailable);
 	setDisabled("#forceMigrateDatabaseButton", !(audit?.forceMigrationAvailable || forceMigrationUnlocked));
 	setDisabled("button[data-action=\"restore-database\"]", database?.source === "remote");
+	setDisabled("#rotateDatabaseBackupsButton", !keyReady || !backups.length);
+	renderDatabaseProtection(database?.protection);
 
 	const latest = database?.latestBackup;
 	setText(
 		"#databaseBackupSummary",
 		latest ?
-			`${pluralize(backups.length, "backup")} available. Latest: ${latest.file}` :
+			`${pluralize(backups.length, "backup")} available. Latest: ${latest.file}. ${backupSummary}` :
 			"No database backups found.",
 	);
 
@@ -783,7 +971,7 @@ function renderDatabase(database) {
 		item.append(file);
 
 		const detail = document.createElement("span");
-		detail.textContent = `${backup.sizeLabel} | ${formatDateTime(backup.modifiedAt)}`;
+		detail.textContent = `${backup.sizeLabel} | ${formatDateTime(backup.modifiedAt)} | ${databaseBackupProtectionLabel(backup)}`;
 		item.append(detail);
 		return item;
 	});
@@ -986,6 +1174,33 @@ function createModalDetails(details) {
 	}
 
 	return list;
+}
+
+function createModalCheckbox({ checked = false, description = "", id = "modalCheckbox", label = "" } = {}) {
+	const wrapper = document.createElement("label");
+	wrapper.className = "modal-choice";
+
+	const input = document.createElement("input");
+	input.checked = Boolean(checked);
+	input.id = id;
+	input.type = "checkbox";
+	wrapper.append(input);
+
+	const body = document.createElement("span");
+	body.className = "modal-choice-body";
+
+	const title = document.createElement("strong");
+	title.textContent = label || "Enable option";
+	body.append(title);
+
+	if (description) {
+		const detail = document.createElement("span");
+		detail.textContent = description;
+		body.append(detail);
+	}
+
+	wrapper.append(body);
+	return wrapper;
 }
 
 function createModalButton({ action, disabled = false, id, label, variant = "secondary" }) {
@@ -1212,17 +1427,29 @@ function closeConfirmModal(confirmed) {
 	}
 }
 
-function showConfirmModal({ confirmText = "Confirm", details = [], meta, summary, title, variant = "warning" }) {
+function showConfirmModal({ checkbox = null, confirmText = "Confirm", details = [], meta, summary, title, variant = "warning" }) {
 	// Shared themed confirmation modal for every yes/no action. File/folder
 	// pickers still remain native Windows dialogs.
 	return new Promise(resolve => {
-		confirmationResolve = resolve;
+		const checkboxNode = checkbox ? createModalCheckbox(checkbox) : null;
+		const checkboxInput = checkboxNode?.querySelector("input") || null;
+		confirmationResolve = confirmed => {
+			if (!checkbox) {
+				resolve(confirmed);
+				return;
+			}
+
+			resolve({
+				checked: Boolean(checkboxInput?.checked),
+				confirmed,
+			});
+		};
 		const opened = showSharedModal({
 			actions: [
 				{ action: "confirm-cancel", label: "Cancel", variant: "secondary" },
 				{ action: "confirm-accept", label: confirmText, variant },
 			],
-			content: [createModalSummary(summary), createModalDetails(details)],
+			content: [createModalSummary(summary), createModalDetails(details), checkboxNode],
 			meta: meta || "Review the action before continuing",
 			title: title || "Confirm action",
 		});
@@ -1469,6 +1696,7 @@ async function runAction(label, action, options = {}) {
 		renderStashedChanges(state?.updates);
 		renderDatabase(state?.database);
 		renderDatabaseViewer(databaseView);
+		renderConfig(lastConfig);
 		setDisabled("#openFolderButton", state?.runtimeTarget === "remote");
 		setDisabled("#browseInstallButton", state?.runtimeTarget === "remote");
 		setDisabled("#saveInstallPathButton", state?.runtimeTarget === "remote");
@@ -1560,6 +1788,18 @@ function handleAction(event) {
 	if (action === "save-path") {
 		// Save whatever the user typed into the install path text field.
 		runAction("Save path", async () => api.setInstallPath($("#installPathInput").value));
+		return;
+	}
+
+	if (action === "copy-secret") {
+		const field = button.dataset.secretField || "";
+
+		runAction("Copy saved value", () => api.copyEnvSecret(field), { toast: false })
+			.then(result => {
+				if (result?.message) {
+					toast(result.message);
+				}
+			});
 		return;
 	}
 
@@ -1661,6 +1901,95 @@ function handleAction(event) {
 		const direction = databaseSort.column === column && databaseSort.direction === "asc" ? "desc" : "asc";
 		setDatabaseSort({ column, direction });
 		loadDatabaseViewer(databaseView?.selectedTable, databaseSort);
+		return;
+	}
+
+	if (action === "generate-database-key") {
+		const protection = state?.database?.protection;
+		const keyReady = [`key-ready`, `direct-key`].includes(protection?.status);
+
+		if (!keyReady) {
+			runAction("Generate database key", () => api.prepareDatabaseProtection());
+			return;
+		}
+
+		showConfirmModal({
+			checkbox: {
+				checked: false,
+				description: "Rekey encrypted backups that use the current key and encrypt plaintext backups while HachiGen still has both keys.",
+				id: "rotateDatabaseBackupsWithKey",
+				label: "Also rotate existing backups",
+			},
+			confirmText: "Rotate Key",
+			details: [
+				"HachiGen will create a safety backup before changing the key.",
+				"The encrypted database will be rekeyed and verified before the key file is replaced.",
+				"Backups that require an even older key will be skipped and reported.",
+				"Stop Hachi before rotating the key so the database is not in use.",
+			],
+			meta: "Database key rotation",
+			summary: "Rotate the database encryption key?",
+			title: "Rotate database key?",
+			variant: "warning",
+		}).then(result => {
+			if (!result?.confirmed) {
+				toast("Database key rotation canceled.");
+				return;
+			}
+
+			runAction("Rotate database key", () => api.rotateDatabaseKey({ rotateBackups: result.checked }));
+		});
+		return;
+	}
+
+	if (action === "rotate-database-backups") {
+		showConfirmModal({
+			confirmText: "Rotate Backups",
+			details: [
+				"Plaintext backups will be encrypted with the current database key.",
+				"Encrypted backups that already use the current key will be verified and tagged.",
+				"Backups that need an older key will be skipped; keep old key backups if you still need those restore points.",
+			],
+			meta: "Database backup key maintenance",
+			summary: "Rotate backup encryption to the current database key where possible?",
+			title: "Rotate database backups?",
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) {
+				toast("Database backup rotation canceled.");
+				return;
+			}
+
+			runAction("Rotate database backups", () => api.rotateDatabaseBackups());
+		});
+		return;
+	}
+
+	if (action === "verify-database-protection") {
+		runAction("Verify database protection", () => api.verifyDatabaseProtection());
+		return;
+	}
+
+	if (action === "export-database-key-backup") {
+		showConfirmModal({
+			confirmText: "Export Key",
+			details: [
+				"This writes a copy of the database key to a file you choose.",
+				"Anyone with this key and the encrypted database can decrypt it.",
+				"Store the backup in a password manager, offline drive, or another protected location.",
+			],
+			meta: "Database key recovery",
+			summary: "Export a recovery copy of the database key?",
+			title: "Export database key backup?",
+			variant: "warning",
+		}).then(confirmed => {
+			if (!confirmed) {
+				toast("Database key backup export canceled.");
+				return;
+			}
+
+			runAction("Export database key backup", () => api.exportDatabaseKeyBackup());
+		});
 		return;
 	}
 

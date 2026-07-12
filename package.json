@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "better-sqlite3-multiple-ciphers": "12.11.1",
     "cron": "^3.1.6",
     "discord.js": "^14.26.4",
     "dotenv": "^17.4.2",
@@ -20,7 +21,7 @@
   },
   "name": "Hachi",
   "description": "This Discord bot will automatically send a message and tag the assigned role whenever a streamer went live.\r The notifications will update every 10 minutes(default) while the streamer is live.",
-  "version": "3.2.0",
+  "version": "3.3.0",
   "main": "index.js",
   "scripts": {
     "start": "node .",
@@ -51,7 +52,7 @@
   },
   "homepage": "https://github.com/FearlessKenji/Hachi#readme",
   "engines": {
-    "node": ">=18.18.0"
+    "node": ">=20.17.0"
   },
   "type": "commonjs"
 }

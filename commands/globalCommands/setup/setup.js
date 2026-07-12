@@ -1,17 +1,38 @@
+// /setup hub command.
+//
+// This command gives administrators one entry point into the larger setup flows
+// such as stream notifications, security monitoring, and raid protection.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,
 	ButtonStyle,
+	ChannelSelectMenuBuilder,
+	ChannelType,
 	EmbedBuilder,
 	InteractionContextType,
 	MessageFlags,
 	PermissionFlagsBits,
 	SlashCommandBuilder,
 } = require(`discord.js`);
+const {
+	clearAnnouncementChannel,
+	getAnnouncementSettings,
+	getLatestPatchNotes,
+	saveAnnouncementChannel,
+	sendLatestPatchNotesToGuild,
+} = require(`../../../utils/announcements.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const SETUP_COLOR = 0xffb020;
+const textChannelTypes = [
+	ChannelType.GuildText,
+	ChannelType.GuildAnnouncement,
+];
 const pendingSetupHubs = new Map();
+
+function formatChannel(id) {
+	return id ? `<#${id}>` : `Not set`;
+}
 
 function buildSetupEmbed() {
 	return new EmbedBuilder()
@@ -37,6 +58,11 @@ function buildSetupEmbed() {
 			{
 				name: `Raid Protection`,
 				value: `Configure quarantine, thresholds, alerts, and raid reports.`,
+				inline: false,
+			},
+			{
+				name: `Hachi Updates`,
+				value: `Choose where manually sent Hachi patch notes should be posted.`,
 				inline: false,
 			},
 			{
@@ -66,7 +92,50 @@ function buildSetupComponents(setupId) {
 				.setCustomId(`setup:${setupId}:raid`)
 				.setLabel(`Raid Protection`)
 				.setStyle(ButtonStyle.Danger),
+			new ButtonBuilder()
+				.setCustomId(`setup:${setupId}:announcements`)
+				.setLabel(`Hachi Updates`)
+				.setStyle(ButtonStyle.Secondary),
 		),
+	];
+}
+
+function buildAnnouncementsContent(settings, statusMessage = null) {
+	const latest = getLatestPatchNotes();
+	const status = statusMessage ? `\n### ${statusMessage}` : ``;
+
+	return `## Hachi Updates
+- Announcement Channel: ${formatChannel(settings.hachiAnnouncementChannelId)}
+- Last Patch Notes Sent: ${settings.hachiAnnouncementLastId || `None`}
+- Latest Local Patch Notes: ${latest?.id || `Not found`}${status}`;
+}
+
+function buildAnnouncementsComponents(setupId, settings) {
+	const buttons = [
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:announcementSend`)
+			.setLabel(`Send Latest`)
+			.setStyle(ButtonStyle.Primary)
+			.setDisabled(!settings.hachiAnnouncementChannelId),
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:announcementClear`)
+			.setLabel(`Clear Channel`)
+			.setStyle(ButtonStyle.Secondary)
+			.setDisabled(!settings.hachiAnnouncementChannelId),
+		new ButtonBuilder()
+			.setCustomId(`setup:${setupId}:home`)
+			.setLabel(`Back to Setup`)
+			.setStyle(ButtonStyle.Secondary),
+	];
+
+	return [
+		new ActionRowBuilder().addComponents(
+			new ChannelSelectMenuBuilder()
+				.setCustomId(`setup:${setupId}:announcementChannel`)
+				.setPlaceholder(`Hachi updates channel`)
+				.setChannelTypes(textChannelTypes),
+		),
+		new ActionRowBuilder().addComponents(buttons),
 	];
 }
 
@@ -106,6 +175,49 @@ async function routeToCommandPanel(interaction, setupId, commandName) {
 	}
 
 	await command.openSetupPanel(interaction, { parentSetupId: setupId, update: true });
+}
+
+async function showAnnouncementsPanel(interaction, setupId, statusMessage = null) {
+	const settings = await getAnnouncementSettings(interaction.guild.id);
+
+	await interaction.update({
+		content: buildAnnouncementsContent(settings, statusMessage),
+		components: buildAnnouncementsComponents(setupId, settings),
+		embeds: [],
+	});
+}
+
+async function saveAnnouncementChannelSelection(interaction, setupId) {
+	const channelId = interaction.values[0] || null;
+	const settings = await saveAnnouncementChannel(interaction.guild.id, channelId);
+
+	await interaction.update({
+		content: buildAnnouncementsContent(settings, `Announcement channel saved.`),
+		components: buildAnnouncementsComponents(setupId, settings),
+		embeds: [],
+	});
+}
+
+async function clearAnnouncementChannelSelection(interaction, setupId) {
+	const settings = await clearAnnouncementChannel(interaction.guild.id);
+
+	await interaction.update({
+		content: buildAnnouncementsContent(settings, `Announcement channel cleared.`),
+		components: buildAnnouncementsComponents(setupId, settings),
+		embeds: [],
+	});
+}
+
+async function sendLatestAnnouncement(interaction, setupId) {
+	await interaction.deferUpdate();
+	const result = await sendLatestPatchNotesToGuild(interaction.client, interaction.guild.id);
+	const settings = await getAnnouncementSettings(interaction.guild.id);
+
+	await interaction.editReply({
+		content: buildAnnouncementsContent(settings, result.message),
+		components: buildAnnouncementsComponents(setupId, settings),
+		embeds: [],
+	});
 }
 
 module.exports = {
@@ -166,6 +278,14 @@ module.exports = {
 				await routeToCommandPanel(interaction, setupId, `security`);
 			} else if (action === `raid`) {
 				await routeToCommandPanel(interaction, setupId, `raid`);
+			} else if (action === `announcements`) {
+				await showAnnouncementsPanel(interaction, setupId);
+			} else if (action === `announcementChannel`) {
+				await saveAnnouncementChannelSelection(interaction, setupId);
+			} else if (action === `announcementClear`) {
+				await clearAnnouncementChannelSelection(interaction, setupId);
+			} else if (action === `announcementSend`) {
+				await sendLatestAnnouncement(interaction, setupId);
 			}
 		} catch (err) {
 			logError(`Failed to route setup hub:`, err);

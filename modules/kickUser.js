@@ -1,3 +1,7 @@
+// Kick user lookup API client.
+//
+// Hachi stores streamer names, but some Kick endpoints need the provider user
+// object. This helper isolates that lookup and failure logging.
 const { error } = require(`../utils/writeLog.js`);
 
 async function getUser(id, user, clientID, authKey) {

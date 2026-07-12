@@ -1,3 +1,7 @@
+// /security command group.
+//
+// Configures monitoring of public application-command responses, including app
+// and channel whitelists plus audit/status views for moderators.
 const {
 	ActionRowBuilder,
 	ChannelSelectMenuBuilder,

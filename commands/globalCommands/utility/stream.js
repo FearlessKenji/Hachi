@@ -1,3 +1,8 @@
+// /stream command group.
+//
+// Administrators use this to configure Twitch/Kick notification channels, roles,
+// and streamer entries. The command owns a multi-step component UI before saving
+// final settings to the Channels/Servers tables.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -16,6 +21,9 @@ const {
 const { Servers, Channels } = require(`../../../database/dbObjects.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
+// pendingAdds tracks the short-lived /stream add wizard. pendingStreamSetups
+// tracks the broader notification settings wizard. Both are intentionally
+// process-local because Discord component setup flows are temporary UI state.
 const pendingAdds = new Map();
 const pendingStreamSetups = new Map();
 const textChannelTypes = [
@@ -60,6 +68,8 @@ async function getStreamSettings(guildId) {
 	};
 }
 
+// Every component customId includes the setup ID. This guard prevents a user from
+// interacting with another user's stale setup panel or a panel from another guild.
 async function getPendingStreamSetup(interaction, setupId) {
 	const pendingSetup = pendingStreamSetups.get(setupId);
 
@@ -74,6 +84,8 @@ async function getPendingStreamSetup(interaction, setupId) {
 	return pendingSetup;
 }
 
+// This content is intentionally plain text rather than an embed so it edits
+// quickly during the multi-select wizard and stays readable on mobile Discord.
 function buildAddContent(pendingAdd) {
 	const submitMessage = pendingAdd.needsSelections ? `\n### Select every option before submitting.` : ``;
 	const title = pendingAdd.isEditing ?

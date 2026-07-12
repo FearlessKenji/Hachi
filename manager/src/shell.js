@@ -1,3 +1,8 @@
+// Child-process wrapper for HachiGen backend operations.
+//
+// HachiGen runs Git, npm, node scripts, PM2, ssh, and platform tools. Keeping
+// process execution here gives manager.js one consistent timeout, logging, and
+// Windows command-shim behavior.
 const { spawn } = require("node:child_process");
 
 // ShellError wraps command failures with the command result attached. Callers

@@ -1,3 +1,8 @@
+// High-level Twitch notification loop.
+//
+// The Twitch cron calls getTwitch(client). This file loads configured channels,
+// batches Twitch API requests, updates live/offline Discord messages, and writes
+// new stream state back to the database.
 const { Channels } = require(`../database/dbObjects.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const twitchChannel = require(`./twitchChannel.js`);

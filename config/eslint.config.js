@@ -1,3 +1,6 @@
+// Central ESLint configuration for the repository.
+// Linting is intentionally part of the smoke/verification habit because Hachi is
+// distributed as a self-hosted bot where runtime surprises are expensive.
 const js = require(`@eslint/js`);
 
 module.exports = [

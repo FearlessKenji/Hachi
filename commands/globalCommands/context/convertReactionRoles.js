@@ -1,3 +1,7 @@
+// "Convert to Reaction Roles" message context command.
+//
+// Turns an existing Discord message into a reaction-role panel so communities can
+// preserve old announcement text while adding Hachi-managed role mappings.
 const {
 	ApplicationCommandType,
 	ContextMenuCommandBuilder,

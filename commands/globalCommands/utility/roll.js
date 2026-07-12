@@ -1,3 +1,7 @@
+// /roll command.
+//
+// Parses dice expressions such as 2d20kh1+5, rolls securely enough for casual
+// utility use, formats kept/dropped dice, and keeps output within Discord limits.
 const {
 	ApplicationIntegrationType,
 	InteractionContextType,
@@ -12,6 +16,8 @@ const MAX_EXPRESSIONS = 10;
 const MAX_MESSAGE_LENGTH = 1900;
 const MAX_ROLLS_DISPLAYED = 60;
 
+// Normalize into a compact grammar before parsing. Spaces and separators are
+// user convenience; the parser below expects terms like 2d20kh1+5.
 function normalizeInput(input) {
 	return input
 		.trim()
@@ -22,6 +28,8 @@ function normalizeInput(input) {
 		.replace(/\s+/g, ` `);
 }
 
+// Discord hard-limits message length. Use a smaller limit so the error/truncated
+// note itself still fits and the response remains readable.
 function truncateOutput(content) {
 	if (content.length <= MAX_MESSAGE_LENGTH) {
 		return content;
@@ -59,6 +67,8 @@ function validateDice(dice, sides) {
 	}
 }
 
+// Keep-high/keep-low rules return indexes, not values, so duplicate dice values
+// are handled correctly and the original roll order can be preserved in output.
 function getKeptIndexes(rolls, keepRule) {
 	if (!keepRule) {
 		return new Set(rolls.map((_, index) => index));
@@ -104,6 +114,8 @@ function formatRolls(rolls, keptIndexes) {
 	return visibleRolls.join(`, `);
 }
 
+// Supports normal dice, exploding dice with !, and keep-high/keep-low suffixes.
+// Explosions are capped so a pathological d1-style loop cannot run forever.
 function rollDice(expression) {
 	const match = expression.match(/^(\d*)d(\d+)(!?)((?:kh|kl)\d+)?$/);
 
@@ -142,6 +154,8 @@ function rollDice(expression) {
 	};
 }
 
+// Advantage/disadvantage are intentionally limited to a single die. That matches
+// common tabletop usage and avoids ambiguous behavior like "2d20a".
 function rollAdvantage(expression, hasAdvantage) {
 	const match = expression.match(/^(\d*)d(\d+)$/);
 
@@ -185,6 +199,8 @@ function parseTerm(cleanTerm) {
 	return parseModifier(cleanTerm);
 }
 
+// Parse one full expression, which may be a die shortcut, advantage shortcut, or
+// a signed list of dice/modifier terms.
 function parseExpression(expression) {
 	if (/^\d+$/.test(expression)) {
 		const result = rollDice(`d${expression}`);

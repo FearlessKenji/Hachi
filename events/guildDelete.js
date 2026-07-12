@@ -1,3 +1,8 @@
+// Guild leave event.
+//
+// Leaving a server should not delete all historical configuration immediately.
+// Instead Hachi marks the server as left so records can be reconciled or cleaned
+// intentionally later.
 const { Events } = require(`discord.js`);
 const { markServerLeft } = require(`../utils/serverLifecycle.js`);
 const { error } = require(`../utils/writeLog.js`);

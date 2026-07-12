@@ -1,3 +1,7 @@
+// Rules verification panel record.
+//
+// A row links one Discord message/reaction to the role that should be granted
+// when a member verifies they have read the rules.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`rulesVerificationMessages`, {
 		id: {

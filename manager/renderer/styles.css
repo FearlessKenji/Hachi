@@ -473,6 +473,17 @@ h2 {
 	gap: 10px;
 }
 
+.secret-field-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 8px;
+	align-items: center;
+}
+
+.secret-field-row .button {
+	min-width: 72px;
+}
+
 .form-header {
 	display: flex;
 	justify-content: space-between;
@@ -824,6 +835,39 @@ h2 {
 	gap: 16px;
 }
 
+.database-protection-panel {
+	display: grid;
+	gap: 14px;
+	margin-top: 16px;
+}
+
+.database-protection-header {
+	display: flex;
+	justify-content: space-between;
+	gap: 16px;
+	align-items: flex-start;
+}
+
+.database-protection-status {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	color: var(--text);
+	font-size: 14px;
+}
+
+.database-protection-status span:last-child {
+	color: var(--muted);
+}
+
+.database-protection-details {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.database-protection-details dd {
+	overflow-wrap: anywhere;
+}
+
 .database-review-panel {
 	grid-column: 1 / -1;
 }
@@ -986,6 +1030,32 @@ h2 {
 	display: none;
 }
 
+.modal-choice {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr);
+	gap: 12px;
+	align-items: flex-start;
+	margin-top: 12px;
+	border: 1px solid rgba(216, 225, 229, 0.22);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.05);
+	padding: 12px;
+}
+
+.modal-choice input {
+	margin-top: 3px;
+}
+
+.modal-choice-body {
+	display: grid;
+	gap: 5px;
+}
+
+.modal-choice-body span {
+	color: var(--muted);
+	line-height: 1.4;
+}
+
 .sanitize-findings {
 	display: grid;
 	gap: 10px;
@@ -1085,9 +1155,14 @@ h2 {
 
 	.runtime-panel,
 	.stash-panel,
+	.database-protection-header,
 	.split-panel {
 		align-items: flex-start;
 		flex-direction: column;
+	}
+
+	.database-protection-details {
+		grid-template-columns: 1fr;
 	}
 
 	.database-viewer-header,

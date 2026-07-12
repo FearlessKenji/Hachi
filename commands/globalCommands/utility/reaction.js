@@ -1,3 +1,7 @@
+// /reaction command group.
+//
+// Builds and edits reaction-role panels through a multi-step Discord component
+// flow. Pending setup state is held in memory until the user submits the panel.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -27,12 +31,18 @@ const {
 	roleIsAssignable,
 } = require(`../../../utils/reactionRoles.js`);
 
+// Pending panel edits are keyed by a generated setup ID. They live only in this
+// process because Discord component interactions arrive shortly after /reaction
+// is used; submitted panels are then saved to the database.
 const pendingPanels = new Map();
 const textChannelTypes = [
 	ChannelType.GuildText,
 	ChannelType.GuildAnnouncement,
 ];
 
+// Convert the initial slash-command options into the full draft object used by
+// every later button/select/reaction step. Keeping defaults here means the rest
+// of the setup flow can treat fields as present.
 function buildPendingFromOptions(interaction) {
 	return {
 		baseRoleEmojis: [],
@@ -52,6 +62,8 @@ function buildPendingFromOptions(interaction) {
 	};
 }
 
+// Draft panels are rendered with the same embed helper as saved panels. This
+// keeps the preview faithful to the final submitted reaction-role message.
 function buildPendingPanel(pending) {
 	return {
 		description: pending.description,
@@ -62,6 +74,8 @@ function buildPendingPanel(pending) {
 	};
 }
 
+// Role selections and emoji choices are stored separately while users build the
+// panel. This function merges them into the database row shape.
 function buildPendingItems(pending) {
 	return pending.roles.map((role, index) => ({
 		category: role.category || null,
@@ -86,6 +100,8 @@ function getUnusedDefaultEmoji(usedEmojis, startIndex) {
 	return null;
 }
 
+// Assign stable fallback emojis when the user did not react with a custom emoji
+// during setup. Existing/base emojis win first so edits do not reshuffle panels.
 function applyPendingReactionEmojis(pending) {
 	const usedEmojis = new Set();
 	const baseRoleEmojis = pending.baseRoleEmojis || [];

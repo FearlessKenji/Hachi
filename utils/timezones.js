@@ -1,3 +1,7 @@
+// Timezone choice data and filtering.
+//
+// Birthday and timestamp commands need human-friendly timezone choices while
+// Discord autocomplete limits responses to 25 items.
 const DEFAULT_TIMEZONE_REGION_ID = `us`;
 
 const TIMEZONE_GROUPS = [

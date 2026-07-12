@@ -1,3 +1,7 @@
+// /birthday command group.
+//
+// Lets members store/view/remove birthdays and lets administrators configure
+// birthday announcement channels, roles, timezones, and posting behavior.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,

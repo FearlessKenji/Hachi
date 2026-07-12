@@ -1,3 +1,7 @@
+// /profile command group.
+//
+// Lets administrators customize Hachi's per-server profile details such as
+// nickname, avatar, banner, and bio while validating image attachments safely.
 const {
 	InteractionContextType,
 	MessageFlags,

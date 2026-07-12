@@ -1,3 +1,7 @@
+// Kick stream API client.
+//
+// Kick stream polling is batched like Twitch polling, but the provider response
+// shape differs. This module normalizes it for getKick.js.
 const { fetchBatch } = require(`./streamUtils.js`);
 
 async function getStreams(channelNames, clientID, authKey) {

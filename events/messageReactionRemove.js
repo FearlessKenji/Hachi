@@ -1,3 +1,8 @@
+// Reaction remove event.
+//
+// Reaction-role panels can remove roles when users remove a reaction. Rules
+// verification intentionally only grants on add, so this route stays feature
+// aware instead of blindly reversing every reaction action.
 const { Events } = require(`discord.js`);
 const { handleReactionRoleReaction } = require(`../utils/reactionRoles.js`);
 const { handleRulesVerificationReaction } = require(`../utils/rulesVerification.js`);

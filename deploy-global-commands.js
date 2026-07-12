@@ -1,4 +1,8 @@
+// Deploy every global slash/context command registered in commands/globalCommands.
+// This script is run by HachiGen and can also be run manually; it decrypts .env
+// first so TOKEN/clientId work even though they are encrypted on disk.
 require(`dotenv/config`);
+require(`./config/secretEncryption.js`).decryptEnvSecrets(process.env, { cwd: process.cwd() });
 const { getCommandData, redeployCommands } = require(`./utils/commandLoader.js`);
 
 const clientId = process.env.clientId;

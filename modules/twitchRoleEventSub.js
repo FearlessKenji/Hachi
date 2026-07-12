@@ -1,3 +1,7 @@
+// Twitch EventSub WebSocket support for role-sync related updates.
+//
+// The polling/sync command path remains the source of truth, but EventSub can
+// keep connected broadcaster state fresher when the provider connection is live.
 const WebSocket = require(`ws`);
 const { TwitchRoleConfigs, TwitchRoleEventMessages } = require(`../database/dbObjects.js`);
 const {

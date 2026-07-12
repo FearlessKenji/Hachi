@@ -1,3 +1,6 @@
+// Guild-only /ping command.
+//
+// Tiny health check used during local/guild command deployment testing.
 const { SlashCommandBuilder } = require(`discord.js`);
 
 module.exports = {

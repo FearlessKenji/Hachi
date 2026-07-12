@@ -1,3 +1,8 @@
+// Command discovery, loading, and deployment helpers.
+//
+// Runtime uses getCommandFiles/loadCommand to build client.commands. Deployment
+// scripts use getCommandData/redeployCommands to serialize slash command metadata
+// and send it to Discord's REST API.
 const { ApplicationIntegrationType, REST, Routes } = require(`discord.js`);
 const fs = require(`node:fs`);
 const path = require(`node:path`);

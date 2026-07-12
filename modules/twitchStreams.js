@@ -1,3 +1,7 @@
+// Twitch stream API client.
+//
+// The caller passes a list of channel names; this module batches requests to
+// Twitch Helix and returns normalized stream records keyed by channel name.
 const { fetchBatch } = require(`./streamUtils.js`);
 
 async function getStreams(channelNames, clientID, authKey) {

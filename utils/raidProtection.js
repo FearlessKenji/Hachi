@@ -1,3 +1,8 @@
+// Raid-protection engine.
+//
+// The /raid command configures policy, but this utility performs the runtime
+// detection and response work: join-spike tracking, quarantine, alerts, evidence,
+// and incident persistence.
 const {
 	AttachmentBuilder,
 	ChannelType,
@@ -463,10 +468,10 @@ function canAttachFilesToChannel(guild, channel) {
 		permissions?.has(PermissionFlagsBits.AttachFiles);
 }
 
-function canManageChannel(guild, channel) {
+function canEditPermissionOverwrites(guild, channel) {
 	const permissions = channel.permissionsFor(guild.members.me);
 
-	return permissions?.has(PermissionFlagsBits.ManageChannels) || false;
+	return permissions?.has(PermissionFlagsBits.ManageRoles) || false;
 }
 
 async function sendConfiguredAlert(guild, config, payload, { dryRun = false } = {}) {
@@ -736,6 +741,57 @@ function formatCountedLabels(counts, limit = 5) {
 	return remaining > 0 ? `${shown}, +${remaining} more` : shown;
 }
 
+function channelAuditLabel(channel) {
+	const name = channel.name || channel.id;
+
+	if (channel.type === ChannelType.GuildCategory) {
+		return `category ${name}`;
+	}
+
+	return `#${name}`;
+}
+
+function formatSampledLocations(locations, limit = 6) {
+	if (!locations.length) {
+		return `None`;
+	}
+
+	const shown = locations.slice(0, limit).join(`, `);
+	const remaining = locations.length - limit;
+
+	return remaining > 0 ? `${shown}, +${remaining} more` : shown;
+}
+
+function addSampledLocation(locations, channel) {
+	const label = channelAuditLabel(channel);
+
+	if (!locations.includes(label)) {
+		locations.push(label);
+	}
+}
+
+function buildOverwritePermissionWarningDetail(locations) {
+	return `Needed: Manage Permissions in Discord's channel UI, which maps to Hachi's Manage Roles permission. Sample: ${formatSampledLocations(locations)}.`;
+}
+
+function buildConflictingAllowDetail(permissionText, roleText, locations, hasMemberSpecificAllows) {
+	const parts = [];
+
+	if (permissionText !== `None`) {
+		parts.push(`Explicit allow permissions: ${permissionText}.`);
+	}
+
+	if (roleText !== `None`) {
+		parts.push(`Role/member sources: ${roleText}${hasMemberSpecificAllows ? `, member-specific overwrites` : ``}.`);
+	} else if (hasMemberSpecificAllows) {
+		parts.push(`Role/member sources: member-specific overwrites.`);
+	}
+
+	parts.push(`Sample locations: ${formatSampledLocations(locations)}.`);
+
+	return trimForDiscord(parts.join(` `));
+}
+
 function createChannelTypeStats() {
 	return {
 		categories: 0,
@@ -843,7 +899,11 @@ async function auditRaidConfiguration(guild, config = null) {
 			conflictingAllows: createChannelTypeStats(),
 			conflictingAllowPermissions: new Map(),
 			conflictingAllowRoles: new Map(),
+			conflictingAllowHasMemberSpecific: false,
+			conflictingAllowLocations: [],
 			missingQuarantineOverwrites: createChannelTypeStats(),
+			missingOverwriteEditPermission: createChannelTypeStats(),
+			missingOverwriteEditPermissionLocations: [],
 			unsyncedChildren: 0,
 		},
 	};
@@ -1008,10 +1068,18 @@ async function auditRaidConfiguration(guild, config = null) {
 				incrementChannelTypeStats(issues.stats.missingQuarantineOverwrites, channel);
 			}
 
+			if (!canEditPermissionOverwrites(guild, channel)) {
+				incrementChannelTypeStats(issues.stats.missingOverwriteEditPermission, channel);
+				addSampledLocation(issues.stats.missingOverwriteEditPermissionLocations, channel);
+			}
+
 			const conflictingAllowDetails = getConflictingAllowDetails(channel, quarantineRole.id);
 
 			if (conflictingAllowDetails.roleIds.length || conflictingAllowDetails.hasMemberSpecificAllows) {
 				incrementChannelTypeStats(issues.stats.conflictingAllows, channel);
+				addSampledLocation(issues.stats.conflictingAllowLocations, channel);
+				issues.stats.conflictingAllowHasMemberSpecific = issues.stats.conflictingAllowHasMemberSpecific ||
+					conflictingAllowDetails.hasMemberSpecificAllows;
 
 				for (const roleId of conflictingAllowDetails.roleIds) {
 					incrementCount(issues.stats.conflictingAllowRoles, roleId);
@@ -1025,6 +1093,7 @@ async function auditRaidConfiguration(guild, config = null) {
 
 		const missingOverwriteText = formatChannelTypeStats(issues.stats.missingQuarantineOverwrites);
 		const conflictingAllowsText = formatChannelTypeStats(issues.stats.conflictingAllows);
+		const missingOverwriteEditPermissionText = formatChannelTypeStats(issues.stats.missingOverwriteEditPermission);
 
 		if (hasChannelTypeStats(issues.stats.missingQuarantineOverwrites)) {
 			addAuditIssue(
@@ -1035,20 +1104,35 @@ async function auditRaidConfiguration(guild, config = null) {
 			addAuditIssue(issues.ok, `Quarantine role has full direct denies on checked channels/categories.`);
 		}
 
+		if (hasChannelTypeStats(issues.stats.missingOverwriteEditPermission)) {
+			addAuditIssue(
+				issues.warnings,
+				`Hachi cannot edit permission overwrites in ${missingOverwriteEditPermissionText}.`,
+				buildOverwritePermissionWarningDetail(issues.stats.missingOverwriteEditPermissionLocations),
+			);
+		} else {
+			addAuditIssue(issues.ok, `Overwrite sync permission is available on checked channels/categories.`);
+		}
+
 		if (hasChannelTypeStats(issues.stats.conflictingAllows)) {
 			const permissionText = formatCountedLabels(issues.stats.conflictingAllowPermissions);
+			const conflictingRoleText = formatCountedRoles(guild, issues.stats.conflictingAllowRoles);
+			const conflictVerb = channelTypeStatsVerb(issues.stats.conflictingAllows, `has`, `have`);
 
 			addAuditIssue(
 				issues.warnings,
-				`${conflictingAllowsText} ${channelTypeStatsVerb(issues.stats.conflictingAllows, `has`, `have`)} risky explicit allows that may weaken full-deny quarantine in some server layouts.`,
-				permissionText === `None` ? null : `Permissions: ${permissionText}.`,
+				`${conflictingAllowsText} ${conflictVerb} risky explicit channel/category allows that may weaken full-deny quarantine in some server layouts.`,
+				buildConflictingAllowDetail(
+					permissionText,
+					conflictingRoleText,
+					issues.stats.conflictingAllowLocations,
+					issues.stats.conflictingAllowHasMemberSpecific,
+				),
 			);
-
-			const conflictingRoleText = formatCountedRoles(guild, issues.stats.conflictingAllowRoles);
 
 			addAuditIssue(
 				issues.hierarchy,
-				`Channel-specific role allows may override quarantine denies.`,
+				`Roles or members with explicit channel/category allows may override quarantine denies.`,
 				conflictingRoleText === `None` ? `Review member-specific overwrites on affected channels.` : `Review: ${conflictingRoleText}.`,
 			);
 		}
@@ -1094,9 +1178,9 @@ async function syncQuarantineOverwrites(guild, config = null) {
 			continue;
 		}
 
-		if (!canManageChannel(guild, channel)) {
+		if (!canEditPermissionOverwrites(guild, channel)) {
 			skipped += 1;
-			errors.push(`Cannot manage #${channel.name || channel.id}.`);
+			errors.push(`${channelAuditLabel(channel)}: missing Manage Permissions (Manage Roles) for overwrites.`);
 			continue;
 		}
 

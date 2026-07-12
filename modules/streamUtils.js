@@ -1,3 +1,8 @@
+// Shared stream-notification helpers.
+//
+// Twitch and Kick notifications use the same Discord-side behavior: find target
+// channels, build embeds, fetch/edit messages, format role mentions, and load
+// server/channel state efficiently for each cron tick.
 const { EmbedBuilder } = require(`discord.js`);
 const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { error } = require(`../utils/writeLog.js`);

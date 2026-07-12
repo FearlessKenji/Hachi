@@ -1,3 +1,7 @@
+// Shared autocomplete sources.
+//
+// Discord autocomplete handlers need at most 25 choices. These helpers filter
+// colors, birthdays, and timezones into Discord-ready choice arrays.
 const { colorAutocompletes } = require(`./colors.js`);
 const { TIMEZONE_CHOICES } = require(`./timezones.js`);
 

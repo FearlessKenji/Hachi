@@ -1,4 +1,11 @@
+// Main bot runtime entry point.
+//
+// Startup order is deliberate: load .env, decrypt protected env values into
+// process memory, run config/database validation, then create the Discord client.
+// Modules loaded after configCheck can safely read process.env as plaintext
+// runtime values without knowing how they were stored on disk.
 require(`dotenv/config`);
+require(`./config/secretEncryption.js`).decryptEnvSecrets(process.env, { cwd: process.cwd() });
 require(`./config/configCheck.js`);
 const { Client, Collection, GatewayIntentBits, Partials } = require(`discord.js`);
 const { info, warn, error, initCrashHandlers, startLogCleanup, stopLogCleanup } = require(`./utils/writeLog.js`);

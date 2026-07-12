@@ -1,3 +1,9 @@
+// Central interaction router.
+//
+// Discord sends slash commands, autocomplete requests, buttons, select menus,
+// modals, and context-menu commands through the same InteractionCreate event.
+// This file classifies the interaction and delegates to the command module that
+// owns the matching command/component/modal behavior.
 const { Events, MessageFlags } = require(`discord.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const { autocompletes } = require(`../utils/autocompletes.js`);

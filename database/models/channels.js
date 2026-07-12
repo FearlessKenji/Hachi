@@ -1,3 +1,7 @@
+// Stream notification channel configuration.
+//
+// Each row represents one configured Twitch/Kick streamer in one Discord guild,
+// including target channels, live message IDs, roles, and provider state.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`channels`, {
 		id: {

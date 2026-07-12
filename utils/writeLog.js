@@ -1,3 +1,7 @@
+// Runtime logging and crash-handler helpers.
+//
+// Bot code uses these wrappers instead of console.* so logs land in predictable
+// files that HachiGen can read and trim.
 const { dateToString } = require(`./dateToString.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);

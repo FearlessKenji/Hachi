@@ -1,3 +1,7 @@
+// Guild-only /uptime command.
+//
+// Reports how long the current bot process has been running, useful after PM2
+// restarts or HachiGen Start/Restart actions.
 const { SlashCommandBuilder } = require(`discord.js`);
 const ST = new Date();
 

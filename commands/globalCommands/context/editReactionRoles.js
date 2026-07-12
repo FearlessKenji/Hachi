@@ -1,3 +1,6 @@
+// "Edit Reaction Roles" message context command.
+//
+// Opens the reaction-role editor for an existing Hachi-managed panel message.
 const {
 	ApplicationCommandType,
 	ContextMenuCommandBuilder,

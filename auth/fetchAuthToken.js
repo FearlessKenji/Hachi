@@ -1,3 +1,8 @@
+// Provider app-token requester.
+//
+// Twitch and Kick both expose OAuth client-credentials flows. This helper keeps
+// the HTTP shape and error logging in one place so refreshAuthTokens.js can
+// request tokens without duplicating provider plumbing.
 const { warn, error } = require(`../utils/writeLog`);
 
 async function fetchAuthToken({ provider, tokenUrl, clientID, clientSecret }) {

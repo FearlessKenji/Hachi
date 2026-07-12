@@ -1,3 +1,7 @@
+// Discord server/guild record.
+//
+// Most feature tables key back to guildId. The leftAt field lets Hachi remember
+// servers it has left without immediately deleting their configuration.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`servers`, {
 		guildId: {
@@ -38,6 +42,14 @@ module.exports = (sequelize, DataTypes) => {
 			defaultValue: false,
 		},
 		commandMonitoringChannelId: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		hachiAnnouncementChannelId: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		hachiAnnouncementLastId: {
 			type: DataTypes.STRING,
 			allowNull: true,
 		},

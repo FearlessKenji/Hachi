@@ -1,3 +1,8 @@
+// High-level Kick notification loop.
+//
+// The Kick cron calls getKick(client). This file mirrors the Twitch flow: load
+// configured channels, batch provider calls, update Discord messages, and persist
+// live/offline state.
 const { Channels } = require(`../database/dbObjects.js`);
 const kickUser = require(`./kickUser.js`);
 const kickStreams = require(`./kickStreams.js`);

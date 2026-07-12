@@ -1,6 +1,11 @@
+// Guild-only /restart command.
+//
+// Owner/admin utility for restarting the bot process from Discord. HachiGen/PM2
+// still own normal process control, but this gives a guarded in-Discord escape.
 const { SlashCommandBuilder, MessageFlags } = require(`discord.js`);
 const { info } = require(`../../../utils/writeLog.js`);
 const config = require(`../../../config/config.json`);
+const { isConfiguredOwner } = require(`../../../utils/configValues.js`);
 
 module.exports = {
 	data: new SlashCommandBuilder()
@@ -13,7 +18,7 @@ module.exports = {
 	},
 
 	async execute(interaction) {
-		if (interaction.user.id === config.botOwner) {
+		if (isConfiguredOwner(config, interaction.user.id)) {
 			await interaction.reply({ content: `Restarting...`, flags: MessageFlags.Ephemeral });
 			info(`Restart command used by ${interaction.user.username}.`, `Restarting...`);
 			process.exit();

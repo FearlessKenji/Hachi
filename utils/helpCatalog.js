@@ -1,5 +1,12 @@
+// Permission-aware /help catalog builder.
+//
+// Commands describe themselves with help metadata. This file groups that metadata
+// into categories and filters entries based on the requesting member's Discord
+// permissions.
 const { PermissionFlagsBits } = require(`discord.js`);
-const { guildId: configuredGuildId } = require(`../config/config.json`);
+const config = require(`../config/config.json`);
+const { getConfiguredGuildIds } = require(`./configValues.js`);
+const configuredGuildIds = new Set(getConfiguredGuildIds(config));
 
 const DEFAULT_CATEGORY = {
 	description: `Commands available in this server.`,
@@ -142,7 +149,7 @@ function commandAvailableInGuild(command, guildId) {
 		return true;
 	}
 
-	return Boolean(configuredGuildId && guildId && String(guildId) === String(configuredGuildId));
+	return Boolean(guildId && configuredGuildIds.has(String(guildId)));
 }
 
 function canUsePermissions(memberPermissions, permissions) {

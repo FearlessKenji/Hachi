@@ -1,3 +1,7 @@
+// /help command.
+//
+// Builds a permission-aware help catalog from command metadata. Moderators can
+// also post public help panels with a category picker.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,

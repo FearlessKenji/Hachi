@@ -1,3 +1,7 @@
+// Per-server raid-protection configuration.
+//
+// The raid runtime reads this policy to decide thresholds, quarantine behavior,
+// alert destinations, report destinations, and cleanup behavior.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`raidConfigs`, {
 		guildId: {

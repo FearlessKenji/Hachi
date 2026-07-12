@@ -1,3 +1,7 @@
+// /timestamp command.
+//
+// Converts date/time input and timezones into Discord timestamp markup, with a
+// confirmation component so users can preview before posting publicly.
 const {
 	ActionRowBuilder,
 	ApplicationIntegrationType,
@@ -10,8 +14,12 @@ const {
 const { DateTime } = require(`luxon`);
 
 const CONFIRM_TIMEOUT_MS = 10 * 60 * 1000;
+// Confirmations are process-local because they only exist between one slash
+// command response and a nearby button click.
 const pendingConfirmations = new Map();
 
+// Formats with explicit years. Keep this list broad so users can type natural
+// American dates, ISO-ish dates, short years, month names, and 12/24-hour times.
 const DATE_TIME_FORMATS = [
 	`M/d/yyyy h a`,
 	`M/d/yy h a`,
@@ -43,6 +51,8 @@ const DATE_TIME_FORMATS = [
 	`MMMM d yy H:mm`,
 ];
 
+// Formats used after Hachi inserts an inferred year. These omit two-digit years
+// so inferred values are always the exact current/next year.
 const DATE_TIME_FORMATS_WITH_INFERRED_YEAR = [
 	`M/d yyyy h a`,
 	`M/d/yyyy h a`,
@@ -95,6 +105,8 @@ function parseDateTimeWithYear(date, time, year, zone) {
 	return parseWithFormats(`${date} ${year} ${time}`, DATE_TIME_FORMATS_WITH_INFERRED_YEAR, zone);
 }
 
+// If the user omits a year, prefer this year when the time is still upcoming;
+// otherwise infer next year and ask for confirmation before posting publicly.
 function parseDateTime(date, time, zone) {
 	const explicitDateTime = parseExplicitDateTime(date, time, zone);
 

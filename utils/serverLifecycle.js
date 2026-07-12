@@ -1,3 +1,8 @@
+// Server lifecycle reconciliation.
+//
+// Hachi keeps server rows even after leaving a guild so data can be inspected or
+// restored intentionally. These helpers mark join/leave state and reconcile live
+// Discord guilds against persisted rows at startup.
 const fs = require(`node:fs`);
 const path = require(`node:path`);
 const { Op } = require(`sequelize`);

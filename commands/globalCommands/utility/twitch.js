@@ -1,3 +1,8 @@
+// /twitch command group.
+//
+// Handles Twitch account verification and broadcaster role-sync setup. The
+// command starts device-code flows, saves role mappings, posts verification
+// panels, and triggers manual syncs.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -24,6 +29,8 @@ const {
 const { roleIsAssignable } = require(`../../../utils/reactionRoles.js`);
 const { error: logError, warn } = require(`../../../utils/writeLog.js`);
 
+// Formatting helpers keep the status panel focused on setup state rather than
+// leaking raw database nulls or provider IDs into user-facing text.
 function formatRole(id) {
 	return id ? `<@&${id}>` : `Not set`;
 }
@@ -91,6 +98,9 @@ async function safeFollowUp(interaction, payload) {
 	}
 }
 
+// The device-code flow is asynchronous after Discord receives the initial reply.
+// This helper waits in the background and reports completion/failure with a
+// follow-up instead of holding the interaction open.
 function startPollingDeviceFlow(interaction, device, scopes, handler) {
 	waitForDeviceAuthorization(device, scopes)
 		.then(token => handler(token))

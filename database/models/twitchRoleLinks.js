@@ -1,3 +1,7 @@
+// Member-to-Twitch account link.
+//
+// Verification stores which Discord member corresponds to which Twitch user so
+// role sync can evaluate VIP/Moderator membership.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`twitchRoleLinks`, {
 		id: {

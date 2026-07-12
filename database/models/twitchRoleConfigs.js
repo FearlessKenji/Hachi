@@ -1,3 +1,7 @@
+// Per-server Twitch role-sync configuration.
+//
+// Stores broadcaster authorization and Discord role mappings for Twitch VIP and
+// Moderator synchronization.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`twitchRoleConfigs`, {
 		guildId: {

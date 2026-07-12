@@ -1,3 +1,7 @@
+// Message create event.
+//
+// Most bot behavior is slash-command based, but this event supports security
+// monitoring for public application-command responses from other apps.
 const {
 	ApplicationIntegrationType,
 	EmbedBuilder,

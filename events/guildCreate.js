@@ -1,3 +1,7 @@
+// Guild join event.
+//
+// When Hachi joins a server, make sure the database has a server row before any
+// setup commands or cron jobs try to read settings for that guild.
 const { info, error } = require(`../utils/writeLog.js`);
 const { Events } = require(`discord.js`);
 const { markServerJoined } = require(`../utils/serverLifecycle.js`);
