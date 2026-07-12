@@ -219,6 +219,37 @@ function collectCommands() {
 	loadedCommands = commands;
 }
 
+async function validateSetupHubOrdering() {
+	const { ButtonStyle } = require(`discord.js`);
+	const setup = requireFresh(`commands`, `globalCommands`, `setup`, `setup.js`);
+	let replyPayload = null;
+
+	await setup.execute({
+		id: `smoke-setup-order`,
+		guild: { id: `smoke-guild` },
+		user: { id: `smoke-user` },
+		reply(payload) {
+			replyPayload = payload;
+			return Promise.resolve();
+		},
+	});
+
+	const fields = replyPayload?.embeds?.[0]?.data?.fields?.map(field => field.name) || [];
+	const buttons = replyPayload?.components?.[0]?.components?.map(button => button.data) || [];
+	const expectedOrder = [
+		`Hachi Updates`,
+		`Stream Notifications`,
+		`Birthday Posts`,
+		`Security Reporting`,
+		`Raid Protection`,
+	];
+
+	assert(fields.slice(0, 5).join(`|`) === expectedOrder.join(`|`), `/setup embed fields are not in the expected order.`);
+	assert(buttons.map(button => button.label).join(`|`) === expectedOrder.join(`|`), `/setup buttons are not in the expected order.`);
+	assert(buttons[0]?.style === ButtonStyle.Primary, `Hachi Updates should be the primary setup button.`);
+	assert(buttons.slice(1).every(button => button.style === ButtonStyle.Secondary), `Non-primary setup buttons should use secondary style.`);
+}
+
 function assertComponentHandlersAreRoutable() {
 	assert(loadedCommands, `Commands must be loaded before component handler checks run.`);
 
@@ -898,6 +929,7 @@ async function main() {
 	await test(`blank config cron fields are valid`, validateBlankConfig);
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
+	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);

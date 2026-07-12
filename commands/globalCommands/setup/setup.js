@@ -41,6 +41,11 @@ function buildSetupEmbed() {
 		.setDescription(`Choose which area you want to configure.`)
 		.addFields(
 			{
+				name: `Hachi Updates`,
+				value: `Choose where manually sent Hachi patch notes should be posted.`,
+				inline: false,
+			},
+			{
 				name: `Stream Notifications`,
 				value: `Configure Twitch/Kick notification channels and roles.`,
 				inline: false,
@@ -61,11 +66,6 @@ function buildSetupEmbed() {
 				inline: false,
 			},
 			{
-				name: `Hachi Updates`,
-				value: `Choose where manually sent Hachi patch notes should be posted.`,
-				inline: false,
-			},
-			{
 				name: `Other Setup Commands`,
 				value: `Use \`/rules\` for rules verification and \`/reaction roles add\` for reaction-role panels.`,
 				inline: false,
@@ -77,9 +77,13 @@ function buildSetupComponents(setupId) {
 	return [
 		new ActionRowBuilder().addComponents(
 			new ButtonBuilder()
+				.setCustomId(`setup:${setupId}:announcements`)
+				.setLabel(`Hachi Updates`)
+				.setStyle(ButtonStyle.Primary),
+			new ButtonBuilder()
 				.setCustomId(`setup:${setupId}:stream`)
 				.setLabel(`Stream Notifications`)
-				.setStyle(ButtonStyle.Primary),
+				.setStyle(ButtonStyle.Secondary),
 			new ButtonBuilder()
 				.setCustomId(`setup:${setupId}:birthday`)
 				.setLabel(`Birthday Posts`)
@@ -91,10 +95,6 @@ function buildSetupComponents(setupId) {
 			new ButtonBuilder()
 				.setCustomId(`setup:${setupId}:raid`)
 				.setLabel(`Raid Protection`)
-				.setStyle(ButtonStyle.Danger),
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:announcements`)
-				.setLabel(`Hachi Updates`)
 				.setStyle(ButtonStyle.Secondary),
 		),
 	];
@@ -156,7 +156,7 @@ async function getPendingHub(interaction, setupId) {
 
 async function showSetupHub(interaction, setupId) {
 	await interaction.update({
-		content: ``,
+		content: null,
 		embeds: [buildSetupEmbed()],
 		components: buildSetupComponents(setupId),
 	});
