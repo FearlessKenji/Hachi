@@ -408,6 +408,9 @@ function validatePackageMetadata() {
 	const pkg = readJson(`package.json`);
 	const lock = readJson(`package-lock.json`);
 	const rootPackage = lock.packages?.[``];
+	const managerPkg = readJson(`manager`, `package.json`);
+	const managerLock = readJson(`manager`, `package-lock.json`);
+	const managerRootPackage = managerLock.packages?.[``];
 
 	assert(pkg.name === `Hachi`, `package.json name should be Hachi.`);
 	assert(pkg.version === lock.version, `package.json and package-lock.json versions do not match.`);
@@ -416,6 +419,10 @@ function validatePackageMetadata() {
 	assert(fs.existsSync(resolveProject(pkg.main)), `package main file does not exist: ${pkg.main}.`);
 	assert(pkg.scripts?.smoke === `node scripts/smokeTest.js`, `package.json is missing the smoke script.`);
 	assert(versionAtLeast(process.version, pkg.engines.node), `Node ${process.version} does not satisfy ${pkg.engines.node}.`);
+	assert(managerPkg.name === `hachigen`, `manager/package.json name should be hachigen.`);
+	assert(versionAtLeast(managerPkg.version, `1.0.0`), `HachiGen package version should be at least 1.0.0.`);
+	assert(managerPkg.version === managerLock.version, `manager/package.json and manager/package-lock.json versions do not match.`);
+	assert(managerRootPackage?.version === managerPkg.version, `manager/package-lock root package version does not match manager/package.json.`);
 
 	for (const packageName of Object.keys(pkg.dependencies || {})) {
 		assertLockPackage(lock, packageName);
@@ -468,9 +475,10 @@ function validateProjectFiles() {
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
 	const releaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
+	const currentTag = `v${readJson(`package.json`).version}`;
 
-	assert(rootChangelog.includes(`## v3.3.0`), `Root CHANGELOG.md should include the latest release entry.`);
-	assert(patchNotes.includes(`## v3.3.0`), `docs/patch-notes.md should include the latest user-facing release entry.`);
+	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
+	assert(patchNotes.includes(`## ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
@@ -921,6 +929,8 @@ function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
+	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
+	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
 	const {
 		getTimezoneChoicesForRegion,
@@ -935,6 +945,10 @@ function validatePureHelpers() {
 	assert(normalizeColorInput(`#abc`)?.color === 0xaabbcc, `Short hex color normalization failed.`);
 	assert(getTimezoneRegionId(`America/New_York`) === `us`, `Timezone region detection failed.`);
 	assert(getTimezoneChoicesForRegion(`us`).length <= 25, `Timezone region choices exceed Discord limit.`);
+	assert(isSecurityPolicyBlock(403, `Request blocked by security policy.`), `Kick security-policy block detection failed.`);
+	assert(findKickVodUrl({
+		fields: [{ name: `Kick`, value: `[Watch VoD](https://kick.com/piratesoftware/videos/smoke_vod)` }],
+	}) === `https://kick.com/piratesoftware/videos/smoke_vod`, `Kick VoD URL detection failed.`);
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 

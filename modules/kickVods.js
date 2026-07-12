@@ -2,7 +2,11 @@
 //
 // After a Kick stream ends, Hachi asks Kick for the most recent video so it can
 // update the prior live notification with a replay link when one is available.
-const { error } = require(`../utils/writeLog.js`);
+const { error, warn } = require(`../utils/writeLog.js`);
+
+function isSecurityPolicyBlock(status, text) {
+	return status === 403 && /security policy/iu.test(String(text || ``));
+}
 
 async function getLatest(channelName) {
 	try {
@@ -17,6 +21,16 @@ async function getLatest(channelName) {
 
 		if (!res.ok) {
 			const text = await res.text();
+
+			if (isSecurityPolicyBlock(res.status, text)) {
+				warn(`Kick VoD lookup was blocked by Kick's security policy for ${channelName}.`);
+				return {
+					blocked: true,
+					retryable: false,
+					url: null,
+				};
+			}
+
 			throw new Error(`HTTP ${res.status} - ${text}`);
 		}
 
@@ -41,4 +55,7 @@ async function getLatest(channelName) {
 	}
 }
 
-module.exports = { getLatest };
+module.exports = {
+	getLatest,
+	isSecurityPolicyBlock,
+};

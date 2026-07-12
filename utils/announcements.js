@@ -25,10 +25,9 @@ function slugify(value) {
 }
 
 function normalizeAnnouncementId(value) {
-	// Discord select interactions should provide raw snowflake strings, but some
-	// resolved interaction shapes can carry channel/guild objects. Sequelize's
-	// SQLite driver cannot bind objects, so every ID that reaches the database is
-	// reduced to a primitive string first.
+	// Discord select interactions normally provide snowflake strings, but some
+	// resolved interaction shapes carry channel/guild objects. SQLite cannot
+	// bind objects, so announcement IDs are reduced before they reach Sequelize.
 	if (value === null || value === undefined || value === ``) {
 		return null;
 	}
