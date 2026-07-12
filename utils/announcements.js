@@ -24,6 +24,39 @@ function slugify(value) {
 		.replace(/^-|-$/gu, ``);
 }
 
+function normalizeAnnouncementId(value) {
+	// Discord select interactions should provide raw snowflake strings, but some
+	// resolved interaction shapes can carry channel/guild objects. Sequelize's
+	// SQLite driver cannot bind objects, so every ID that reaches the database is
+	// reduced to a primitive string first.
+	if (value === null || value === undefined || value === ``) {
+		return null;
+	}
+
+	if (typeof value === `object`) {
+		if (`id` in value) {
+			return normalizeAnnouncementId(value.id);
+		}
+
+		if (`value` in value) {
+			return normalizeAnnouncementId(value.value);
+		}
+	}
+
+	const normalized = String(value).trim();
+	return normalized || null;
+}
+
+function requireAnnouncementId(value, label) {
+	const normalized = normalizeAnnouncementId(value);
+
+	if (!normalized) {
+		throw new Error(`${label} is required.`);
+	}
+
+	return normalized;
+}
+
 function readPatchNotesDocument(filePath = PATCH_NOTES_PATH) {
 	if (!fs.existsSync(filePath)) {
 		return ``;
@@ -134,34 +167,45 @@ function formatPatchNotesMessages(note) {
 }
 
 async function getAnnouncementSettings(guildId) {
+	const normalizedGuildId = requireAnnouncementId(guildId, `Guild ID`);
 	const server = await Servers.findOne({
 		raw: true,
-		where: { guildId },
+		where: { guildId: normalizedGuildId },
 	});
 
 	return {
-		guildId,
+		guildId: normalizedGuildId,
 		hachiAnnouncementChannelId: server?.hachiAnnouncementChannelId || null,
 		hachiAnnouncementLastId: server?.hachiAnnouncementLastId || null,
 	};
 }
 
-async function saveAnnouncementChannel(guildId, channelId) {
-	await Servers.upsert({
-		guildId,
-		hachiAnnouncementChannelId: channelId || null,
-	});
+async function updateAnnouncementSettings(guildId, values) {
+	const normalizedGuildId = requireAnnouncementId(guildId, `Guild ID`);
+	const server = await Servers.findByPk(normalizedGuildId);
 
-	return getAnnouncementSettings(guildId);
+	if (server) {
+		await server.update(values);
+		return getAnnouncementSettings(normalizedGuildId);
+	}
+
+	await Servers.create({
+		guildId: normalizedGuildId,
+		...values,
+	});
+	return getAnnouncementSettings(normalizedGuildId);
+}
+
+async function saveAnnouncementChannel(guildId, channelId) {
+	return updateAnnouncementSettings(guildId, {
+		hachiAnnouncementChannelId: normalizeAnnouncementId(channelId),
+	});
 }
 
 async function clearAnnouncementChannel(guildId) {
-	await Servers.upsert({
-		guildId,
+	return updateAnnouncementSettings(guildId, {
 		hachiAnnouncementChannelId: null,
 	});
-
-	return getAnnouncementSettings(guildId);
 }
 
 async function fetchGuild(client, guildId) {
@@ -219,8 +263,7 @@ async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = 
 		await channelResult.channel.send({ content });
 	}
 
-	await Servers.upsert({
-		guildId,
+	await updateAnnouncementSettings(guildId, {
 		hachiAnnouncementLastId: note.id,
 	});
 
@@ -273,6 +316,7 @@ module.exports = {
 	formatPatchNotesMessages,
 	getAnnouncementSettings,
 	getLatestPatchNotes,
+	normalizeAnnouncementId,
 	saveAnnouncementChannel,
 	sendLatestPatchNotesToGuild,
 	splitAnnouncementText,

@@ -250,6 +250,49 @@ async function validateSetupHubOrdering() {
 	assert(buttons.slice(1).every(button => button.style === ButtonStyle.Secondary), `Non-primary setup buttons should use secondary style.`);
 }
 
+async function validateAnnouncementChannelIdNormalization() {
+	const announcements = requireFresh(`utils`, `announcements.js`);
+	const { Servers } = require(resolveProject(`database`, `dbObjects.js`));
+	const originalFindByPk = Servers.findByPk;
+	const originalFindOne = Servers.findOne;
+	const originalCreate = Servers.create;
+	const writes = [];
+
+	try {
+		Servers.findByPk = async guildId => {
+			assert(typeof guildId === `string`, `Announcement guild lookup received a non-string guild ID.`);
+			return null;
+		};
+		Servers.create = async values => {
+			writes.push(values);
+			assert(typeof values.guildId === `string`, `Announcement settings create received a non-string guild ID.`);
+			assert(typeof values.hachiAnnouncementChannelId === `string`, `Announcement settings create received a non-string channel ID.`);
+			return values;
+		};
+		Servers.findOne = async options => {
+			assert(typeof options.where.guildId === `string`, `Announcement settings read received a non-string guild ID.`);
+			return {
+				guildId: options.where.guildId,
+				hachiAnnouncementChannelId: writes.at(-1)?.hachiAnnouncementChannelId || null,
+				hachiAnnouncementLastId: null,
+			};
+		};
+
+		const settings = await announcements.saveAnnouncementChannel(
+			{ id: `smoke-guild-id` },
+			{ id: `smoke-channel-id` },
+		);
+
+		assert(settings.guildId === `smoke-guild-id`, `Announcement settings did not normalize object-shaped guild ID.`);
+		assert(settings.hachiAnnouncementChannelId === `smoke-channel-id`, `Announcement settings did not normalize object-shaped channel ID.`);
+		assert(announcements.normalizeAnnouncementId(123456789n) === `123456789`, `Announcement ID normalization did not handle bigint IDs.`);
+	} finally {
+		Servers.findByPk = originalFindByPk;
+		Servers.findOne = originalFindOne;
+		Servers.create = originalCreate;
+	}
+}
+
 function assertComponentHandlersAreRoutable() {
 	assert(loadedCommands, `Commands must be loaded before component handler checks run.`);
 
@@ -930,6 +973,7 @@ async function main() {
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
+	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);
