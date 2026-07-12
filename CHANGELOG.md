@@ -4,16 +4,44 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+No unreleased changes yet.
+
+## v3.3.0 - 2026-07-12
+
 ### Added
 
+- Added mandatory encrypted database support through SQLCipher-compatible `better-sqlite3-multiple-ciphers`.
+- Added HachiGen database protection controls for key generation, verification, conversion, key rotation, encrypted backups, backup metadata, and key backup export.
+- Added encrypted `.env` secret storage with per-value encryption, automatic HachiGen conversion, runtime decryption, redacted reads, and short-lived copy-secret support.
+- Added a manual Hachi patch-note announcement framework backed by user-facing `docs/patch-notes.md`.
+- Added `/setup` Hachi Updates channel selection so servers can opt in to manually sent Hachi patch notes.
+- Added owner-only `/announce patch-notes` for manually broadcasting the latest user-facing patch notes to opted-in servers.
+- Added `botOwners` and `guildIds` array support in `config/config.json`, while retaining compatibility with old `botOwner` and `guildId` config files.
+- Added multi-guild command deployment support for every configured guild ID.
 - Added `leftAt` tracking for servers Hachi leaves so server data is retained briefly instead of being removed immediately.
 - Added a seven-day cleanup window for left servers, including guild-scoped database rows and archived raid evidence under `data/evidence/<guildId>/`.
 - Startup reconciliation now marks active server rows as left when Hachi is no longer in those guilds, covering missed leave events while offline.
+- Added broad inline code comments and `docs/developer-guide.md` to make the project easier to inspect file-by-file.
+
+### Changed
+
+- Hachi now requires encrypted database and encrypted `.env` secret configuration before startup.
+- HachiGen now saves Setup config with plural owner/guild arrays and reads older singular config files for compatibility.
+- HachiGen update, remote, database, and runtime logs now use more readable normalized messages for routine actions.
+- Updated the project version to `3.3.0`.
 
 ### Fixed
 
 - Added startup server-row reconciliation so Hachi creates missing `servers` table rows for guilds it is already in, recovering from missed join events or local/production database swaps.
 - Rejoining a server now clears its `leftAt` marker before the cleanup window can remove its data.
+- Fixed database protection status wording so encrypted databases that open with the configured key are shown as encrypted, while unreadable files are treated as invalid format.
+- Fixed database key path display normalization in HachiGen.
+
+### Security
+
+- Database files are encrypted at rest by default and plaintext databases are converted or rejected.
+- Stored `.env` values are encrypted individually instead of being saved as plaintext.
+- Decrypted secrets are kept out of HachiGen reads and logs, with controlled copy-to-clipboard behavior.
 
 ## v3.2.0 - 2026-07-08
 

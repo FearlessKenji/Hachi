@@ -1,3 +1,7 @@
+// Twitch role verification panel message record.
+//
+// Public verification buttons reference this row so interaction handlers know
+// which server configuration they belong to.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`twitchRoleEventMessages`, {
 		messageId: {

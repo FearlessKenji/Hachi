@@ -1,3 +1,7 @@
+// Shared reaction-role helpers.
+//
+// Commands and reaction events both need consistent role assignability checks,
+// emoji normalization, and database cleanup behavior for reaction-role panels.
 const {
 	EmbedBuilder,
 	PermissionFlagsBits,

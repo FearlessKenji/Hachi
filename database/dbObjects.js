@@ -1,14 +1,27 @@
+// Sequelize model registry and association map.
+//
+// Every feature imports models from this file so there is exactly one Sequelize
+// instance for the running process. When database encryption is enabled, the
+// Sequelize sqlite dialect is pointed at the SQLCipher adapter before models are
+// registered.
 const Sequelize = require(`sequelize`);
 const path = require(`path`);
+const { isEncryptedDatabaseRuntimeEnabled } = require(`./dbEncryption.js`);
 
 const dbPath = path.join(__dirname, `database.sqlite`);
-
-const sequelize = new Sequelize(`database`, `username`, `password`, {
+const encryptedRuntimeEnabled = isEncryptedDatabaseRuntimeEnabled(process.env.HACHI_DB_ENCRYPTION);
+const sequelizeOptions = {
 	host: `localhost`,
 	dialect: `sqlite`,
 	logging: false,
 	storage: dbPath,
-});
+};
+
+if (encryptedRuntimeEnabled) {
+	sequelizeOptions.dialectModule = require(`./sqlcipherSqlite3.js`);
+}
+
+const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 
 // Models
 // Every model is registered against the shared Sequelize instance before any

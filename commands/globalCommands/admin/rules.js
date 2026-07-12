@@ -1,3 +1,7 @@
+// /rules command.
+//
+// Posts rules embeds and optional verification panels. Modal submissions collect
+// long-form rules text, and reaction events later grant the configured role.
 const {
 	ActionRowBuilder,
 	ChannelType,

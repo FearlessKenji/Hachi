@@ -1,3 +1,7 @@
+// Twitch VoD API client.
+//
+// After a stream ends, Hachi tries to find the VoD for the stream ID so the
+// original live message can be edited with a replay link.
 const { error } = require(`../utils/writeLog.js`);
 
 async function getForStream(userId, streamId, clientID, authKey) {

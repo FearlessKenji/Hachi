@@ -2,11 +2,16 @@
 
 const childProcess = require(`node:child_process`);
 const fs = require(`node:fs`);
+const os = require(`node:os`);
 const path = require(`node:path`);
 
 const projectRoot = path.resolve(__dirname, `..`);
 process.chdir(projectRoot);
 
+// Smoke tests are intentionally broad rather than deeply mocked. They catch the
+// integration failures most likely to break a self-hosted bot install: missing
+// files, command export drift, database/schema drift, encrypted runtime support,
+// HachiGen config writes, and generated artifact hygiene.
 const results = {
 	failed: 0,
 	passed: 0,
@@ -240,14 +245,16 @@ function assertHelpCatalogBuilds() {
 	assert(loadedCommands, `Commands must be loaded before help catalog checks run.`);
 
 	const { buildHelpCatalog, filterCatalogForMember } = requireFresh(`utils`, `helpCatalog.js`);
+	const { getConfiguredGuildIds } = requireFresh(`utils`, `configValues.js`);
 	const { PermissionsBitField } = require(`discord.js`);
 	const commandMap = new Map();
+	const guildIds = getConfiguredGuildIds(readJson(`config`, `config.json`));
 
 	for (const { command, json } of loadedCommands) {
 		commandMap.set(json.name, command);
 	}
 
-	const catalog = buildHelpCatalog(commandMap, { guildId: readJson(`config`, `config.json`).guildId });
+	const catalog = buildHelpCatalog(commandMap, { guildId: guildIds[0] || null });
 
 	assert(catalog.length > 0, `Help catalog was empty.`);
 	assert(catalog.some(category => category.id === `streams`), `Help catalog is missing streams category.`);
@@ -365,6 +372,7 @@ function validateProjectFiles() {
 		`database/dbAudit.js`,
 		`database/dbInit.js`,
 		`docs/_config.yml`,
+		`docs/patch-notes.md`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
 		`events/guildDelete.js`,
@@ -383,11 +391,14 @@ function validateProjectFiles() {
 
 	const rootChangelog = fs.readFileSync(resolveProject(`CHANGELOG.md`), `utf8`);
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
+	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
 	const releaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
 
-	assert(rootChangelog.includes(`## v3.2.0`), `Root CHANGELOG.md should include the latest release entry.`);
+	assert(rootChangelog.includes(`## v3.3.0`), `Root CHANGELOG.md should include the latest release entry.`);
+	assert(patchNotes.includes(`## v3.3.0`), `docs/patch-notes.md should include the latest user-facing release entry.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
+	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(releaseWorkflow.includes(`branches:`) && releaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
 	assert(releaseWorkflow.includes(`Resolve release tag`) && releaseWorkflow.includes(`package.json`), `HachiGen release workflow should resolve tags from package.json version bumps.`);
@@ -403,8 +414,8 @@ function validateBlankConfig() {
 	const { CronTime } = require(`cron`);
 	const blankConfig = readJson(`config`, `blank.json`);
 	const requiredFields = [
-		`botOwner`,
-		`guildId`,
+		`botOwners`,
+		`guildIds`,
 		`twitchCron`,
 		`kickCron`,
 		`birthdayCron`,
@@ -415,6 +426,9 @@ function validateBlankConfig() {
 	for (const field of requiredFields) {
 		assert(blankConfig[field], `config/blank.json is missing ${field}.`);
 	}
+
+	assert(Array.isArray(blankConfig.botOwners), `config/blank.json botOwners should be an array.`);
+	assert(Array.isArray(blankConfig.guildIds), `config/blank.json guildIds should be an array.`);
 
 	for (const cronField of requiredFields.filter(field => field.endsWith(`Cron`))) {
 		new CronTime(blankConfig[cronField]);
@@ -433,6 +447,8 @@ function validateConfigCheckIfConfigured() {
 		env: {
 			TOKEN: `smoke-token`,
 			clientId: `smoke-client-id`,
+			HACHI_SECRETS_ENCRYPTION: `encrypted`,
+			HACHI_SECRETS_KEY: `smoke-secret-key`,
 			kickClientId: `smoke-kick-client-id`,
 			kickSecret: `smoke-kick-secret`,
 			twitchClientId: `smoke-twitch-client-id`,
@@ -443,8 +459,117 @@ function validateConfigCheckIfConfigured() {
 	assert(result.status === 0, `configCheck failed:\n${result.stdout}${result.stderr}`);
 }
 
+function validateSecretEncryptionHelpers() {
+	const secrets = requireFresh(`config`, `secretEncryption.js`);
+	const key = secrets.generateSecretKey();
+	const encrypted = secrets.encryptSecretValue(`TOKEN`, `smoke-token-value`, key);
+	const env = {
+		HACHI_SECRETS_ENCRYPTION: `encrypted`,
+		HACHI_SECRETS_KEY: key,
+		TOKEN: encrypted,
+	};
+
+	assert(secrets.isEncryptedValue(encrypted), `Encrypted secret does not use the expected envelope prefix.`);
+	assert(secrets.decryptSecretValue(`TOKEN`, encrypted, key) === `smoke-token-value`, `Encrypted secret did not decrypt to the original value.`);
+
+	const metadata = secrets.decryptEnvSecrets(env, { fields: [`TOKEN`] });
+	assert(env.TOKEN === `smoke-token-value`, `decryptEnvSecrets did not replace encrypted process env value.`);
+	assert(metadata.decryptedFields.includes(`TOKEN`), `decryptEnvSecrets did not report TOKEN as decrypted.`);
+	assert(secrets.redactSecretText(`TOKEN="smoke-token-value"`).includes(`[redacted]`), `Secret redaction did not redact TOKEN assignment.`);
+}
+
+async function validateHachiGenSecretConfigurationRoundTrip() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const secrets = requireFresh(`config`, `secretEncryption.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-secrets-`));
+	const keyPath = path.join(tempDir, `keys`, `secrets.key`);
+	const envPath = path.join(tempDir, `.env`);
+	const envFields = [
+		`TOKEN`,
+		`clientId`,
+		`twitchClientId`,
+		`twitchSecret`,
+		`kickClientId`,
+		`kickSecret`,
+	];
+	const rawValues = {
+		TOKEN: `smoke-discord-token`,
+		clientId: `smoke-discord-client`,
+		twitchClientId: `smoke-twitch-client`,
+		twitchSecret: `smoke-twitch-secret`,
+		kickClientId: `smoke-kick-client`,
+		kickSecret: `smoke-kick-secret`,
+	};
+	let manager = null;
+
+	try {
+		fs.mkdirSync(path.join(tempDir, `config`), { recursive: true });
+		fs.mkdirSync(path.dirname(keyPath), { recursive: true });
+		fs.writeFileSync(keyPath, `${secrets.generateSecretKey()}\n`, `utf8`);
+		fs.copyFileSync(resolveProject(`blank.env`), path.join(tempDir, `blank.env`));
+		fs.copyFileSync(resolveProject(`config`, `blank.json`), path.join(tempDir, `config`, `blank.json`));
+		fs.writeFileSync(envPath, `HACHI_SECRETS_KEY_FILE=${JSON.stringify(keyPath)}\n`, `utf8`);
+
+		manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: resolveProject(`manager`),
+			userDataPath: path.join(tempDir, `userData`),
+		});
+
+		await manager.writeConfiguration({
+			...rawValues,
+			botOwners: `smoke-owner smoke-owner-two`,
+			guildIds: `smoke-guild,smoke-guild-two`,
+		});
+
+		const envText = fs.readFileSync(envPath, `utf8`);
+
+		for (const value of Object.values(rawValues)) {
+			assert(!envText.includes(value), `.env contains raw HachiGen setup value ${value}.`);
+		}
+
+		const savedEnv = secrets.parseDotEnvFile(envPath);
+
+		assert(savedEnv.HACHI_SECRETS_ENCRYPTION === `encrypted`, `HachiGen did not enable .env secret encryption.`);
+		assert(savedEnv.HACHI_SECRETS_KEY_FILE === keyPath, `HachiGen changed the configured temp secrets key path.`);
+
+		for (const field of envFields) {
+			assert(secrets.isEncryptedValue(savedEnv[field]), `${field} was not saved as an encrypted value.`);
+		}
+
+		const tokenCiphertext = savedEnv.TOKEN;
+		const savedConfig = JSON.parse(fs.readFileSync(path.join(tempDir, `config`, `config.json`), `utf8`));
+		const readBack = manager.readLocalConfiguration();
+
+		assert(Array.isArray(savedConfig.botOwners), `HachiGen did not save botOwners as an array.`);
+		assert(Array.isArray(savedConfig.guildIds), `HachiGen did not save guildIds as an array.`);
+		assert(savedConfig.botOwners.includes(`smoke-owner-two`), `HachiGen did not split bot owner IDs.`);
+		assert(savedConfig.guildIds.includes(`smoke-guild-two`), `HachiGen did not split guild IDs.`);
+
+		for (const field of envFields) {
+			assert(readBack.values[field] === ``, `HachiGen exposed ${field} while reading protected config.`);
+			assert(readBack.envProtection.fields[field].copyable, `${field} was not marked copyable after encryption.`);
+		}
+
+		const copied = await manager.readEnvSecretForCopy(`TOKEN`);
+		assert(copied.value === rawValues.TOKEN, `HachiGen copy path did not decrypt TOKEN.`);
+
+		await manager.writeConfiguration(Object.fromEntries(envFields.map(field => [field, ``])));
+
+		const preservedEnv = secrets.parseDotEnvFile(envPath);
+		assert(preservedEnv.TOKEN === tokenCiphertext, `Blank HachiGen save did not preserve encrypted TOKEN.`);
+	} finally {
+		if (manager?.databaseCipherTest) {
+			manager.databaseCipherTest = null;
+		}
+
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 function validateRuntimeDependencies() {
 	const dependencies = [
+		`better-sqlite3-multiple-ciphers`,
 		`cron`,
 		`discord.js`,
 		`dotenv`,
@@ -461,6 +586,214 @@ function validateRuntimeDependencies() {
 	}
 
 	require(`sqlite3`).verbose();
+}
+
+function restoreEnvValue(key, value) {
+	if (value === undefined) {
+		delete process.env[key];
+		return;
+	}
+
+	process.env[key] = value;
+}
+
+async function validateEncryptedSequelizeRuntime() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const { databaseFileStatus } = requireFresh(`database`, `dbEncryption.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-runtime-cipher-`));
+	const dbPath = path.join(tempDir, `runtime.sqlite`);
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	let sequelize = null;
+	let reopened = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-runtime-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+
+		sequelize = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		const Sample = sequelize.define(`sample`, {
+			value: {
+				allowNull: false,
+				type: Sequelize.STRING,
+			},
+		}, { timestamps: false });
+		await sequelize.sync();
+		await Sample.create({ value: `ok` });
+		await sequelize.transaction(async transaction => {
+			await Sample.create({ value: `tx` }, { transaction });
+		});
+		await sequelize.close();
+		sequelize = null;
+
+		const status = databaseFileStatus(dbPath);
+		assert(status.encryptedLikely, `Encrypted runtime test database was created with a plain SQLite header.`);
+
+		reopened = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		const ReopenedSample = reopened.define(`sample`, {
+			value: {
+				allowNull: false,
+				type: Sequelize.STRING,
+			},
+		}, { timestamps: false });
+		const row = await ReopenedSample.findOne({ where: { value: `ok` } });
+		const transactionRow = await ReopenedSample.findOne({ where: { value: `tx` } });
+
+		assert(row?.get(`value`) === `ok`, `Encrypted runtime database did not reopen through Sequelize.`);
+		assert(transactionRow?.get(`value`) === `tx`, `Encrypted runtime transaction row did not persist.`);
+	} finally {
+		if (sequelize) {
+			await sequelize.close().catch(() => null);
+		}
+
+		if (reopened) {
+			await reopened.close().catch(() => null);
+		}
+
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
+
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateDatabaseEncryptionConversion() {
+	const sqlite3 = require(`sqlite3`).verbose();
+	const {
+		convertPlainDatabaseToEncrypted,
+		databaseFileStatus,
+		describeDatabaseBackup,
+		openSqlCipherDatabase,
+		rekeyEncryptedDatabase,
+		rotateDatabaseBackups,
+		writeDatabaseBackupMetadata,
+	} = requireFresh(`database`, `dbEncryption.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-convert-cipher-`));
+	const plainPath = path.join(tempDir, `plain.sqlite`);
+	const encryptedPath = path.join(tempDir, `encrypted.sqlite`);
+	const backupDir = path.join(tempDir, `backups`);
+	const encryptedBackupPath = path.join(backupDir, `encrypted-backup.sqlite`);
+	const plaintextBackupPath = path.join(backupDir, `plaintext-backup.sqlite`);
+	const key = `smoke-convert-${Date.now()}`;
+
+	try {
+		await new Promise((resolve, reject) => {
+			const db = new sqlite3.Database(plainPath, error => {
+				if (error) {
+					reject(error);
+					return;
+				}
+
+				db.exec(
+					`CREATE TABLE sample (id INTEGER PRIMARY KEY AUTOINCREMENT, value TEXT NOT NULL);
+					INSERT INTO sample (value) VALUES ('ok');
+					PRAGMA user_version = 23;`,
+					execError => {
+						db.close(closeError => execError || closeError ? reject(execError || closeError) : resolve());
+					},
+				);
+			});
+		});
+
+		const result = convertPlainDatabaseToEncrypted({
+			key,
+			root: projectRoot,
+			sourcePath: plainPath,
+			targetPath: encryptedPath,
+		});
+
+		assert(result.rowsCopied === 1, `Encrypted conversion copied ${result.rowsCopied} rows instead of 1.`);
+		assert(databaseFileStatus(encryptedPath).encryptedLikely, `Encrypted conversion output has a plain SQLite header.`);
+
+		const encryptedDb = openSqlCipherDatabase({
+			dbPath: encryptedPath,
+			key,
+			readonly: true,
+			root: projectRoot,
+		});
+		const row = encryptedDb.prepare(`SELECT value FROM sample WHERE id = 1`).get();
+		const userVersion = encryptedDb.pragma(`user_version`, { simple: true });
+		encryptedDb.close();
+
+		assert(row?.value === `ok`, `Encrypted conversion did not preserve row data.`);
+		assert(userVersion === 23, `Encrypted conversion did not preserve user_version.`);
+
+		rekeyEncryptedDatabase({
+			dbPath: encryptedPath,
+			newKey: `${key}-rotated`,
+			oldKey: key,
+			root: projectRoot,
+		});
+
+		const rekeyedDb = openSqlCipherDatabase({
+			dbPath: encryptedPath,
+			key: `${key}-rotated`,
+			readonly: true,
+			root: projectRoot,
+		});
+		const rekeyedRow = rekeyedDb.prepare(`SELECT value FROM sample WHERE id = 1`).get();
+		rekeyedDb.close();
+
+		assert(rekeyedRow?.value === `ok`, `Encrypted rekey did not preserve row data.`);
+
+		fs.mkdirSync(backupDir, { recursive: true });
+		fs.copyFileSync(encryptedPath, encryptedBackupPath);
+		fs.copyFileSync(plainPath, plaintextBackupPath);
+		writeDatabaseBackupMetadata({
+			backupPath: encryptedBackupPath,
+			key: `${key}-rotated`,
+			reason: `smoke`,
+			root: tempDir,
+			source: `smoke`,
+		});
+
+		assert(
+			describeDatabaseBackup({ backupPath: encryptedBackupPath, currentKey: `${key}-rotated` }).status === `current-key`,
+			`Encrypted backup metadata did not match the current key.`,
+		);
+
+		const backupRotation = rotateDatabaseBackups({
+			backupDir,
+			includePlaintext: true,
+			newKey: `${key}-backup-rotated`,
+			oldKey: `${key}-rotated`,
+			root: projectRoot,
+			source: `smoke`,
+		});
+
+		assert(backupRotation.rekeyed === 1, `Backup rotation rekeyed ${backupRotation.rekeyed} encrypted backups instead of 1.`);
+		assert(backupRotation.converted === 1, `Backup rotation encrypted ${backupRotation.converted} plaintext backups instead of 1.`);
+
+		for (const backupPath of [encryptedBackupPath, plaintextBackupPath]) {
+			const backupDb = openSqlCipherDatabase({
+				dbPath: backupPath,
+				key: `${key}-backup-rotated`,
+				readonly: true,
+				root: projectRoot,
+			});
+			const backupRow = backupDb.prepare(`SELECT value FROM sample WHERE id = 1`).get();
+			backupDb.close();
+
+			assert(backupRow?.value === `ok`, `Backup rotation did not preserve row data for ${path.basename(backupPath)}.`);
+			assert(
+				describeDatabaseBackup({ backupPath, currentKey: `${key}-backup-rotated` }).status === `current-key`,
+				`Backup rotation did not write current-key metadata for ${path.basename(backupPath)}.`,
+			);
+		}
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
 }
 
 function validatePureHelpers() {
@@ -525,7 +858,11 @@ async function main() {
 	await test(`database models match audited schema columns`, () => {
 		dbObjects = validateDatabaseModels();
 	});
+	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
+	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
+	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
+	await test(`HachiGen saves setup env values encrypted`, validateHachiGenSecretConfigurationRoundTrip);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`git hygiene checks pass`, validateGitHygiene);

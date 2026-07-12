@@ -1,3 +1,8 @@
+// /raid command group.
+//
+// Administrators configure raid-protection policy here. The command also exposes
+// status, audit, drill, incident, report, evidence, quarantine, release, and
+// permission-sync flows backed by utils/raidProtection.js.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,
@@ -36,6 +41,9 @@ const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const RAID_COLOR = 0xed4245;
 const QUARANTINE_ROLE_NAME = `Quarantine`;
+// Setup and sync confirmations are temporary Discord component flows. The saved
+// policy lives in RaidConfigs; these maps only hold drafts until the user clicks
+// Submit/Confirm or the process restarts.
 const pendingRaidSetups = new Map();
 const pendingRaidSyncs = new Map();
 const textChannelTypes = [
@@ -43,6 +51,8 @@ const textChannelTypes = [
 	ChannelType.GuildAnnouncement,
 ];
 
+// Component builders below keep customId construction consistent. Handlers parse
+// those IDs to know which setup draft, page, and field a user is changing.
 function buildYesNoSelect(customId, placeholder) {
 	return new ActionRowBuilder().addComponents(
 		new StringSelectMenuBuilder()
@@ -89,6 +99,8 @@ function buildRoleSelect(customId, placeholder) {
 	);
 }
 
+// Raid protection can only be enabled when every destination/action dependency
+// is selected. This helper produces the exact user-facing reason when not ready.
 function getRaidConfigurationError(config) {
 	if (!config.alertChannelId) {
 		return `Select a mod alert channel before enabling raid protection.`;
@@ -119,6 +131,9 @@ function formatRaidEnabledState(config) {
 		`No. Ready to enable.`;
 }
 
+// The home page is the setup wizard's table of contents and status summary. It
+// mirrors the saved config shape so administrators can review all policy choices
+// before submitting.
 function buildHomeContent(config) {
 	const status = config.statusMessage ? `\n### ${config.statusMessage}` : ``;
 
@@ -505,7 +520,7 @@ function buildSyncConfirmEmbed(config) {
 	return new EmbedBuilder()
 		.setColor(RAID_COLOR)
 		.setTitle(`Confirm Quarantine Sync`)
-		.setDescription(`This will add or update quarantine deny overwrites across supported channels and categories Hachi can manage.`)
+		.setDescription(`This will add or update quarantine deny overwrites across supported channels and categories where Hachi can edit permission overwrites.`)
 		.addFields(
 			{ name: `Quarantine Role`, value: formatRole(config.quarantineRoleId), inline: true },
 			{ name: `Review Afterward`, value: `Check channels that should stay visible, such as rules or information channels.`, inline: false },

@@ -1,3 +1,7 @@
+// Birthday feature helpers.
+//
+// Commands store birthdays, and the birthday cron asks this module which users
+// need reminder/day-of messages for a server's configured timezone and hour.
 const {
 	ActionRowBuilder,
 	ButtonBuilder,

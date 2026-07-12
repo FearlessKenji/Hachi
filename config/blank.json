@@ -1,6 +1,10 @@
 {
-	"botOwner": "(REQUIRED)",
-	"guildId": "(REQUIRED)",
+	"botOwners": [
+		"(REQUIRED)"
+	],
+	"guildIds": [
+		"(REQUIRED)"
+	],
 	"twitchCron": "*/1 * * * *",
 	"kickCron": "*/1 * * * *",
 	"birthdayCron": "0 * * * *",

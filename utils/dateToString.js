@@ -1,3 +1,7 @@
+// Small date formatting helper used by logs and user-facing messages.
+//
+// Keeping this in one place makes log timestamps consistent across runtime and
+// maintenance code.
 function dateToString(input) {
 	const newDate = new Date(input);
 	let month = newDate.getMonth() + 1;

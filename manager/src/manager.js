@@ -1,5 +1,8 @@
+// Backend coordinator for HachiGen.
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
 const { Buffer } = require("node:buffer");
 const { commandExists, run } = require("./shell.js");
 
@@ -28,6 +31,11 @@ function createUncheckedUpdateState(message = "Updates have not been checked yet
 // PM2 process name used by the bot itself. If this changes in Hachi's
 // ecosystem config, it should change here too.
 const PROCESS_NAME = "Hachi";
+const MIN_NODE_VERSION = {
+	label: "20.17.0",
+	major: 20,
+	minor: 17,
+};
 
 // Auto-stashes created by HachiGen use this text so they can be found later
 // without confusing them with the user's own manual Git stashes.
@@ -56,8 +64,8 @@ const ENV_FIELDS = [
 // Values stored in config/config.json. These are bot settings rather than
 // process environment variables.
 const CONFIG_FIELDS = [
-	"botOwner",
-	"guildId",
+	"botOwners",
+	"guildIds",
 	"twitchCron",
 	"kickCron",
 	"birthdayCron",
@@ -74,6 +82,43 @@ const CONFIG_DEFAULTS = {
 	authCron: "0 * * * *",
 };
 
+// Optional database-protection fields are managed from the Database tab. They
+// stay out of the Setup form, but config saves must still preserve them.
+const DATABASE_PROTECTION_ENV_FIELDS = [
+	"HACHI_DB_ENCRYPTION",
+	"HACHI_DB_KEY_FILE",
+	"HACHI_DB_KEY",
+];
+const SECRET_PROTECTION_ENV_FIELDS = [
+	"HACHI_SECRETS_ENCRYPTION",
+	"HACHI_SECRETS_KEY_FILE",
+	"HACHI_SECRETS_KEY",
+];
+const ENV_BOOTSTRAP_FIELDS = [
+	...DATABASE_PROTECTION_ENV_FIELDS,
+	...SECRET_PROTECTION_ENV_FIELDS,
+];
+const ENCRYPTED_SECRET_PREFIX = "enc:v1:aes-256-gcm:";
+const CIPHER_DRIVER_PACKAGE = "better-sqlite3-multiple-ciphers";
+const SQLITE_HEADER = Buffer.from([
+	0x53,
+	0x51,
+	0x4c,
+	0x69,
+	0x74,
+	0x65,
+	0x20,
+	0x66,
+	0x6f,
+	0x72,
+	0x6d,
+	0x61,
+	0x74,
+	0x20,
+	0x33,
+	0x00,
+]);
+
 // The database worker is copied to Electron's user-data folder before running.
 // External Node cannot reliably execute files inside a packaged app.asar.
 const DATABASE_WORKER_FILE = "database-worker.js";
@@ -87,10 +132,53 @@ function fileExists(filePath) {
 // Decide whether a config value should count as incomplete. Blank strings and
 // template placeholders both mean the user still needs to fill that field in.
 function isMissingValue(value) {
+	if (Array.isArray(value)) {
+		return value.length === 0 || value.every(item => isMissingValue(item));
+	}
+
 	return value === undefined ||
 		value === null ||
 		String(value).trim() === "" ||
 		String(value).includes("(REQUIRED)");
+}
+
+function normalizeConfigIdList(value) {
+	if (Array.isArray(value)) {
+		return [...new Set(value.flatMap(item => normalizeConfigIdList(item)).filter(Boolean))];
+	}
+
+	return [...new Set(String(value || "")
+		.split(/[\s,]+/u)
+		.map(item => item.trim())
+		.filter(item => item && !item.includes("(REQUIRED)")))];
+}
+
+function idListForForm(value) {
+	return normalizeConfigIdList(value).join("\n");
+}
+
+function normalizeConfigValuesForForm(values) {
+	const botOwners = values.botOwners ?? values.ownerIds ?? values.botOwner ?? values.ownerId ?? [];
+	const guildIds = values.guildIds ?? values.guildIDs ?? values.guildId ?? values.guildID ?? [];
+
+	return {
+		...values,
+		botOwners: idListForForm(botOwners),
+		guildIds: idListForForm(guildIds),
+	};
+}
+
+function buildConfigValuesForSave(values) {
+	return {
+		// Keep these explicit so saved config only contains supported fields.
+		botOwners: normalizeConfigIdList(values.botOwners ?? values.ownerIds ?? values.botOwner ?? values.ownerId),
+		guildIds: normalizeConfigIdList(values.guildIds ?? values.guildIDs ?? values.guildId ?? values.guildID),
+		twitchCron: values.twitchCron || CONFIG_DEFAULTS.twitchCron,
+		kickCron: values.kickCron || CONFIG_DEFAULTS.kickCron,
+		birthdayCron: values.birthdayCron || CONFIG_DEFAULTS.birthdayCron,
+		statusCron: values.statusCron || CONFIG_DEFAULTS.statusCron,
+		authCron: values.authCron || CONFIG_DEFAULTS.authCron,
+	};
 }
 
 // Create a directory and any missing parent folders. This makes writes safe
@@ -113,6 +201,21 @@ function readJson(filePath, fallback = null) {
 	} catch {
 		return fallback;
 	}
+}
+
+function packageDependencyNames(packageJson) {
+	return Object.keys(packageJson?.dependencies || {}).sort();
+}
+
+function missingPackageDependencies(root, packageJson) {
+	return packageDependencyNames(packageJson).filter(packageName => {
+		try {
+			require.resolve(packageName, { paths: [root] });
+			return false;
+		} catch {
+			return true;
+		}
+	});
 }
 
 function parseJsonText(text, fallback = {}) {
@@ -146,10 +249,13 @@ function parseDotEnvContent(content) {
 		const key = trimmed.slice(0, equalsIndex).trim();
 		let value = trimmed.slice(equalsIndex + 1).trim();
 
-		if (
-			(value.startsWith("\"") && value.endsWith("\"")) ||
-			(value.startsWith("'") && value.endsWith("'"))
-		) {
+		if (value.startsWith("\"") && value.endsWith("\"")) {
+			try {
+				value = JSON.parse(value);
+			} catch {
+				value = value.slice(1, -1);
+			}
+		} else if (value.startsWith("'") && value.endsWith("'")) {
 			value = value.slice(1, -1);
 		}
 
@@ -171,6 +277,438 @@ function parseDotEnv(filePath) {
 // secrets that contain spaces, punctuation, or backslashes.
 function formatEnvValue(value) {
 	return JSON.stringify(String(value || ""));
+}
+
+function updateDotEnvContent(content, values) {
+	const pending = new Map(Object.entries(values));
+	const lines = String(content || "").split(/\r?\n/u);
+	const output = [];
+
+	for (const line of lines) {
+		if (!line.trim()) {
+			if (line || output.length) {
+				output.push(line);
+			}
+
+			continue;
+		}
+
+		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=/u);
+
+		if (!match || !pending.has(match[1])) {
+			output.push(line);
+			continue;
+		}
+
+		const key = match[1];
+		output.push(`${key}=${formatEnvValue(pending.get(key))}`);
+		pending.delete(key);
+	}
+
+	for (const [key, value] of pending) {
+		output.push(`${key}=${formatEnvValue(value)}`);
+	}
+
+	return `${output.filter((line, index, collection) => line || index < collection.length - 1).join("\n")}\n`;
+}
+
+function buildEnvLines(merged, currentEnv = {}) {
+	const envLines = ENV_FIELDS.map(field => `${field}=${formatEnvValue(merged[field])}`);
+	const written = new Set(ENV_FIELDS);
+
+	for (const field of ENV_BOOTSTRAP_FIELDS) {
+		const value = merged[field];
+		written.add(field);
+
+		if (value !== undefined && value !== null && String(value).trim()) {
+			envLines.push(`${field}=${formatEnvValue(value)}`);
+		}
+	}
+
+	for (const field of Object.keys(currentEnv)) {
+		if (written.has(field)) {
+			continue;
+		}
+
+		const value = merged[field] ?? currentEnv[field];
+
+		if (value !== undefined && value !== null && String(value).trim()) {
+			envLines.push(`${field}=${formatEnvValue(value)}`);
+		}
+	}
+
+	return envLines;
+}
+
+function isEncryptedSecretValue(value) {
+	return String(value || "").startsWith(ENCRYPTED_SECRET_PREFIX);
+}
+
+function isSecretPlaceholderValue(value) {
+	return String(value || "").includes("(REQUIRED)");
+}
+
+function isMissingSecretValue(value) {
+	return value === undefined ||
+		value === null ||
+		String(value).trim() === "" ||
+		isSecretPlaceholderValue(value);
+}
+
+function isProtectableEnvField(field) {
+	return /^[A-Za-z_][A-Za-z0-9_]*$/u.test(String(field || "")) &&
+		!ENV_BOOTSTRAP_FIELDS.includes(field);
+}
+
+function envSecretProtectionMetadata(envValues) {
+	const fields = {};
+	const encryptedFields = [];
+	const plaintextFields = [];
+
+	for (const field of ENV_FIELDS) {
+		const value = envValues[field];
+		const hasValue = !isMissingSecretValue(value);
+		const encrypted = hasValue && isEncryptedSecretValue(value);
+		const plaintext = hasValue && !encrypted;
+
+		if (encrypted) {
+			encryptedFields.push(field);
+		} else if (plaintext) {
+			plaintextFields.push(field);
+		}
+
+		fields[field] = {
+			copyable: encrypted,
+			encrypted,
+			hasValue,
+			plaintext,
+		};
+	}
+
+	return {
+		encryptionEnabled: isEnabledValue(envValues.HACHI_SECRETS_ENCRYPTION),
+		encryptedFields,
+		fields,
+		keyFile: envValues.HACHI_SECRETS_KEY_FILE || "",
+		plaintextFields,
+	};
+}
+
+function displayEnvValues(envValues) {
+	const values = { ...envValues };
+
+	for (const field of ENV_FIELDS) {
+		values[field] = "";
+	}
+
+	return values;
+}
+
+function isEnabledValue(value) {
+	return ["1", "on", "true", "yes", "prepared", "key-ready", "encrypted", "runtime", "active"].includes(String(value || "").trim().toLowerCase());
+}
+
+function generateDatabaseKey() {
+	return crypto.randomBytes(32).toString("base64url");
+}
+
+function normalizeDatabaseKey(value) {
+	return String(value || "").trim();
+}
+
+function resolveLocalPath(value, cwd = process.cwd()) {
+	const expanded = expandWindowsEnv(value);
+
+	if (!expanded) {
+		return "";
+	}
+
+	if (expanded === "~") {
+		return os.homedir();
+	}
+
+	if (expanded.startsWith("~/") || expanded.startsWith("~\\")) {
+		return path.join(os.homedir(), expanded.slice(2));
+	}
+
+	return path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+}
+
+function fileStatus(filePath) {
+	if (!filePath) {
+		return {
+			exists: false,
+			path: "",
+			readable: false,
+		};
+	}
+
+	try {
+		const stats = fs.statSync(filePath);
+		return {
+			exists: stats.isFile(),
+			modifiedAt: stats.mtime.toISOString(),
+			path: filePath,
+			readable: stats.isFile(),
+			size: stats.size,
+		};
+	} catch {
+		return {
+			exists: false,
+			path: filePath,
+			readable: false,
+		};
+	}
+}
+
+function databaseFileStatus(dbPath) {
+	if (!dbPath || !fileExists(dbPath)) {
+		return {
+			detail: "No database file found.",
+			dot: "muted",
+			encryptedLikely: false,
+			label: "Missing",
+			path: dbPath || "",
+			status: "missing",
+		};
+	}
+
+	const stats = fs.statSync(dbPath);
+
+	if (!stats.isFile()) {
+		return {
+			detail: "Database path exists but is not a file.",
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Path",
+			path: dbPath,
+			status: "invalid",
+		};
+	}
+
+	if (stats.size < SQLITE_HEADER.length) {
+		return {
+			detail: "Database file is too small to be a valid encrypted database.",
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Format",
+			path: dbPath,
+			size: stats.size,
+			status: "invalid",
+		};
+	}
+
+	const handle = fs.openSync(dbPath, "r");
+	const header = Buffer.alloc(SQLITE_HEADER.length);
+
+	try {
+		fs.readSync(handle, header, 0, SQLITE_HEADER.length, 0);
+	} finally {
+		fs.closeSync(handle);
+	}
+
+	if (header.equals(SQLITE_HEADER)) {
+		return {
+			detail: "Database is still plain SQLite.",
+			dot: "info",
+			encryptedLikely: false,
+			label: "Plain SQLite",
+			path: dbPath,
+			size: stats.size,
+			status: "plaintext",
+		};
+	}
+
+	return {
+		detail: "Database file is encrypted. Open it with the configured key to verify access.",
+		dot: "info",
+		encryptedLikely: true,
+		label: "Encrypted",
+		path: dbPath,
+		size: stats.size,
+		status: "encrypted",
+	};
+}
+
+function loadDatabaseEncryptionModule(root) {
+	const modulePath = path.join(root, "database", "dbEncryption.js");
+
+	if (!fileExists(modulePath)) {
+		return null;
+	}
+
+	try {
+		const resolved = require.resolve(modulePath);
+		delete require.cache[resolved];
+		return require(resolved);
+	} catch {
+		return null;
+	}
+}
+
+function databaseFileProtectionStatus(databaseFile, cipherTest, keyReady) {
+	if (!databaseFile?.encryptedLikely) {
+		return databaseFile;
+	}
+
+	if (!keyReady) {
+		return {
+			...databaseFile,
+			detail: "Database is encrypted. Configure the database key to verify access.",
+			dot: "warn",
+			label: "Encrypted",
+			status: "encrypted",
+		};
+	}
+
+	if (["database-verified", "runtime-verified"].includes(cipherTest?.status)) {
+		return {
+			...databaseFile,
+			detail: "Database opens with the configured key.",
+			dot: "good",
+			label: "Encrypted",
+			status: "encrypted",
+		};
+	}
+
+	if (cipherTest?.status === "database-invalid") {
+		return {
+			...databaseFile,
+			detail: cipherTest.detail || "Database could not be opened with the configured key.",
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Format",
+			status: "invalid",
+		};
+	}
+
+	return {
+		...databaseFile,
+		detail: "Database file is encrypted. Use Verify to confirm key access.",
+		dot: "info",
+		label: "Encrypted",
+		status: "encrypted",
+	};
+}
+
+function findPackageJson(modulePath, packageName) {
+	let currentDir = path.dirname(modulePath);
+
+	while (currentDir && currentDir !== path.dirname(currentDir)) {
+		const packagePath = path.join(currentDir, "package.json");
+
+		if (fileExists(packagePath)) {
+			try {
+				const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+
+				if (packageJson.name === packageName) {
+					return packagePath;
+				}
+			} catch {
+				return "";
+			}
+		}
+
+		currentDir = path.dirname(currentDir);
+	}
+
+	return "";
+}
+
+function cipherDriverStatus(root) {
+	try {
+		const modulePath = require.resolve(CIPHER_DRIVER_PACKAGE, { paths: [root] });
+		const packagePath = findPackageJson(modulePath, CIPHER_DRIVER_PACKAGE);
+		const packageJson = packagePath ? JSON.parse(fs.readFileSync(packagePath, "utf8")) : {};
+
+		return {
+			detail: "SQLCipher driver is installed and ready for encrypted database access.",
+			dot: "good",
+			installed: true,
+			label: "Driver Installed",
+			modulePath,
+			packageName: CIPHER_DRIVER_PACKAGE,
+			status: "installed",
+			version: packageJson.version || "",
+		};
+	} catch (error) {
+		return {
+			detail: `${CIPHER_DRIVER_PACKAGE} is not available in node_modules. Install / Validate installs Hachi dependencies normally.`,
+			dot: "warn",
+			error: error.code || error.message || String(error),
+			installed: false,
+			label: "Driver Missing",
+			packageName: CIPHER_DRIVER_PACKAGE,
+			status: "missing",
+			version: "",
+		};
+	}
+}
+
+function hybridDatabaseRuntimeStatus() {
+	return {
+		detail: "Hachi uses SQLCipher for database access while HACHI_DB_ENCRYPTION=encrypted is set.",
+		dot: "good",
+		encryptedRuntimeReady: true,
+		label: "Runtime Ready",
+		status: "runtime-ready",
+	};
+}
+
+function databaseProtectionDetail(prefix, databaseFile) {
+	if (databaseFile?.status === "encrypted") {
+		return `${prefix} Database encryption is active.`;
+	}
+
+	if (databaseFile?.status === "missing") {
+		return `${prefix} Hachi will create an encrypted database on first start.`;
+	}
+
+	if (databaseFile?.status === "plaintext") {
+		return `${prefix} Plaintext database must be converted before Hachi starts.`;
+	}
+
+	if (databaseFile?.status === "invalid") {
+		return `${prefix} Database file is not a valid encrypted Hachi database.`;
+	}
+
+	return `${prefix} Encrypted database runtime is ready.`;
+}
+
+function databaseProtectionSummary({ databaseFile, directKeyConfigured, encryptionEnabled, keyFileStatus }) {
+	if (encryptionEnabled && keyFileStatus?.readable) {
+		return {
+			detail: databaseProtectionDetail(`Key file ready.`, databaseFile),
+			dot: databaseFile?.status === "invalid" ? `bad` : databaseFile?.status === "plaintext" ? `warn` : `good`,
+			label: databaseFile?.status === "invalid" ? `Invalid Database` : databaseFile?.status === "plaintext" ? `Plaintext Database` : `Key Ready`,
+			status: `key-ready`,
+		};
+	}
+
+	if (encryptionEnabled && keyFileStatus?.path && !keyFileStatus.readable) {
+		return {
+			detail: `Configured key file is missing or unreadable. Do not generate a replacement for an encrypted database.`,
+			dot: `bad`,
+			label: `Key Missing`,
+			status: `key-missing`,
+		};
+	}
+
+	if (encryptionEnabled && directKeyConfigured) {
+		return {
+			detail: databaseProtectionDetail(`Direct key configured.`, databaseFile),
+			dot: databaseFile?.status === "invalid" ? `bad` : `warn`,
+			label: databaseFile?.status === "invalid" ? `Invalid Database` : `Direct Key`,
+			status: `direct-key`,
+		};
+	}
+
+	return {
+		detail: `Database encryption is required. Generate a key to prepare this install.`,
+		dot: `muted`,
+		label: `Key Required`,
+		status: `not-configured`,
+	};
 }
 
 // Create a timestamp safe for Windows folder names. Colons are not allowed in
@@ -198,6 +736,52 @@ function fileTimestamp() {
 	return `${date}-${hours}${minutes}${seconds}`;
 }
 
+function displayPath(filePath, root = process.cwd()) {
+	if (!filePath) {
+		return "";
+	}
+
+	const resolvedPath = path.resolve(String(filePath));
+	const resolvedRoot = path.resolve(String(root || process.cwd()));
+	const relativePath = path.relative(resolvedRoot, resolvedPath);
+
+	if (relativePath && !relativePath.startsWith("..") && !path.isAbsolute(relativePath)) {
+		return relativePath || path.basename(resolvedPath);
+	}
+
+	return path.basename(resolvedPath) || resolvedPath;
+}
+
+function backupRotationSummaryText(rotation) {
+	if (!rotation) {
+		return "";
+	}
+
+	if (!rotation.total) {
+		return "0 backups found";
+	}
+
+	const parts = [];
+
+	if (rotation.rekeyed) {
+		parts.push(`${rotation.rekeyed} rekeyed`);
+	}
+
+	if (rotation.converted) {
+		parts.push(`${rotation.converted} encrypted`);
+	}
+
+	if (rotation.verified) {
+		parts.push(`${rotation.verified} verified`);
+	}
+
+	if (rotation.skipped) {
+		parts.push(`${rotation.skipped} skipped`);
+	}
+
+	return parts.length ? parts.join(", ") : `${rotation.total} checked`;
+}
+
 function formatFileSize(bytes) {
 	if (!bytes) {
 		return "0 B";
@@ -213,6 +797,31 @@ function formatFileSize(bytes) {
 	}
 
 	return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
+function parseNodeVersion(versionText) {
+	const match = String(versionText || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)/u);
+
+	if (!match) {
+		return null;
+	}
+
+	return {
+		major: Number(match[1]),
+		minor: Number(match[2]),
+		patch: Number(match[3]),
+	};
+}
+
+function nodeVersionMeetsMinimum(versionText) {
+	const parsed = parseNodeVersion(versionText);
+
+	if (!parsed) {
+		return false;
+	}
+
+	return parsed.major > MIN_NODE_VERSION.major ||
+		(parsed.major === MIN_NODE_VERSION.major && parsed.minor >= MIN_NODE_VERSION.minor);
 }
 
 // PM2 sometimes prints non-JSON text around `pm2 jlist` output. Extracting the
@@ -505,14 +1114,34 @@ function parseJsonResult(result, fallbackMessage) {
 	}
 }
 
+function redactKnownSecretText(text) {
+	const fields = [
+		...ENV_FIELDS,
+		"HACHI_DB_KEY",
+		"HACHI_SECRETS_KEY",
+	];
+	const escaped = fields.map(field => field.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
+	const assignmentPattern = new RegExp(`((?:${escaped})=)(?:"[^"]*"|'[^']*'|\\S+)`, "giu");
+
+	return String(text || "")
+		.replace(assignmentPattern, "$1[redacted]")
+		.replace(/(client(?:ID|Id|id|Secret)|token|secret)(["':=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu, "$1$2[redacted]");
+}
+
 function sanitizeShellLogEntry(entry) {
-	const message = String(entry.message || "");
+	let message = redactKnownSecretText(entry.message);
 
 	if (entry.stream === "command" && /^> ssh(?:\s|$)/u.test(message)) {
 		return {
 			...entry,
 			message: "> ssh [remote command hidden]",
 		};
+	}
+
+	if (entry.stream === "command") {
+		message = message
+			.replace(/^> node -e\s+.+/u, "> node -e [inline script]")
+			.replace(/^> ssh-keygen\s+.+/u, "> ssh-keygen [arguments hidden]");
 	}
 
 	return {
@@ -543,6 +1172,7 @@ class HachiManager {
 		// updateState stores the most recent update check so the UI can redraw
 		// without running Git commands every time it needs a label.
 		this.updateState = createUncheckedUpdateState();
+		this.databaseCipherTest = null;
 
 		ensureDir(this.userDataPath);
 		this.settings = this.loadSettings();
@@ -597,6 +1227,13 @@ class HachiManager {
 		this.event("log", message, details);
 	}
 
+	logDatabase(message, details = {}) {
+		this.log(`Database protection: ${message}`, {
+			area: "database-protection",
+			...details,
+		});
+	}
+
 	logShell(entry) {
 		// Shell output is tagged separately so the UI can show whether it came
 		// from stdout, stderr, or the displayed command itself.
@@ -608,6 +1245,57 @@ class HachiManager {
 		// Return the folder HachiGen should treat as the Hachi install. Most
 		// backend operations start by resolving paths relative to this value.
 		return this.settings.installPath;
+	}
+
+	loadSecretEncryption() {
+		const candidates = [
+			path.join(this.getInstallPath(), "config", "secretEncryption.js"),
+			path.join(this.managerRoot, "config", "secretEncryption.js"),
+			path.resolve(__dirname, "..", "..", "config", "secretEncryption.js"),
+		];
+
+		for (const modulePath of candidates) {
+			if (!fileExists(modulePath)) {
+				continue;
+			}
+
+			const resolved = require.resolve(modulePath);
+			delete require.cache[resolved];
+			return require(resolved);
+		}
+
+		throw new Error("Hachi's secret encryption helper was not found. Update Hachi, then try again.");
+	}
+
+	getLocalSecretsKeyLocation() {
+		const homeDir = os.homedir();
+
+		if (process.platform === "win32") {
+			const appData = process.env.APPDATA || path.join(homeDir, "AppData", "Roaming");
+
+			return {
+				label: "Recommended",
+				path: path.join(appData, "Hachi", "secrets.key"),
+				scope: "user",
+				storage: "recommended",
+			};
+		}
+
+		if (process.platform === "darwin") {
+			return {
+				label: "Recommended",
+				path: path.join(homeDir, "Library", "Application Support", "Hachi", "secrets.key"),
+				scope: "user",
+				storage: "recommended",
+			};
+		}
+
+		return {
+			label: "Recommended",
+			path: path.join(process.env.XDG_CONFIG_HOME || path.join(homeDir, ".config"), "hachi", "secrets.key"),
+			scope: "user",
+			storage: "recommended",
+		};
 	}
 
 	async setInstallPath(installPath) {
@@ -642,6 +1330,34 @@ class HachiManager {
 		return this.getRuntimeTarget() === "remote" ?
 			this.getRemoteSettings().remotePath :
 			this.getInstallPath();
+	}
+
+	getDatabaseCipherTestTarget() {
+		return `${this.getRuntimeTarget()}:${this.getActiveInstallIdentifier()}`;
+	}
+
+	getDatabaseCipherTestState() {
+		if (this.databaseCipherTest?.target !== this.getDatabaseCipherTestTarget()) {
+			return null;
+		}
+
+		const result = this.databaseCipherTest.result;
+
+		if (result?.status === "runtime-verified") {
+			return {
+				...result,
+				detail: "Encrypted database runtime opens successfully with the configured key.",
+			};
+		}
+
+		return result;
+	}
+
+	setDatabaseCipherTestState(result) {
+		this.databaseCipherTest = {
+			result,
+			target: this.getDatabaseCipherTestTarget(),
+		};
 	}
 
 	getRemoteState() {
@@ -1046,7 +1762,7 @@ class HachiManager {
 	}
 
 	getDatabaseBackups() {
-		// Return backup metadata for the Database tab without opening SQLite.
+		// Return backup metadata for the Database tab without mutating files.
 		// Sorting newest-first makes the most likely restore target appear first.
 		const backupDir = this.getDatabaseBackupDir();
 
@@ -1054,21 +1770,1911 @@ class HachiManager {
 			return [];
 		}
 
+		const dbEncryption = loadDatabaseEncryptionModule(this.getInstallPath());
+		const currentKey = this.readLocalDatabaseProtectionKeyIfAvailable();
+
 		return fs.readdirSync(backupDir)
 			.filter(file => /\.sqlite$/i.test(file))
 			.map(file => {
 				const fullPath = path.join(backupDir, file);
 				const stats = fs.statSync(fullPath);
+				const protection = dbEncryption?.describeDatabaseBackup ?
+					dbEncryption.describeDatabaseBackup({
+						backupPath: fullPath,
+						currentKey,
+						root: this.getInstallPath(),
+						verifyWithCurrentKey: false,
+					}) :
+					null;
 
 				return {
 					file,
 					fullPath,
 					modifiedAt: stats.mtime.toISOString(),
+					protection,
 					size: stats.size,
 					sizeLabel: formatFileSize(stats.size),
 				};
 			})
 			.sort((a, b) => new Date(b.modifiedAt) - new Date(a.modifiedAt));
+	}
+
+	getLocalDatabaseKeyLocation() {
+		const homeDir = os.homedir();
+
+		if (process.platform === "win32") {
+			const appData = process.env.APPDATA || path.join(homeDir, "AppData", "Roaming");
+
+			return {
+				label: "Recommended",
+				path: path.join(appData, "Hachi", "db.key"),
+				scope: "user",
+				storage: "recommended",
+			};
+		}
+
+		if (process.platform === "darwin") {
+			return {
+				label: "Recommended",
+				path: path.join(homeDir, "Library", "Application Support", "Hachi", "db.key"),
+				scope: "user",
+				storage: "recommended",
+			};
+		}
+
+		return {
+			label: "Recommended",
+			path: path.join(process.env.XDG_CONFIG_HOME || path.join(homeDir, ".config"), "hachi", "db.key"),
+			scope: "user",
+			storage: "recommended",
+		};
+	}
+
+	readLocalEnvText() {
+		const paths = this.getPaths();
+		return fileExists(paths.env) ? fs.readFileSync(paths.env, "utf8") : "";
+	}
+
+	readLocalEnvValues() {
+		return parseDotEnvContent(this.readLocalEnvText());
+	}
+
+	// Secret-protection helpers keep decrypted values out of the renderer. The
+	// renderer sends raw user input only on Save, HachiGen encrypts it here, and
+	// future reads return metadata plus blank form fields. Blank submitted values
+	// mean "preserve the saved encrypted value", not "erase the secret".
+	readLocalSecretsKey(rawEnv = this.readLocalEnvValues()) {
+		const secrets = this.loadSecretEncryption();
+		const paths = this.getPaths();
+		const directKey = String(rawEnv.HACHI_SECRETS_KEY || "").trim();
+
+		if (directKey) {
+			return {
+				key: directKey,
+				keyFilePath: "",
+				source: "direct",
+			};
+		}
+
+		const keyFilePath = secrets.resolveKeyFilePath(rawEnv.HACHI_SECRETS_KEY_FILE || "", paths.root);
+
+		if (!keyFilePath) {
+			throw new Error("No .env secrets key is configured.");
+		}
+
+		if (!fileExists(keyFilePath)) {
+			throw new Error(`Configured .env secrets key file is missing: ${keyFilePath}`);
+		}
+
+		const key = fs.readFileSync(keyFilePath, "utf8").trim();
+
+		if (!key) {
+			throw new Error(`Configured .env secrets key file is empty: ${keyFilePath}`);
+		}
+
+		return {
+			key,
+			keyFilePath,
+			source: "file",
+		};
+	}
+
+	ensureLocalSecretsKey(rawEnv = this.readLocalEnvValues()) {
+		const directKey = String(rawEnv.HACHI_SECRETS_KEY || "").trim();
+
+		if (directKey || String(rawEnv.HACHI_SECRETS_KEY_FILE || "").trim()) {
+			return this.readLocalSecretsKey(rawEnv);
+		}
+
+		const secrets = this.loadSecretEncryption();
+		const location = this.getLocalSecretsKeyLocation();
+		const generated = !fileExists(location.path);
+
+		ensureDir(path.dirname(location.path));
+
+		if (generated) {
+			fs.writeFileSync(location.path, `${secrets.generateSecretKey()}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+		}
+
+		try {
+			fs.chmodSync(path.dirname(location.path), 0o700);
+			fs.chmodSync(location.path, 0o600);
+		} catch {
+			// Windows ACLs may not map cleanly to POSIX modes; the key still exists.
+		}
+
+		return {
+			generated,
+			key: fs.readFileSync(location.path, "utf8").trim(),
+			keyFilePath: location.path,
+			source: "file",
+		};
+	}
+
+	encryptEnvValuesForSave(values, rawEnv, key) {
+		const secrets = this.loadSecretEncryption();
+		const updates = {};
+
+		for (const field of ENV_FIELDS) {
+			const submittedValue = values[field];
+			const existingValue = rawEnv[field];
+
+			if (!isMissingSecretValue(submittedValue)) {
+				updates[field] = secrets.encryptSecretValue(field, submittedValue, key);
+			} else if (isEncryptedSecretValue(existingValue)) {
+				updates[field] = existingValue;
+			} else if (!isMissingSecretValue(existingValue)) {
+				updates[field] = secrets.encryptSecretValue(field, existingValue, key);
+			} else {
+				updates[field] = "";
+			}
+		}
+
+		for (const [field, existingValue] of Object.entries(rawEnv)) {
+			if (ENV_FIELDS.includes(field) || !isProtectableEnvField(field) || isMissingSecretValue(existingValue)) {
+				continue;
+			}
+
+			updates[field] = isEncryptedSecretValue(existingValue) ?
+				existingValue :
+				secrets.encryptSecretValue(field, existingValue, key);
+		}
+
+		return updates;
+	}
+
+	buildProtectedEnvValues(values, rawEnv, keyInfo) {
+		return {
+			...this.encryptEnvValuesForSave(values, rawEnv, keyInfo.key),
+			HACHI_SECRETS_ENCRYPTION: "encrypted",
+			HACHI_SECRETS_KEY: keyInfo.source === "direct" ? keyInfo.key : "",
+			HACHI_SECRETS_KEY_FILE: keyInfo.keyFilePath || "",
+		};
+	}
+
+	async readRemoteAbsoluteText(filePath) {
+		const result = await this.runRemoteCommand(`if test -f ${quotePosix(filePath)}; then cat ${quotePosix(filePath)}; fi`, {
+			allowFailure: true,
+			log: false,
+			timeoutMs: 15000,
+		});
+
+		return result.stdout || "";
+	}
+
+	async writeRemoteAbsoluteText(filePath, content) {
+		const directory = path.posix.dirname(filePath);
+		const encoded = Buffer.from(String(content), "utf8").toString("base64");
+
+		await this.runRemoteCommand(
+			`mkdir -p ${quotePosix(directory)} && printf %s ${quotePosix(encoded)} | base64 -d > ${quotePosix(filePath)} && chmod 700 ${quotePosix(directory)} && chmod 600 ${quotePosix(filePath)}`,
+			{
+				log: false,
+				timeoutMs: 30000,
+			},
+		);
+	}
+
+	async getRemoteDefaultSecretsKeyFile() {
+		const script = `
+const secrets = require("./config/secretEncryption.js");
+process.stdout.write(JSON.stringify({ path: secrets.getDefaultSecretKeyFile() }));
+`;
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+			fallbackMessage: "Could not resolve remote .env secrets key location.",
+			log: false,
+			timeoutMs: 15000,
+		});
+
+		return result.path;
+	}
+
+	async resolveRemoteSecretsKeyFile(value) {
+		const script = `
+const secrets = require("./config/secretEncryption.js");
+const request = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify({ path: secrets.resolveKeyFilePath(request.value, process.cwd()) }));
+`;
+		const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)} ${quotePosix(JSON.stringify({ value }))}`, {
+			fallbackMessage: "Could not resolve remote .env secrets key file.",
+			log: false,
+			timeoutMs: 15000,
+		});
+
+		return result.path;
+	}
+
+	async readRemoteSecretsKey(rawEnv) {
+		const directKey = String(rawEnv.HACHI_SECRETS_KEY || "").trim();
+
+		if (directKey) {
+			return {
+				key: directKey,
+				keyFilePath: "",
+				source: "direct",
+			};
+		}
+
+		const configured = String(rawEnv.HACHI_SECRETS_KEY_FILE || "").trim();
+
+		if (!configured) {
+			throw new Error("No remote .env secrets key is configured.");
+		}
+
+		const keyFilePath = await this.resolveRemoteSecretsKeyFile(configured);
+		const key = (await this.readRemoteAbsoluteText(keyFilePath)).trim();
+
+		if (!key) {
+			throw new Error(`Configured remote .env secrets key file is missing or empty: ${keyFilePath}`);
+		}
+
+		return {
+			key,
+			keyFilePath,
+			source: "file",
+		};
+	}
+
+	async ensureRemoteSecretsKey(rawEnv) {
+		const directKey = String(rawEnv.HACHI_SECRETS_KEY || "").trim();
+
+		if (directKey || String(rawEnv.HACHI_SECRETS_KEY_FILE || "").trim()) {
+			return this.readRemoteSecretsKey(rawEnv);
+		}
+
+		const keyFilePath = await this.getRemoteDefaultSecretsKeyFile();
+		let key = (await this.readRemoteAbsoluteText(keyFilePath)).trim();
+		let generated = false;
+
+		if (!key) {
+			const script = `
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const keyFilePath = process.argv[1];
+fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
+let generated = false;
+if (!fs.existsSync(keyFilePath) || !fs.readFileSync(keyFilePath, "utf8").trim()) {
+	fs.writeFileSync(keyFilePath, crypto.randomBytes(32).toString("base64url") + "\\n", {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	generated = true;
+}
+try {
+	fs.chmodSync(path.dirname(keyFilePath), 0o700);
+	fs.chmodSync(keyFilePath, 0o600);
+} catch {}
+process.stdout.write(JSON.stringify({
+	generated,
+	key: fs.readFileSync(keyFilePath, "utf8").trim(),
+}));
+`;
+			const result = await this.runRemoteHachiJson(`node -e ${quotePosix(script)} ${quotePosix(keyFilePath)}`, {
+				fallbackMessage: "Could not create remote .env secrets key.",
+				log: false,
+				timeoutMs: 30000,
+			});
+
+			key = result.key;
+			generated = Boolean(result.generated);
+		}
+
+		return {
+			generated,
+			key,
+			keyFilePath,
+			source: "file",
+		};
+	}
+
+	async prepareSecretProtection() {
+		if (this.getRuntimeTarget() === "remote") {
+			const rawEnvText = await this.readRemoteText(".env");
+			const rawEnv = parseDotEnvContent(rawEnvText);
+			const keyInfo = await this.ensureRemoteSecretsKey(rawEnv);
+			const protectedEnv = this.buildProtectedEnvValues({}, rawEnv, keyInfo);
+			const merged = {
+				...rawEnv,
+				...protectedEnv,
+			};
+
+			await this.writeRemoteText(".env", `${buildEnvLines(merged, rawEnv).join("\n")}\n`);
+			this.log(`Secret protection: remote .env values are encrypted with ${keyInfo.keyFilePath || "a direct key"}.`);
+
+			return {
+				keyFilePath: keyInfo.keyFilePath,
+				ok: true,
+				source: "remote",
+			};
+		}
+
+		const paths = this.getPaths();
+		const rawEnv = this.readLocalEnvValues();
+		const keyInfo = this.ensureLocalSecretsKey(rawEnv);
+		const protectedEnv = this.buildProtectedEnvValues({}, rawEnv, keyInfo);
+		const merged = {
+			...rawEnv,
+			...protectedEnv,
+		};
+
+		fs.writeFileSync(paths.env, `${buildEnvLines(merged, rawEnv).join("\n")}\n`, "utf8");
+		this.log(`Secret protection: local .env values are encrypted with ${displayPath(keyInfo.keyFilePath) || "a direct key"}.`);
+
+		return {
+			keyFilePath: keyInfo.keyFilePath,
+			ok: true,
+			source: "local",
+		};
+	}
+
+	async readEnvSecretForCopy(field) {
+		if (!ENV_FIELDS.includes(field)) {
+			throw new Error("Unknown .env secret field.");
+		}
+
+		const secrets = this.loadSecretEncryption();
+		const rawEnv = this.getRuntimeTarget() === "remote" ?
+			parseDotEnvContent(await this.readRemoteText(".env")) :
+			this.readLocalEnvValues();
+		const encryptedValue = rawEnv[field];
+
+		if (isMissingSecretValue(encryptedValue)) {
+			throw new Error(`${field} is not saved yet.`);
+		}
+
+		if (!isEncryptedSecretValue(encryptedValue)) {
+			throw new Error(`${field} is not encrypted yet. Save configuration first.`);
+		}
+
+		const keyInfo = this.getRuntimeTarget() === "remote" ?
+			await this.readRemoteSecretsKey(rawEnv) :
+			this.readLocalSecretsKey(rawEnv);
+
+		return {
+			field,
+			ttlMs: 60000,
+			value: secrets.decryptSecretValue(field, encryptedValue, keyInfo.key),
+		};
+	}
+
+	readLocalDatabaseProtectionEnv() {
+		const paths = this.getPaths();
+		return fileExists(paths.env) ? parseDotEnv(paths.env) : {};
+	}
+
+	readLocalDatabaseProtectionKeyIfAvailable() {
+		try {
+			const env = this.readLocalDatabaseProtectionEnv();
+			const paths = this.getPaths();
+			const configuredKeyFile = resolveLocalPath(env.HACHI_DB_KEY_FILE || "", paths.root);
+
+			if (configuredKeyFile && fileExists(configuredKeyFile)) {
+				return normalizeDatabaseKey(fs.readFileSync(configuredKeyFile, "utf8"));
+			}
+
+			return normalizeDatabaseKey(env.HACHI_DB_KEY);
+		} catch {
+			return "";
+		}
+	}
+
+	updateLocalDatabaseProtectionEnv(values) {
+		const paths = this.getPaths();
+		const current = fileExists(paths.env) ? fs.readFileSync(paths.env, "utf8") : "";
+		fs.writeFileSync(paths.env, updateDotEnvContent(current, values), "utf8");
+	}
+
+	localDatabaseProtectionState() {
+		const paths = this.getPaths();
+		const env = this.readLocalDatabaseProtectionEnv();
+		const recommended = this.getLocalDatabaseKeyLocation();
+		const configuredKeyFile = resolveLocalPath(env.HACHI_DB_KEY_FILE || "", paths.root);
+		const keyFileStatus = fileStatus(configuredKeyFile);
+		const encryptionEnabled = isEnabledValue(env.HACHI_DB_ENCRYPTION);
+		const directKeyConfigured = Boolean(String(env.HACHI_DB_KEY || "").trim());
+		const keyReadyForDatabase = encryptionEnabled && (keyFileStatus.readable || directKeyConfigured);
+		const cipherTest = keyReadyForDatabase ? this.getDatabaseCipherTestState() : null;
+		const databaseFile = databaseFileProtectionStatus(
+			databaseFileStatus(paths.database),
+			cipherTest,
+			keyReadyForDatabase,
+		);
+		const summary = databaseProtectionSummary({
+			databaseFile,
+			directKeyConfigured,
+			encryptionEnabled,
+			keyFileStatus,
+		});
+		const keyReady = ["key-ready", "direct-key"].includes(summary.status);
+
+		return {
+			...summary,
+			configuredKeyFile,
+			databaseFile,
+			directKeyConfigured,
+			driver: cipherDriverStatus(paths.root),
+			encryptionEnabled,
+			keyFileStatus,
+			locations: {
+				recommended,
+			},
+			cipherTest: keyReady ? cipherTest : null,
+			runtime: hybridDatabaseRuntimeStatus(),
+			source: "local",
+			updatedAt: new Date().toISOString(),
+		};
+	}
+
+	remoteDatabaseProtectionScript(action) {
+		const request = JSON.stringify({ action });
+
+		return `
+const fs = require("node:fs");
+const path = require("node:path");
+const os = require("node:os");
+const crypto = require("node:crypto");
+const request = ${request};
+const CIPHER_DRIVER_PACKAGE = ${JSON.stringify(CIPHER_DRIVER_PACKAGE)};
+const SQLITE_HEADER = Buffer.from([
+	0x53,
+	0x51,
+	0x4c,
+	0x69,
+	0x74,
+	0x65,
+	0x20,
+	0x66,
+	0x6f,
+	0x72,
+	0x6d,
+	0x61,
+	0x74,
+	0x20,
+	0x33,
+	0x00,
+]);
+function parseDotEnv(content) {
+	const values = {};
+	for (const line of String(content || "").split(/\\r?\\n/u)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) {
+			continue;
+		}
+		const equalsIndex = trimmed.indexOf("=");
+		if (equalsIndex === -1) {
+			continue;
+		}
+		const key = trimmed.slice(0, equalsIndex).trim();
+		let value = trimmed.slice(equalsIndex + 1).trim();
+		if (value.startsWith('"') && value.endsWith('"')) {
+			try {
+				value = JSON.parse(value);
+			} catch {
+				value = value.slice(1, -1);
+			}
+		} else if (value.startsWith("'") && value.endsWith("'")) {
+			value = value.slice(1, -1);
+		}
+		values[key] = value;
+	}
+	return values;
+}
+function formatEnvValue(value) {
+	return JSON.stringify(String(value || ""));
+}
+function updateDotEnvContent(content, values) {
+	const pending = new Map(Object.entries(values));
+	const lines = String(content || "").split(/\\r?\\n/u);
+	const output = [];
+	for (const line of lines) {
+		if (!line.trim()) {
+			if (line || output.length) {
+				output.push(line);
+			}
+
+			continue;
+		}
+		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);
+		if (!match || !pending.has(match[1])) {
+			output.push(line);
+			continue;
+		}
+		const key = match[1];
+		output.push(key + "=" + formatEnvValue(pending.get(key)));
+		pending.delete(key);
+	}
+	for (const [key, value] of pending) {
+		output.push(key + "=" + formatEnvValue(value));
+	}
+	return output.filter((line, index, collection) => line || index < collection.length - 1).join("\\n") + "\\n";
+}
+function enabled(value) {
+	return ["1", "on", "true", "yes", "prepared", "key-ready", "encrypted", "runtime", "active"].includes(String(value || "").trim().toLowerCase());
+}
+function resolveRemotePath(value) {
+	const text = String(value || "").trim();
+	if (!text) {
+		return "";
+	}
+	if (text === "~") {
+		return os.homedir();
+	}
+	if (text.startsWith("~/")) {
+		return path.join(os.homedir(), text.slice(2));
+	}
+	return path.isAbsolute(text) ? text : path.resolve(process.cwd(), text);
+}
+function location() {
+	return {
+		label: "Recommended",
+		path: path.join(process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config"), "hachi", "db.key"),
+		scope: "user",
+		storage: "recommended",
+	};
+}
+function keyStatus(filePath) {
+	if (!filePath) {
+		return { exists: false, path: "", readable: false };
+	}
+	try {
+		const stats = fs.statSync(filePath);
+		return {
+			exists: stats.isFile(),
+			modifiedAt: stats.mtime.toISOString(),
+			path: filePath,
+			readable: stats.isFile(),
+			size: stats.size,
+		};
+	} catch {
+		return { exists: false, path: filePath, readable: false };
+	}
+}
+function databaseFileStatus(dbPath) {
+	if (!dbPath || !fs.existsSync(dbPath)) {
+		return {
+			detail: "No database file found.",
+			dot: "muted",
+			encryptedLikely: false,
+			label: "Missing",
+			path: dbPath || "",
+			status: "missing",
+		};
+	}
+	const stats = fs.statSync(dbPath);
+	if (!stats.isFile()) {
+		return {
+			detail: "Database path exists but is not a file.",
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Path",
+			path: dbPath,
+			status: "invalid",
+		};
+	}
+	if (stats.size < SQLITE_HEADER.length) {
+		return {
+			detail: "Database file is too small to be a valid encrypted database.",
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Format",
+			path: dbPath,
+			size: stats.size,
+			status: "invalid",
+		};
+	}
+	const handle = fs.openSync(dbPath, "r");
+	const header = Buffer.alloc(SQLITE_HEADER.length);
+	try {
+		fs.readSync(handle, header, 0, SQLITE_HEADER.length, 0);
+	} finally {
+		fs.closeSync(handle);
+	}
+	if (header.equals(SQLITE_HEADER)) {
+		return {
+			detail: "Database is still plain SQLite.",
+			dot: "info",
+			encryptedLikely: false,
+			label: "Plain SQLite",
+			path: dbPath,
+			size: stats.size,
+			status: "plaintext",
+		};
+	}
+	return {
+		detail: "Database file is encrypted. Open it with the configured key to verify access.",
+		dot: "info",
+		encryptedLikely: true,
+		label: "Encrypted",
+		path: dbPath,
+		size: stats.size,
+		status: "encrypted",
+	};
+}
+function databaseAccessStatus(dbPath, key) {
+	const status = databaseFileStatus(dbPath);
+	if (!status.encryptedLikely) {
+		return status;
+	}
+	if (!String(key || "").trim()) {
+		return {
+			...status,
+			detail: "Database is encrypted. Configure the database key to verify access.",
+			dot: "warn",
+			label: "Encrypted",
+			status: "encrypted",
+		};
+	}
+	try {
+		const dbEncryption = require("./database/dbEncryption.js");
+		return dbEncryption.databaseAccessStatus({
+			dbPath,
+			key,
+			root: process.cwd(),
+		});
+	} catch (error) {
+		return {
+			...status,
+			detail: "Database could not be opened with the configured key: " + (error.message || String(error)),
+			dot: "bad",
+			encryptedLikely: false,
+			label: "Invalid Format",
+			status: "invalid",
+		};
+	}
+}
+function findPackageJson(modulePath, packageName) {
+	let currentDir = path.dirname(modulePath);
+	while (currentDir && currentDir !== path.dirname(currentDir)) {
+		const packagePath = path.join(currentDir, "package.json");
+		if (fs.existsSync(packagePath)) {
+			try {
+				const packageJson = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+				if (packageJson.name === packageName) {
+					return packagePath;
+				}
+			} catch {
+				return "";
+			}
+		}
+		currentDir = path.dirname(currentDir);
+	}
+	return "";
+}
+function cipherDriverStatus(root) {
+	try {
+		const modulePath = require.resolve(CIPHER_DRIVER_PACKAGE, { paths: [root] });
+		const packagePath = findPackageJson(modulePath, CIPHER_DRIVER_PACKAGE);
+		const packageJson = packagePath ? JSON.parse(fs.readFileSync(packagePath, "utf8")) : {};
+		return {
+			detail: "SQLCipher driver is installed and ready for encrypted database access.",
+			dot: "good",
+			installed: true,
+			label: "Driver Installed",
+			modulePath,
+			packageName: CIPHER_DRIVER_PACKAGE,
+			status: "installed",
+			version: packageJson.version || "",
+		};
+	} catch (error) {
+		return {
+			detail: CIPHER_DRIVER_PACKAGE + " is not available in node_modules. Install / Validate installs Hachi dependencies normally.",
+			dot: "warn",
+			error: error.code || error.message || String(error),
+			installed: false,
+			label: "Driver Missing",
+			packageName: CIPHER_DRIVER_PACKAGE,
+			status: "missing",
+			version: "",
+		};
+	}
+}
+function runtimeStatus() {
+	return {
+		detail: "Hachi uses SQLCipher for database access while HACHI_DB_ENCRYPTION=encrypted is set.",
+		dot: "good",
+		encryptedRuntimeReady: true,
+		label: "Runtime Ready",
+		status: "runtime-ready",
+	};
+}
+function protectionDetail(prefix, databaseFile) {
+	if (databaseFile.status === "encrypted") {
+		return prefix + " Database encryption is active.";
+	}
+	if (databaseFile.status === "missing") {
+		return prefix + " Hachi will create an encrypted database on first start.";
+	}
+	if (databaseFile.status === "plaintext") {
+		return prefix + " Plaintext database must be converted before Hachi starts.";
+	}
+	if (databaseFile.status === "invalid") {
+		return prefix + " Database file is not a valid encrypted Hachi database.";
+	}
+	return prefix + " Encrypted database runtime is ready.";
+}
+function summary(encryptionEnabled, directKeyConfigured, keyFileStatus, databaseFile) {
+	if (encryptionEnabled && keyFileStatus.readable) {
+		return {
+			detail: protectionDetail("Key file ready.", databaseFile),
+			dot: databaseFile.status === "invalid" ? "bad" : databaseFile.status === "plaintext" ? "warn" : "good",
+			label: databaseFile.status === "invalid" ? "Invalid Database" : databaseFile.status === "plaintext" ? "Plaintext Database" : "Key Ready",
+			status: "key-ready",
+		};
+	}
+	if (encryptionEnabled && keyFileStatus.path && !keyFileStatus.readable) {
+		return {
+			detail: "Configured key file is missing or unreadable. Do not generate a replacement for an encrypted database.",
+			dot: "bad",
+			label: "Key Missing",
+			status: "key-missing",
+		};
+	}
+	if (encryptionEnabled && directKeyConfigured) {
+		return {
+			detail: protectionDetail("Direct key configured.", databaseFile),
+			dot: databaseFile.status === "invalid" ? "bad" : "warn",
+			label: databaseFile.status === "invalid" ? "Invalid Database" : "Direct Key",
+			status: "direct-key",
+		};
+	}
+	return {
+		detail: "Database encryption is required. Generate a key to prepare this install.",
+		dot: "muted",
+		label: "Key Required",
+		status: "not-configured",
+	};
+}
+function state() {
+	const envText = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+	const env = parseDotEnv(envText);
+	const configuredKeyFile = resolveRemotePath(env.HACHI_DB_KEY_FILE || "");
+	const keyFileStatus = keyStatus(configuredKeyFile);
+	const encryptionEnabled = enabled(env.HACHI_DB_ENCRYPTION);
+	const directKeyConfigured = Boolean(String(env.HACHI_DB_KEY || "").trim());
+	const databaseKey = keyFileStatus.readable ? fs.readFileSync(configuredKeyFile, "utf8").trim() : String(env.HACHI_DB_KEY || "").trim();
+	const databaseFile = databaseAccessStatus("database/database.sqlite", databaseKey);
+	return {
+		...summary(encryptionEnabled, directKeyConfigured, keyFileStatus, databaseFile),
+		configuredKeyFile,
+		databaseFile,
+		directKeyConfigured,
+		driver: cipherDriverStatus(process.cwd()),
+		encryptionEnabled,
+		keyFileStatus,
+		locations: {
+			recommended: location(),
+		},
+		runtime: runtimeStatus(),
+		source: "remote",
+		updatedAt: new Date().toISOString(),
+	};
+}
+function readConfiguredKey() {
+	const envText = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+	const env = parseDotEnv(envText);
+	const configuredKeyFile = resolveRemotePath(env.HACHI_DB_KEY_FILE || "");
+	if (configuredKeyFile) {
+		if (!fs.existsSync(configuredKeyFile)) {
+			throw new Error("Configured database key file is missing.");
+		}
+		return fs.readFileSync(configuredKeyFile, "utf8").trim();
+	}
+	return String(env.HACHI_DB_KEY || "").trim();
+}
+if (request.action === "read-key") {
+	try {
+		const key = readConfiguredKey();
+		if (!key) {
+			throw new Error("No database key is configured.");
+		}
+		process.stdout.write(JSON.stringify({ key, ok: true }));
+	} catch (error) {
+		process.stdout.write(JSON.stringify({ error: error.message || String(error), ok: false }));
+	}
+	process.exit(0);
+}
+if (request.action === "prepare") {
+	const current = state();
+	if (current.directKeyConfigured && !current.configuredKeyFile) {
+		const envText = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+		fs.writeFileSync(".env", updateDotEnvContent(envText, {
+			HACHI_DB_ENCRYPTION: "encrypted",
+		}), "utf8");
+		process.stdout.write(JSON.stringify({ ...state(), ok: true }));
+		process.exit(0);
+	}
+	if (current.configuredKeyFile) {
+		if (!current.keyFileStatus.readable) {
+			process.stdout.write(JSON.stringify({
+				...current,
+				error: "Configured database key file is missing. HachiGen will not generate a replacement because encrypted databases require the original key.",
+				ok: false,
+			}));
+			process.exit(0);
+		}
+		try {
+			fs.chmodSync(path.dirname(current.configuredKeyFile), 0o700);
+			fs.chmodSync(current.configuredKeyFile, 0o600);
+		} catch {
+			// Existing keys may live in locations where this user cannot chmod.
+		}
+		const envText = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+		fs.writeFileSync(".env", updateDotEnvContent(envText, {
+			HACHI_DB_ENCRYPTION: "encrypted",
+			HACHI_DB_KEY_FILE: current.configuredKeyFile,
+		}), "utf8");
+	} else {
+		const selected = location();
+		fs.mkdirSync(path.dirname(selected.path), { recursive: true });
+		if (!fs.existsSync(selected.path)) {
+			fs.writeFileSync(selected.path, crypto.randomBytes(32).toString("base64url") + "\\n", {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+		}
+		fs.chmodSync(path.dirname(selected.path), 0o700);
+		fs.chmodSync(selected.path, 0o600);
+		const envText = fs.existsSync(".env") ? fs.readFileSync(".env", "utf8") : "";
+		fs.writeFileSync(".env", updateDotEnvContent(envText, {
+			HACHI_DB_ENCRYPTION: "encrypted",
+			HACHI_DB_KEY_FILE: selected.path,
+		}), "utf8");
+	}
+}
+process.stdout.write(JSON.stringify({ ...state(), ok: true }));
+`;
+	}
+
+	async getRemoteDatabaseProtectionState() {
+		const protection = await this.runRemoteHachiJson(`node -e ${quotePosix(this.remoteDatabaseProtectionScript("state"))}`, {
+			fallbackMessage: "Could not read remote database protection state.",
+			log: false,
+			timeoutMs: 30000,
+		});
+		const keyReady = ["key-ready", "direct-key"].includes(protection.status);
+
+		return {
+			...protection,
+			cipherTest: keyReady ? this.getDatabaseCipherTestState() : null,
+		};
+	}
+
+	async getDatabaseProtectionState() {
+		if (this.getRuntimeTarget() === "remote") {
+			return this.getRemoteDatabaseProtectionState();
+		}
+
+		return this.localDatabaseProtectionState();
+	}
+
+	async prepareDatabaseProtection() {
+		if (this.getRuntimeTarget() === "remote") {
+			this.logDatabase("preparing remote encryption key and runtime settings.");
+			const protection = await this.runRemoteHachiJson(
+				`node -e ${quotePosix(this.remoteDatabaseProtectionScript("prepare"))}`,
+				{
+					fallbackMessage: "Remote database protection setup did not return valid JSON.",
+					log: false,
+					timeoutMs: 30000,
+				},
+			);
+
+			if (protection.ok === false) {
+				throw new Error(protection.error || "Remote database key setup failed.");
+			}
+
+			this.logDatabase(`remote key ready at ${protection.configuredKeyFile || "configured key"}.`, {
+				source: "remote",
+			});
+
+			return {
+				database: await this.getDatabaseState(),
+				message: `Database protection key ready at ${protection.configuredKeyFile}.`,
+				ok: true,
+				protection,
+			};
+		}
+
+		const current = this.localDatabaseProtectionState();
+		this.logDatabase("preparing local encryption key and runtime settings.");
+
+		if (current.directKeyConfigured && !current.configuredKeyFile) {
+			this.updateLocalDatabaseProtectionEnv({
+				HACHI_DB_ENCRYPTION: "encrypted",
+			});
+			const protection = this.localDatabaseProtectionState();
+			this.logDatabase("direct key is configured; runtime encryption flag is set.", {
+				source: "local",
+			});
+
+			return {
+				database: await this.getDatabaseState(),
+				message: "Direct database key is already configured. No key file was generated.",
+				ok: true,
+				protection,
+			};
+		}
+
+		if (current.configuredKeyFile) {
+			if (!current.keyFileStatus.readable) {
+				throw new Error("Configured database key file is missing. HachiGen will not generate a replacement because encrypted databases require the original key.");
+			}
+
+			try {
+				fs.chmodSync(path.dirname(current.configuredKeyFile), 0o700);
+				fs.chmodSync(current.configuredKeyFile, 0o600);
+			} catch {
+				// Windows ACLs may not map cleanly to POSIX modes; the key still exists.
+			}
+
+			this.updateLocalDatabaseProtectionEnv({
+				HACHI_DB_ENCRYPTION: "encrypted",
+				HACHI_DB_KEY_FILE: current.configuredKeyFile,
+			});
+
+			const protection = this.localDatabaseProtectionState();
+			this.logDatabase(`key file ready at ${displayPath(protection.configuredKeyFile)}.`, {
+				source: "local",
+			});
+
+			return {
+				database: await this.getDatabaseState(),
+				message: `Database protection key ready at ${protection.configuredKeyFile}.`,
+				ok: true,
+				protection,
+			};
+		}
+
+		const location = this.getLocalDatabaseKeyLocation();
+		ensureDir(path.dirname(location.path));
+		const generated = !fileExists(location.path);
+
+		if (generated) {
+			fs.writeFileSync(location.path, `${generateDatabaseKey()}\n`, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+		}
+
+		try {
+			fs.chmodSync(path.dirname(location.path), 0o700);
+			fs.chmodSync(location.path, 0o600);
+		} catch {
+			// Windows ACLs may not map cleanly to POSIX modes; the key still exists.
+		}
+
+		this.updateLocalDatabaseProtectionEnv({
+			HACHI_DB_ENCRYPTION: "encrypted",
+			HACHI_DB_KEY_FILE: location.path,
+		});
+
+		const protection = this.localDatabaseProtectionState();
+		this.logDatabase(`${generated ? "generated" : "reused"} key file at ${displayPath(protection.configuredKeyFile)}.`, {
+			source: "local",
+		});
+
+		return {
+			database: await this.getDatabaseState(),
+			message: `Database protection key ready at ${protection.configuredKeyFile}.`,
+			ok: true,
+			protection,
+		};
+	}
+
+	databaseCipherVerificationScript() {
+		return `
+const path = require("node:path");
+try {
+	const dbEncryption = require("./database/dbEncryption.js");
+	const keyInfo = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd());
+	const databasePath = path.resolve("database", "database.sqlite");
+	const databaseStatus = dbEncryption.databaseFileStatus(databasePath);
+	let cipherTest = null;
+
+	if (databaseStatus.encryptedLikely) {
+		try {
+			const verification = dbEncryption.verifyEncryptedDatabaseFile({
+				dbPath: databasePath,
+				key: keyInfo.key,
+				root: process.cwd(),
+			});
+			cipherTest = {
+				...verification,
+				detail: "Encrypted database opened successfully with the configured key.",
+				dot: "good",
+				ok: true,
+				label: "Database Verified",
+				status: "database-verified",
+				target: "database",
+			};
+		} catch (databaseError) {
+			cipherTest = {
+				detail: "Database could not be opened with the configured key: " + (databaseError.message || String(databaseError)),
+				dot: "bad",
+				ok: false,
+				label: "Database Check Failed",
+				status: "database-invalid",
+				target: "database",
+			};
+		}
+	} else {
+		cipherTest = dbEncryption.verifyCipherDriverCanOpen({
+			key: keyInfo.key,
+			root: process.cwd(),
+		});
+	}
+	process.stdout.write(JSON.stringify({
+		cipherTest: {
+			...cipherTest,
+			checkedAt: new Date().toISOString(),
+			keySource: keyInfo.source,
+		},
+		ok: Boolean(cipherTest.ok),
+	}));
+} catch (error) {
+	process.stdout.write(JSON.stringify({
+		cipherTest: {
+			detail: error.message || String(error),
+			dot: "bad",
+			ok: false,
+			label: "Cipher Test Failed",
+			status: "failed",
+			checkedAt: new Date().toISOString(),
+		},
+		ok: false,
+	}));
+}
+`;
+	}
+
+	async verifyLocalDatabaseCipherOpen() {
+		const result = await run("node", ["-e", this.databaseCipherVerificationScript()], {
+			allowFailure: true,
+			cwd: this.getInstallPath(),
+			timeoutMs: 120000,
+		});
+
+		try {
+			const parsed = parseJsonResult(result, "Local cipher verification did not return valid JSON.");
+			return parsed.cipherTest;
+		} catch (error) {
+			return {
+				checkedAt: new Date().toISOString(),
+				detail: error.message || String(error),
+				dot: "bad",
+				ok: false,
+				label: "Cipher Test Failed",
+				status: "failed",
+			};
+		}
+	}
+
+	async verifyRemoteDatabaseCipherOpen() {
+		const result = await this.runRemoteHachiJson(
+			`node -e ${quotePosix(this.databaseCipherVerificationScript())}`,
+			{
+				fallbackMessage: "Remote cipher verification did not return valid JSON.",
+				log: false,
+				timeoutMs: 120000,
+			},
+		);
+
+		return result.cipherTest;
+	}
+
+	async verifyDatabaseCipherOpen() {
+		this.logDatabase("running encrypted database verification.");
+		const cipherTest = this.getRuntimeTarget() === "remote" ?
+			await this.verifyRemoteDatabaseCipherOpen() :
+			await this.verifyLocalDatabaseCipherOpen();
+
+		this.setDatabaseCipherTestState(cipherTest);
+		this.logDatabase(`${cipherTest.label || "Verification"}: ${cipherTest.detail || "No detail returned."}`, {
+			ok: Boolean(cipherTest.ok),
+			status: cipherTest.status,
+		});
+		return cipherTest;
+	}
+
+	async verifyDatabaseProtection() {
+		const protection = await this.getDatabaseProtectionState();
+		const keyReady = ["key-ready", "direct-key"].includes(protection.status);
+		this.logDatabase(`status check: ${protection.label}. ${protection.detail}`);
+		const cipherTest = keyReady ? await this.verifyDatabaseCipherOpen() : null;
+
+		if (cipherTest) {
+			protection.cipherTest = cipherTest;
+		}
+
+		return {
+			message: cipherTest ?
+				`${protection.label}: ${protection.detail} ${cipherTest.label}: ${cipherTest.detail}` :
+				`${protection.label}: ${protection.detail}`,
+			ok: protection.status !== "key-missing" && (!cipherTest || cipherTest.ok),
+			protection,
+		};
+	}
+
+	databaseEncryptionConversionScript(backupFileName) {
+		return `
+const fs = require("node:fs");
+const path = require("node:path");
+const backupFileName = ${JSON.stringify(backupFileName)};
+
+function output(payload) {
+	process.stdout.write(JSON.stringify(payload));
+}
+
+function parseDotEnv(content) {
+	const values = {};
+	for (const line of String(content || "").split(/\\r?\\n/u)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) {
+			continue;
+		}
+		const equalsIndex = trimmed.indexOf("=");
+		if (equalsIndex === -1) {
+			continue;
+		}
+		const key = trimmed.slice(0, equalsIndex).trim();
+		let value = trimmed.slice(equalsIndex + 1).trim();
+		if (value.startsWith('"') && value.endsWith('"')) {
+			try {
+				value = JSON.parse(value);
+			} catch {
+				value = value.slice(1, -1);
+			}
+		} else if (value.startsWith("'") && value.endsWith("'")) {
+			value = value.slice(1, -1);
+		}
+		values[key] = value;
+	}
+	return values;
+}
+
+function formatEnvValue(value) {
+	return JSON.stringify(String(value || ""));
+}
+
+function updateDotEnvContent(content, values) {
+	const pending = new Map(Object.entries(values));
+	const lines = String(content || "").split(/\\r?\\n/u);
+	const outputLines = [];
+	for (const line of lines) {
+		if (!line.trim()) {
+			if (line || outputLines.length) {
+				outputLines.push(line);
+			}
+			continue;
+		}
+		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);
+		if (!match || !pending.has(match[1])) {
+			outputLines.push(line);
+			continue;
+		}
+		const key = match[1];
+		outputLines.push(key + "=" + formatEnvValue(pending.get(key)));
+		pending.delete(key);
+	}
+	for (const [key, value] of pending) {
+		outputLines.push(key + "=" + formatEnvValue(value));
+	}
+	return outputLines.filter((line, index, collection) => line || index < collection.length - 1).join("\\n") + "\\n";
+}
+
+function removeDatabaseSidecars(databasePath) {
+	for (const filePath of [
+		databasePath + "-wal",
+		databasePath + "-shm",
+		databasePath + "-journal",
+	]) {
+		try {
+			if (fs.existsSync(filePath)) {
+				fs.rmSync(filePath, { force: true });
+			}
+		} catch {
+			// A stale sidecar cleanup failure should not hide the main result.
+		}
+	}
+}
+
+function checkpointDatabase(databasePath) {
+	let db = null;
+	try {
+		const Database = require("better-sqlite3-multiple-ciphers");
+		db = new Database(databasePath, { fileMustExist: true });
+		db.pragma("wal_checkpoint(FULL)");
+	} catch {
+		// The conversion backup still proceeds; any copy/lock issue is surfaced later.
+	} finally {
+		if (db) {
+			db.close();
+		}
+	}
+}
+
+function applyRuntimeEnv(keyInfo) {
+	process.env.HACHI_DB_ENCRYPTION = "encrypted";
+	process.env.HACHI_DB_KEY = keyInfo.key;
+	if (keyInfo.keyFilePath) {
+		process.env.HACHI_DB_KEY_FILE = keyInfo.keyFilePath;
+	}
+}
+
+async function verifyRuntimeOpen(keyInfo) {
+	applyRuntimeEnv(keyInfo);
+	const { sequelize } = require("./database/dbObjects.js");
+	try {
+		await sequelize.authenticate();
+	} finally {
+		await sequelize.close().catch(() => null);
+	}
+}
+
+function restoreFromBackup({ backupPath, databasePath, envPath, originalEnv }) {
+	if (fs.existsSync(backupPath)) {
+		fs.copyFileSync(backupPath, databasePath);
+	}
+	removeDatabaseSidecars(databasePath);
+	fs.writeFileSync(envPath, originalEnv, "utf8");
+}
+
+(async () => {
+	const dbEncryption = require("./database/dbEncryption.js");
+	const databasePath = path.resolve("database", "database.sqlite");
+	const databaseDir = path.dirname(databasePath);
+	const backupDir = path.resolve("manager", "backups", "database");
+	const backupPath = path.join(backupDir, backupFileName);
+	const encryptedTempPath = path.join(databaseDir, "database-encrypted-" + Date.now() + "-" + process.pid + ".tmp.sqlite");
+	const envPath = path.resolve(".env");
+	const originalEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+	const keyInfo = dbEncryption.readDatabaseKeyFromEnvFile(envPath, process.env, process.cwd());
+
+	if (!String(keyInfo.key || "").trim()) {
+		throw new Error("No database key is configured.");
+	}
+
+	applyRuntimeEnv(keyInfo);
+	const before = dbEncryption.databaseFileStatus(databasePath);
+
+	if (before.encryptedLikely) {
+		dbEncryption.verifyEncryptedDatabaseFile({
+			dbPath: databasePath,
+			key: keyInfo.key,
+			root: process.cwd(),
+		});
+		fs.writeFileSync(envPath, updateDotEnvContent(originalEnv, {
+			HACHI_DB_ENCRYPTION: "encrypted",
+		}), "utf8");
+		await verifyRuntimeOpen(keyInfo);
+		output({
+			alreadyEncrypted: true,
+			backupPath: "",
+			fileName: "",
+			message: "Database is already encrypted. Runtime mode was verified.",
+			ok: true,
+			status: dbEncryption.databaseFileStatus(databasePath),
+		});
+		return;
+	}
+
+	if (before.status !== "plaintext") {
+		throw new Error("Database conversion requires a plain SQLite database. Current status: " + before.label + ".");
+	}
+
+	fs.mkdirSync(backupDir, { recursive: true });
+	if (fs.existsSync(backupPath)) {
+		throw new Error("Recovery backup already exists: " + backupPath);
+	}
+
+	checkpointDatabase(databasePath);
+	fs.copyFileSync(databasePath, backupPath);
+	try {
+		fs.chmodSync(backupPath, 0o600);
+	} catch {
+		// Windows ACLs may not map cleanly to POSIX modes.
+	}
+	dbEncryption.writeDatabaseBackupMetadata({
+		backupPath,
+		key: "",
+		reason: "pre-encryption",
+		root: process.cwd(),
+		source: "conversion",
+		status: before,
+	});
+
+	let databaseOverwritten = false;
+	try {
+		const conversion = dbEncryption.convertPlainDatabaseToEncrypted({
+			key: keyInfo.key,
+			root: process.cwd(),
+			sourcePath: databasePath,
+			targetPath: encryptedTempPath,
+		});
+
+		fs.copyFileSync(encryptedTempPath, databasePath);
+		databaseOverwritten = true;
+		removeDatabaseSidecars(databasePath);
+		fs.writeFileSync(envPath, updateDotEnvContent(originalEnv, {
+			HACHI_DB_ENCRYPTION: "encrypted",
+		}), "utf8");
+		await verifyRuntimeOpen(keyInfo);
+
+		output({
+			...conversion,
+			backupPath,
+			fileName: backupFileName,
+			message: "Database encrypted. Plaintext recovery backup created: " + backupFileName,
+			ok: true,
+			status: dbEncryption.databaseFileStatus(databasePath),
+		});
+	} catch (error) {
+		if (databaseOverwritten) {
+			try {
+				restoreFromBackup({ backupPath, databasePath, envPath, originalEnv });
+			} catch (restoreError) {
+				throw new Error((error.message || String(error)) + " Rollback failed: " + (restoreError.message || String(restoreError)));
+			}
+		} else {
+			fs.writeFileSync(envPath, originalEnv, "utf8");
+		}
+		throw error;
+	} finally {
+		for (const filePath of [
+			encryptedTempPath,
+			encryptedTempPath + "-wal",
+			encryptedTempPath + "-shm",
+			encryptedTempPath + "-journal",
+		]) {
+			try {
+				if (fs.existsSync(filePath)) {
+					fs.rmSync(filePath, { force: true });
+				}
+			} catch {
+				// Temporary cleanup can be retried by the OS or user later.
+			}
+		}
+	}
+})().catch(error => {
+	output({
+		error: error.message || String(error),
+		ok: false,
+	});
+});
+`;
+	}
+
+	async convertDatabaseEncryption() {
+		const backupFileName = `database-pre-encryption-${fileTimestamp()}-${Date.now()}.sqlite`;
+
+		this.logDatabase("starting plaintext database conversion.");
+		await this.prepareDatabaseProtection();
+		const verification = await this.verifyDatabaseProtection();
+
+		if (!verification.ok) {
+			throw new Error(verification.message || "Database protection verification failed.");
+		}
+
+		this.logDatabase("checkpointing database before conversion.");
+		await this.checkpointDatabase();
+
+		const script = this.databaseEncryptionConversionScript(backupFileName);
+		this.logDatabase(`creating encrypted database and recovery backup ${backupFileName}.`);
+		const result = this.getRuntimeTarget() === "remote" ?
+			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+				fallbackMessage: "Remote database encryption conversion did not return valid JSON.",
+				log: false,
+				timeoutMs: 600000,
+			}) :
+			parseJsonResult(await run("node", ["-e", script], {
+				allowFailure: true,
+				cwd: this.getInstallPath(),
+				timeoutMs: 600000,
+			}), "Database encryption conversion did not return valid JSON.");
+
+		if (!result.ok) {
+			throw new Error(result.error || "Database encryption conversion failed.");
+		}
+
+		this.setDatabaseCipherTestState({
+			checkedAt: new Date().toISOString(),
+			detail: "Encrypted database runtime opens successfully with the configured key.",
+			dot: "good",
+			ok: true,
+			label: "Runtime Verified",
+			status: "runtime-verified",
+		});
+		this.logDatabase(result.message || "Database encrypted.", {
+			backup: result.fileName || "",
+			objectsCopied: result.objectsCopied,
+			rowsCopied: result.rowsCopied,
+			tablesCopied: result.tablesCopied,
+		});
+
+		return {
+			...result,
+			database: await this.getDatabaseState(),
+		};
+	}
+
+	databaseKeyRotationScript(backupFileName, { rotateBackups = false } = {}) {
+		return `
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+const backupFileName = ${JSON.stringify(backupFileName)};
+const rotateBackups = ${rotateBackups ? "true" : "false"};
+
+function output(payload) {
+	process.stdout.write(JSON.stringify(payload));
+}
+
+function parseDotEnv(content) {
+	const values = {};
+	for (const line of String(content || "").split(/\\r?\\n/u)) {
+		const trimmed = line.trim();
+		if (!trimmed || trimmed.startsWith("#")) {
+			continue;
+		}
+		const equalsIndex = trimmed.indexOf("=");
+		if (equalsIndex === -1) {
+			continue;
+		}
+		const key = trimmed.slice(0, equalsIndex).trim();
+		let value = trimmed.slice(equalsIndex + 1).trim();
+		if (value.startsWith('"') && value.endsWith('"')) {
+			try {
+				value = JSON.parse(value);
+			} catch {
+				value = value.slice(1, -1);
+			}
+		} else if (value.startsWith("'") && value.endsWith("'")) {
+			value = value.slice(1, -1);
+		}
+		values[key] = value;
+	}
+	return values;
+}
+
+function formatEnvValue(value) {
+	return JSON.stringify(String(value || ""));
+}
+
+function updateDotEnvContent(content, values) {
+	const pending = new Map(Object.entries(values));
+	const lines = String(content || "").split(/\\r?\\n/u);
+	const outputLines = [];
+	for (const line of lines) {
+		if (!line.trim()) {
+			if (line || outputLines.length) {
+				outputLines.push(line);
+			}
+			continue;
+		}
+		const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\\s*=/u);
+		if (!match || !pending.has(match[1])) {
+			outputLines.push(line);
+			continue;
+		}
+		const key = match[1];
+		const value = pending.get(key);
+		if (value !== null && value !== undefined) {
+			outputLines.push(key + "=" + formatEnvValue(value));
+		}
+		pending.delete(key);
+	}
+	for (const [key, value] of pending) {
+		if (value !== null && value !== undefined) {
+			outputLines.push(key + "=" + formatEnvValue(value));
+		}
+	}
+	return outputLines.filter((line, index, collection) => line || index < collection.length - 1).join("\\n") + "\\n";
+}
+
+function removeDatabaseSidecars(databasePath) {
+	for (const filePath of [
+		databasePath + "-wal",
+		databasePath + "-shm",
+		databasePath + "-journal",
+	]) {
+		try {
+			if (fs.existsSync(filePath)) {
+				fs.rmSync(filePath, { force: true });
+			}
+		} catch {
+			// A stale sidecar cleanup failure should not hide the main result.
+		}
+	}
+}
+
+async function verifyRuntimeOpen(newKey, keyFilePath) {
+	process.env.HACHI_DB_ENCRYPTION = "encrypted";
+	process.env.HACHI_DB_KEY = newKey;
+	if (keyFilePath) {
+		process.env.HACHI_DB_KEY_FILE = keyFilePath;
+	}
+	const { sequelize } = require("./database/dbObjects.js");
+	try {
+		await sequelize.authenticate();
+	} finally {
+		await sequelize.close().catch(() => null);
+	}
+}
+
+(async () => {
+	const dbEncryption = require("./database/dbEncryption.js");
+	const databasePath = path.resolve("database", "database.sqlite");
+	const backupDir = path.resolve("manager", "backups", "database");
+	const backupPath = path.join(backupDir, backupFileName);
+	const envPath = path.resolve(".env");
+	const originalEnv = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf8") : "";
+	const env = parseDotEnv(originalEnv);
+	const keyInfo = dbEncryption.readDatabaseKeyFromEnvFile(envPath, process.env, process.cwd());
+	const oldKey = String(keyInfo.key || "").trim();
+	const newKey = crypto.randomBytes(32).toString("base64url");
+	const databaseStatus = dbEncryption.databaseFileStatus(databasePath);
+	const usingDirectKey = keyInfo.source === "direct";
+	const keyFilePath = keyInfo.keyFilePath || "";
+	const originalKeyFile = keyFilePath && fs.existsSync(keyFilePath) ? fs.readFileSync(keyFilePath, "utf8") : null;
+
+	if (!oldKey) {
+		throw new Error("No database key is configured.");
+	}
+
+	if (databaseStatus.status === "plaintext") {
+		throw new Error("Plaintext databases must be converted before rotating the encryption key.");
+	}
+
+	if (databaseStatus.encryptedLikely) {
+		fs.mkdirSync(backupDir, { recursive: true });
+		if (fs.existsSync(backupPath)) {
+			throw new Error("Key rotation backup already exists: " + backupPath);
+		}
+		fs.copyFileSync(databasePath, backupPath);
+		try {
+			fs.chmodSync(backupPath, 0o600);
+		} catch {
+			// Windows ACLs may not map cleanly to POSIX modes.
+		}
+		dbEncryption.writeDatabaseBackupMetadata({
+			backupPath,
+			key: oldKey,
+			reason: "pre-key-rotation",
+			root: process.cwd(),
+			source: "key-rotation",
+		});
+	}
+
+	let databaseRekeyed = false;
+
+	try {
+		if (databaseStatus.encryptedLikely) {
+			dbEncryption.rekeyEncryptedDatabase({
+				dbPath: databasePath,
+				newKey,
+				oldKey,
+				root: process.cwd(),
+			});
+			databaseRekeyed = true;
+		}
+
+		if (usingDirectKey) {
+			fs.writeFileSync(envPath, updateDotEnvContent(originalEnv, {
+				HACHI_DB_ENCRYPTION: "encrypted",
+				HACHI_DB_KEY: newKey,
+			}), "utf8");
+		} else {
+			if (!keyFilePath) {
+				throw new Error("No database key file is configured.");
+			}
+
+			fs.mkdirSync(path.dirname(keyFilePath), { recursive: true });
+			fs.writeFileSync(keyFilePath, newKey + "\\n", {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			try {
+				fs.chmodSync(keyFilePath, 0o600);
+			} catch {
+				// Windows ACLs may not map cleanly to POSIX modes.
+			}
+			fs.writeFileSync(envPath, updateDotEnvContent(originalEnv, {
+				HACHI_DB_ENCRYPTION: "encrypted",
+				HACHI_DB_KEY: env.HACHI_DB_KEY ? null : undefined,
+				HACHI_DB_KEY_FILE: keyFilePath,
+			}), "utf8");
+		}
+
+		if (databaseStatus.encryptedLikely) {
+			await verifyRuntimeOpen(newKey, keyFilePath);
+		}
+
+		let backupRotation = null;
+		if (rotateBackups) {
+			try {
+				backupRotation = dbEncryption.rotateDatabaseBackups({
+					backupDir,
+					includePlaintext: true,
+					newKey,
+					oldKey,
+					root: process.cwd(),
+					source: "key-rotation",
+				});
+			} catch (backupError) {
+				backupRotation = {
+					converted: 0,
+					entries: [{
+						error: backupError.message || String(backupError),
+						ok: false,
+						status: "skipped",
+					}],
+					ok: false,
+					rekeyed: 0,
+					skipped: 1,
+					total: 0,
+					verified: 0,
+				};
+			}
+		}
+
+		const backupMessage = backupRotation ?
+			" " + dbEncryption.databaseBackupRotationSummary(backupRotation) :
+			"";
+
+		output({
+			backupRotation,
+			backupPath: databaseStatus.encryptedLikely ? backupPath : "",
+			fileName: databaseStatus.encryptedLikely ? backupFileName : "",
+			message: databaseStatus.encryptedLikely ?
+				"Database key rotated. Encrypted safety backup created: " + backupFileName + "." + backupMessage :
+				"Database key rotated. No database exists yet; first startup will create an encrypted database with the new key." + backupMessage,
+			ok: true,
+			status: dbEncryption.databaseFileStatus(databasePath),
+		});
+	} catch (error) {
+		if (databaseRekeyed && fs.existsSync(backupPath)) {
+			try {
+				fs.copyFileSync(backupPath, databasePath);
+				removeDatabaseSidecars(databasePath);
+			} catch {
+				// The thrown error below still explains the original failure.
+			}
+		}
+		fs.writeFileSync(envPath, originalEnv, "utf8");
+		if (keyFilePath && originalKeyFile !== null) {
+			fs.writeFileSync(keyFilePath, originalKeyFile, "utf8");
+		}
+		throw error;
+	}
+})().catch(error => {
+	output({
+		error: error.message || String(error),
+		ok: false,
+	});
+});
+`;
+	}
+
+	async rotateDatabaseKey({ rotateBackups = false } = {}) {
+		const backupFileName = `database-pre-key-rotation-${fileTimestamp()}-${Date.now()}.sqlite`;
+		const protection = await this.getDatabaseProtectionState();
+
+		if (!["key-ready", "direct-key"].includes(protection.status)) {
+			throw new Error("Generate a database key before rotating it.");
+		}
+
+		this.logDatabase(`starting key rotation${rotateBackups ? " with backup rotation" : ""}.`);
+		this.logDatabase(`planned safety backup: ${backupFileName}.`);
+		const script = this.databaseKeyRotationScript(backupFileName, { rotateBackups });
+		const result = this.getRuntimeTarget() === "remote" ?
+			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+				fallbackMessage: "Remote database key rotation did not return valid JSON.",
+				log: false,
+				timeoutMs: 600000,
+			}) :
+			parseJsonResult(await run("node", ["-e", script], {
+				allowFailure: true,
+				cwd: this.getInstallPath(),
+				timeoutMs: 600000,
+			}), "Database key rotation did not return valid JSON.");
+
+		if (!result.ok) {
+			throw new Error(result.error || "Database key rotation failed.");
+		}
+
+		this.setDatabaseCipherTestState({
+			checkedAt: new Date().toISOString(),
+			detail: "Encrypted database runtime opens successfully with the configured key.",
+			dot: "good",
+			ok: true,
+			label: "Runtime Verified",
+			status: "runtime-verified",
+		});
+		this.logDatabase(result.message || "Database key rotated.", {
+			backup: result.fileName || "",
+			backupRotation: backupRotationSummaryText(result.backupRotation),
+		});
+
+		return {
+			...result,
+			database: await this.getDatabaseState(),
+		};
+	}
+
+	databaseBackupRotationScript() {
+		return `
+const path = require("node:path");
+
+function output(payload) {
+	process.stdout.write(JSON.stringify(payload));
+}
+
+try {
+	const dbEncryption = require("./database/dbEncryption.js");
+	const backupDir = path.resolve("manager", "backups", "database");
+	const keyInfo = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd());
+	const currentKey = String(keyInfo.key || "").trim();
+
+	if (!currentKey) {
+		throw new Error("No database key is configured.");
+	}
+
+	const backupRotation = dbEncryption.rotateDatabaseBackups({
+		backupDir,
+		includePlaintext: true,
+		newKey: currentKey,
+		oldKey: currentKey,
+		root: process.cwd(),
+		source: "backup-rotation",
+	});
+
+	output({
+		backupRotation,
+		message: dbEncryption.databaseBackupRotationSummary(backupRotation),
+		ok: backupRotation.ok !== false,
+	});
+} catch (error) {
+	output({
+		error: error.message || String(error),
+		ok: false,
+	});
+}
+`;
+	}
+
+	async rotateDatabaseBackups() {
+		const protection = await this.getDatabaseProtectionState();
+
+		if (!["key-ready", "direct-key"].includes(protection.status)) {
+			throw new Error("Generate a database key before rotating backup encryption.");
+		}
+
+		this.logDatabase("checking backups against the current database key.");
+		const script = this.databaseBackupRotationScript();
+		const result = this.getRuntimeTarget() === "remote" ?
+			await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
+				fallbackMessage: "Remote database backup rotation did not return valid JSON.",
+				log: false,
+				timeoutMs: 600000,
+			}) :
+			parseJsonResult(await run("node", ["-e", script], {
+				allowFailure: true,
+				cwd: this.getInstallPath(),
+				timeoutMs: 600000,
+			}), "Database backup rotation did not return valid JSON.");
+
+		if (!result.ok) {
+			throw new Error(result.error || "Database backup rotation failed.");
+		}
+
+		this.logDatabase(result.message || "Database backups checked.", {
+			backupRotation: backupRotationSummaryText(result.backupRotation),
+		});
+
+		return {
+			...result,
+			database: await this.getDatabaseState(),
+		};
+	}
+
+	async readDatabaseProtectionKey() {
+		if (this.getRuntimeTarget() === "remote") {
+			const result = await this.runRemoteHachiJson(`node -e ${quotePosix(this.remoteDatabaseProtectionScript("read-key"))}`, {
+				fallbackMessage: "Remote database key read did not return valid JSON.",
+				log: false,
+				timeoutMs: 30000,
+			});
+
+			if (!result.ok) {
+				throw new Error(result.error || "Remote database key is not available.");
+			}
+
+			const key = normalizeDatabaseKey(result.key);
+
+			if (!key) {
+				throw new Error("Remote database key is empty.");
+			}
+
+			return key;
+		}
+
+		const env = this.readLocalDatabaseProtectionEnv();
+		const paths = this.getPaths();
+		const configuredKeyFile = resolveLocalPath(env.HACHI_DB_KEY_FILE || "", paths.root);
+
+		if (configuredKeyFile) {
+			const key = normalizeDatabaseKey(fs.readFileSync(configuredKeyFile, "utf8"));
+
+			if (!key) {
+				throw new Error("Configured database key file is empty.");
+			}
+
+			return key;
+		}
+
+		const directKey = normalizeDatabaseKey(env.HACHI_DB_KEY);
+
+		if (!directKey) {
+			throw new Error("No database key is configured.");
+		}
+
+		return directKey;
+	}
+
+	async exportDatabaseKeyBackup(backupPath) {
+		const resolvedBackupPath = path.resolve(String(backupPath || ""));
+
+		if (!resolvedBackupPath) {
+			throw new Error("Choose a file path for the database key backup.");
+		}
+
+		const key = await this.readDatabaseProtectionKey();
+		ensureDir(path.dirname(resolvedBackupPath));
+		fs.writeFileSync(resolvedBackupPath, `${key}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
+
+		try {
+			fs.chmodSync(resolvedBackupPath, 0o600);
+		} catch {
+			// Windows ACLs may not map cleanly to POSIX modes; the backup was written.
+		}
+
+		this.logDatabase(`key backup exported to ${path.basename(resolvedBackupPath)}.`, {
+			fileName: path.basename(resolvedBackupPath),
+		});
+
+		return {
+			backupPath: resolvedBackupPath,
+			fileName: path.basename(resolvedBackupPath),
+			message: `Database key backup exported to ${path.basename(resolvedBackupPath)}.`,
+			ok: true,
+		};
 	}
 
 	async getDatabaseState() {
@@ -1093,8 +3699,10 @@ class HachiManager {
 			latestBackup: backups[0] || null,
 			modifiedAt: stats ? stats.mtime.toISOString() : null,
 			path: paths.database,
+			protection: await this.getDatabaseProtectionState(),
 			size: stats ? stats.size : 0,
 			sizeLabel: stats ? formatFileSize(stats.size) : "0 B",
+			source: "local",
 		};
 	}
 
@@ -1104,6 +3712,14 @@ const fs = require("node:fs");
 const path = require("node:path");
 const databasePath = "database/database.sqlite";
 const backupDir = "manager/backups/database";
+let dbEncryption = null;
+let currentKey = "";
+try {
+	dbEncryption = require("./database/dbEncryption.js");
+	currentKey = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd()).key || "";
+} catch {
+	dbEncryption = null;
+}
 function fileInfo(filePath) {
 	if (!fs.existsSync(filePath)) {
 		return null;
@@ -1119,10 +3735,14 @@ const backups = fs.existsSync(backupDir) ? fs.readdirSync(backupDir)
 	.map(file => {
 		const fullPath = path.posix.join(backupDir, file);
 		const stats = fs.statSync(fullPath);
+		const protection = dbEncryption && dbEncryption.describeDatabaseBackup ?
+			dbEncryption.describeDatabaseBackup({ backupPath: fullPath, currentKey, root: process.cwd() }) :
+			null;
 		return {
 			file,
 			fullPath,
 			modifiedAt: stats.mtime.toISOString(),
+			protection,
 			size: stats.size,
 		};
 	})
@@ -1154,6 +3774,7 @@ process.stdout.write(JSON.stringify({
 			latestBackup: backups[0] || null,
 			modifiedAt: state.database?.modifiedAt || null,
 			path: state.path || "database/database.sqlite",
+			protection: await this.getDatabaseProtectionState(),
 			size: state.database?.size || 0,
 			sizeLabel: state.database ? formatFileSize(state.database.size) : "0 B",
 			source: "remote",
@@ -1377,6 +3998,7 @@ process.exit(child.status === null ? 1 : child.status);
 			return this.backupRemoteDatabase({ fileName, overwrite });
 		}
 
+		this.logDatabase(`${overwrite ? "overwriting" : "creating"} backup ${fileName}.`);
 		// Copy the current database into the dated backup folder. Manual backups
 		// use a date-only filename so HachiGen can ask before replacing today's.
 		// Automatic safety backups pass unique timestamped filenames.
@@ -1403,18 +4025,47 @@ process.exit(child.status === null ? 1 : child.status);
 
 		await this.checkpointDatabase();
 		fs.copyFileSync(paths.database, backupPath);
-		this.log(`Database backup created: ${backupPath}`);
+		const dbEncryption = loadDatabaseEncryptionModule(paths.root);
+		let protection = null;
+
+		if (dbEncryption?.writeDatabaseBackupMetadata) {
+			try {
+				const key = this.readLocalDatabaseProtectionKeyIfAvailable();
+				const metadata = dbEncryption.writeDatabaseBackupMetadata({
+					backupPath,
+					key,
+					reason: "manual",
+					root: paths.root,
+					source: "local",
+				});
+				protection = dbEncryption.describeDatabaseBackup({
+					backupPath,
+					currentKey: key,
+					root: paths.root,
+					verifyWithCurrentKey: false,
+				});
+				protection.metadata = metadata;
+			} catch (error) {
+				this.logDatabase(`backup metadata skipped: ${error.message || error}`);
+			}
+		}
+		this.logDatabase(`backup created: ${displayPath(backupPath, paths.root)}.`, {
+			fileName,
+			protection: protection?.label || "",
+		});
 
 		return {
 			backupPath,
 			fileName,
 			ok: true,
+			protection,
 			message: `Database backup created: ${fileName}`,
 		};
 	}
 
 	async backupRemoteDatabase({ fileName = `database-${dateStamp()}.sqlite`, overwrite = false } = {}) {
 		const safeFileName = path.basename(fileName);
+		this.logDatabase(`${overwrite ? "overwriting" : "creating"} remote backup ${safeFileName}.`);
 		const script = `
 const fs = require("node:fs");
 const path = require("node:path");
@@ -1423,6 +4074,14 @@ const backupDir = "manager/backups/database";
 const fileName = ${JSON.stringify(safeFileName)};
 const overwrite = ${overwrite ? "true" : "false"};
 const backupPath = path.posix.join(backupDir, fileName);
+let dbEncryption = null;
+let currentKey = "";
+try {
+	dbEncryption = require("./database/dbEncryption.js");
+	currentKey = dbEncryption.readDatabaseKeyFromEnvFile(path.resolve(".env"), process.env, process.cwd()).key || "";
+} catch {
+	dbEncryption = null;
+}
 if (!fs.existsSync(databasePath)) {
 	process.stdout.write(JSON.stringify({ ok: false, error: "No remote Hachi database exists to back up." }));
 	process.exit(0);
@@ -1439,10 +4098,27 @@ if (fs.existsSync(backupPath) && !overwrite) {
 	process.exit(0);
 }
 fs.copyFileSync(databasePath, backupPath);
+let protection = null;
+if (dbEncryption && dbEncryption.writeDatabaseBackupMetadata) {
+	try {
+		const metadata = dbEncryption.writeDatabaseBackupMetadata({
+			backupPath,
+			key: currentKey,
+			reason: "manual",
+			root: process.cwd(),
+			source: "remote",
+		});
+		protection = dbEncryption.describeDatabaseBackup({ backupPath, currentKey, root: process.cwd() });
+		protection.metadata = metadata;
+	} catch {
+		protection = null;
+	}
+}
 process.stdout.write(JSON.stringify({
 	backupPath,
 	fileName,
 	ok: true,
+	protection,
 	message: "Remote database backup created: " + fileName,
 }));
 `;
@@ -1458,7 +4134,9 @@ process.stdout.write(JSON.stringify({
 		}
 
 		if (result.ok) {
-			this.log(`Remote database backup created: ${result.backupPath}`);
+			this.logDatabase(`remote backup created: ${result.fileName || safeFileName}.`, {
+				protection: result.protection?.label || "",
+			});
 		}
 
 		return result;
@@ -1490,6 +4168,7 @@ process.stdout.write(JSON.stringify({
 			throw new Error("Choose a .sqlite database backup file.");
 		}
 
+		this.logDatabase(`restoring backup ${path.basename(resolvedBackup)}.`);
 		ensureDir(path.dirname(paths.database));
 
 		let safetyBackup = null;
@@ -1513,7 +4192,9 @@ process.stdout.write(JSON.stringify({
 			}
 		}
 
-		this.log(`Database restored from backup: ${resolvedBackup}`);
+		this.logDatabase(`restored backup ${path.basename(resolvedBackup)}.`, {
+			safetyBackup: safetyBackup ? displayPath(safetyBackup, paths.root) : "",
+		});
 
 		return {
 			backupPath: resolvedBackup,
@@ -1607,6 +4288,7 @@ process.stdout.write(JSON.stringify({
 			.map(([label]) => label);
 		const config = this.readLocalConfiguration();
 		const packageJson = readJson(paths.packageJson, {});
+		const missingDependencies = missingPackageDependencies(paths.root, packageJson);
 
 		return {
 			installPath: paths.root,
@@ -1619,6 +4301,8 @@ process.stdout.write(JSON.stringify({
 			hasConfig: fileExists(paths.configJson),
 			hasGit: fileExists(paths.git),
 			hasNodeModules: fileExists(paths.nodeModules),
+			dependenciesReady: missingDependencies.length === 0,
+			missingDependencies,
 			configurationMissing: config.missing,
 			configurationReady: config.missing.length === 0,
 		};
@@ -1646,6 +4330,16 @@ function readJson(filePath) {
 		return {};
 	}
 }
+function missingDependencies(root, packageJson) {
+	return Object.keys(packageJson.dependencies || {}).sort().filter(packageName => {
+		try {
+			require.resolve(packageName, { paths: [root] });
+			return false;
+		} catch {
+			return true;
+		}
+	});
+}
 const requiredFiles = [
 	["package.json", "package.json"],
 	["index.js", "index.js"],
@@ -1656,6 +4350,7 @@ const requiredFiles = [
 ];
 const missingFiles = requiredFiles.filter(([, filePath]) => !exists(filePath)).map(([label]) => label);
 const packageJson = readJson("package.json");
+const missingPackageNames = missingDependencies(process.cwd(), packageJson);
 process.stdout.write(JSON.stringify({
 	installPath: process.cwd(),
 	source: "remote",
@@ -1667,6 +4362,8 @@ process.stdout.write(JSON.stringify({
 	hasConfig: exists("config/config.json"),
 	hasGit: exists(".git"),
 	hasNodeModules: exists("node_modules"),
+	dependenciesReady: missingPackageNames.length === 0,
+	missingDependencies: missingPackageNames,
 }));
 `;
 		const scan = await this.runRemoteHachiJson(`node -e ${quotePosix(script)}`, {
@@ -1694,6 +4391,7 @@ process.stdout.write(JSON.stringify({
 			...readJson(paths.blankConfig, {}),
 			...readJson(paths.configJson, {}),
 		};
+		const displayConfigValues = normalizeConfigValuesForForm(configValues);
 		const missing = [];
 
 		// Missing lists are used to color dashboard/setup status indicators.
@@ -1704,7 +4402,7 @@ process.stdout.write(JSON.stringify({
 		}
 
 		for (const field of CONFIG_FIELDS) {
-			if (isMissingValue(configValues[field])) {
+			if (isMissingValue(displayConfigValues[field])) {
 				missing.push(field);
 			}
 		}
@@ -1714,9 +4412,10 @@ process.stdout.write(JSON.stringify({
 				env: fileExists(paths.env),
 				config: fileExists(paths.configJson),
 			},
+			envProtection: envSecretProtectionMetadata(envValues),
 			values: {
-				...envValues,
-				...configValues,
+				...displayEnvValues(envValues),
+				...displayConfigValues,
 			},
 			missing,
 		};
@@ -1749,6 +4448,7 @@ process.stdout.write(JSON.stringify({
 			...parseJsonText(blankConfigText, {}),
 			...parseJsonText(configText, {}),
 		};
+		const displayConfigValues = normalizeConfigValuesForForm(configValues);
 		const missing = [];
 
 		for (const field of ENV_FIELDS) {
@@ -1758,7 +4458,7 @@ process.stdout.write(JSON.stringify({
 		}
 
 		for (const field of CONFIG_FIELDS) {
-			if (isMissingValue(configValues[field])) {
+			if (isMissingValue(displayConfigValues[field])) {
 				missing.push(field);
 			}
 		}
@@ -1768,10 +4468,11 @@ process.stdout.write(JSON.stringify({
 				env: Boolean(env.trim()),
 				config: Boolean(configText.trim()),
 			},
+			envProtection: envSecretProtectionMetadata(envValues),
 			source: "remote",
 			values: {
-				...envValues,
-				...configValues,
+				...displayEnvValues(envValues),
+				...displayConfigValues,
 			},
 			missing,
 		};
@@ -1787,50 +4488,59 @@ process.stdout.write(JSON.stringify({
 		const paths = this.getPaths();
 		ensureDir(paths.configDir);
 
+		const rawEnv = this.readLocalEnvValues();
+		const keyInfo = this.ensureLocalSecretsKey(rawEnv);
+		const protectedEnv = this.buildProtectedEnvValues(values, rawEnv, keyInfo);
 		const current = this.readLocalConfiguration().values;
 		const merged = {
 			...current,
 			...values,
 		};
-
-		const envLines = ENV_FIELDS.map(field => `${field}=${formatEnvValue(merged[field])}`);
-		const configValues = {
-			// Keep these explicit so saved config only contains supported fields.
-			botOwner: merged.botOwner || "",
-			guildId: merged.guildId || "",
-			twitchCron: merged.twitchCron || CONFIG_DEFAULTS.twitchCron,
-			kickCron: merged.kickCron || CONFIG_DEFAULTS.kickCron,
-			birthdayCron: merged.birthdayCron || CONFIG_DEFAULTS.birthdayCron,
-			statusCron: merged.statusCron || CONFIG_DEFAULTS.statusCron,
-			authCron: merged.authCron || CONFIG_DEFAULTS.authCron,
+		const mergedEnv = {
+			...rawEnv,
+			...protectedEnv,
 		};
+
+		const envLines = buildEnvLines(mergedEnv, rawEnv);
+		const configValues = buildConfigValuesForSave(merged);
 
 		fs.writeFileSync(paths.env, `${envLines.join("\n")}\n`, "utf8");
 		fs.writeFileSync(paths.configJson, `${JSON.stringify(configValues, null, "\t")}\n`, "utf8");
-		this.log("Configuration saved.");
+		this.log(`Configuration saved. .env values are encrypted with ${displayPath(keyInfo.keyFilePath) || "a direct key"}.`);
 		return this.readLocalConfiguration();
 	}
 
 	async writeRemoteConfiguration(values) {
-		const current = (await this.readRemoteConfiguration()).values;
+		const [blankEnvText, rawEnvText, blankConfigText, configText] = await Promise.all([
+			this.readRemoteText("blank.env"),
+			this.readRemoteText(".env"),
+			this.readRemoteText("config/blank.json"),
+			this.readRemoteText("config/config.json"),
+		]);
+		const rawEnv = {
+			...parseDotEnvContent(blankEnvText),
+			...parseDotEnvContent(rawEnvText),
+		};
+		const currentConfig = {
+			...parseJsonText(blankConfigText, {}),
+			...parseJsonText(configText, {}),
+		};
+		const keyInfo = await this.ensureRemoteSecretsKey(rawEnv);
+		const protectedEnv = this.buildProtectedEnvValues(values, rawEnv, keyInfo);
 		const merged = {
-			...current,
+			...currentConfig,
 			...values,
 		};
-		const envLines = ENV_FIELDS.map(field => `${field}=${formatEnvValue(merged[field])}`);
-		const configValues = {
-			botOwner: merged.botOwner || "",
-			guildId: merged.guildId || "",
-			twitchCron: merged.twitchCron || CONFIG_DEFAULTS.twitchCron,
-			kickCron: merged.kickCron || CONFIG_DEFAULTS.kickCron,
-			birthdayCron: merged.birthdayCron || CONFIG_DEFAULTS.birthdayCron,
-			statusCron: merged.statusCron || CONFIG_DEFAULTS.statusCron,
-			authCron: merged.authCron || CONFIG_DEFAULTS.authCron,
+		const mergedEnv = {
+			...rawEnv,
+			...protectedEnv,
 		};
+		const envLines = buildEnvLines(mergedEnv, rawEnv);
+		const configValues = buildConfigValuesForSave(merged);
 
 		await this.writeRemoteText(".env", `${envLines.join("\n")}\n`);
 		await this.writeRemoteText("config/config.json", `${JSON.stringify(configValues, null, "\t")}\n`);
-		this.log("Remote configuration saved.");
+		this.log(`Remote configuration saved. .env values are encrypted with ${keyInfo.keyFilePath || "a direct key"}.`);
 		return this.readRemoteConfiguration();
 	}
 
@@ -1953,6 +4663,12 @@ process.stdout.write(JSON.stringify({
 			allowFailure: true,
 			onLog: entry => this.logShell(entry),
 		});
+
+		if (!nodeVersionMeetsMinimum(nodeVersion.stdout)) {
+			const found = nodeVersion.stdout.trim() || "unknown";
+			throw new Error(`Node.js ${MIN_NODE_VERSION.label} or newer is required for Hachi dependencies. Found ${found}.`);
+		}
+
 		const npmVersion = await run("npm", ["--version"], {
 			allowFailure: true,
 			onLog: entry => this.logShell(entry),
@@ -2108,7 +4824,9 @@ process.stdout.write(JSON.stringify({
 			prerequisites.git = await this.ensureGit(repair);
 		}
 
-		if (!fileExists(paths.nodeModules)) {
+		const dependencyScan = this.quickScan();
+
+		if (!dependencyScan.hasNodeModules || !dependencyScan.dependenciesReady) {
 			await this.ensureNpmDependencies();
 		} else {
 			this.log("Hachi npm dependencies found.");
@@ -2116,6 +4834,12 @@ process.stdout.write(JSON.stringify({
 
 		if (repair) {
 			await this.ensurePm2(true);
+			await this.prepareSecretProtection();
+			const protectionSetup = await this.prepareDatabaseProtection();
+
+			if (protectionSetup.protection?.databaseFile?.status === "plaintext") {
+				await this.convertDatabaseEncryption();
+			}
 		}
 
 		let configOk = false;
@@ -2132,7 +4856,7 @@ process.stdout.write(JSON.stringify({
 		}
 
 		const scan = this.quickScan();
-		const ok = scan.projectFound && scan.hasNodeModules && configOk;
+		const ok = scan.projectFound && scan.hasNodeModules && scan.dependenciesReady && configOk;
 
 		return {
 			ok,
@@ -2158,11 +4882,43 @@ process.stdout.write(JSON.stringify({
 			};
 		}
 
-		if (repair && !scan.hasNodeModules) {
+		const nodeResult = await this.runRemoteHachiCommand("node --version", {
+			allowFailure: true,
+			timeoutMs: 30000,
+		});
+		const remoteNodeVersion = nodeResult.stdout.trim();
+
+		if (nodeResult.code !== 0 || !nodeVersionMeetsMinimum(remoteNodeVersion)) {
+			const message = `Remote Node.js ${MIN_NODE_VERSION.label} or newer is required for Hachi dependencies. Found ${remoteNodeVersion || "missing"}.`;
+
+			return {
+				ok: false,
+				message,
+				scan,
+				config: {
+					ok: false,
+					message,
+				},
+				prerequisites: {
+					node: remoteNodeVersion || "missing",
+				},
+			};
+		}
+
+		if (repair && (!scan.hasNodeModules || !scan.dependenciesReady)) {
 			this.log("Installing remote Hachi npm dependencies...");
 			await this.runRemoteHachiCommand("npm install", {
 				timeoutMs: 900000,
 			});
+		}
+
+		if (repair) {
+			await this.prepareSecretProtection();
+			const protectionSetup = await this.prepareDatabaseProtection();
+
+			if (protectionSetup.protection?.databaseFile?.status === "plaintext") {
+				await this.convertDatabaseEncryption();
+			}
 		}
 
 		const configResult = await this.runRemoteHachiCommand(`node -e ${quotePosix("require('./config/configCheck.js')")}`, {
@@ -2171,7 +4927,7 @@ process.stdout.write(JSON.stringify({
 		});
 		const refreshedScan = await this.remoteQuickScan();
 		const configOk = configResult.code === 0;
-		const ok = refreshedScan.projectFound && refreshedScan.hasNodeModules && configOk;
+		const ok = refreshedScan.projectFound && refreshedScan.hasNodeModules && refreshedScan.dependenciesReady && configOk;
 
 		return {
 			ok,

@@ -1,3 +1,7 @@
+// Stored member birthdays.
+//
+// Rows are scoped per guild so the same Discord user can have different birthday
+// visibility/settings across servers.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`birthdayUsers`, {
 		id: {

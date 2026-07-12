@@ -177,35 +177,53 @@
 							<div class="form-grid">
 								<label class="field wide">
 									<span>Discord bot token</span>
-									<input name="TOKEN" type="password" autocomplete="off">
+									<div class="secret-field-row">
+										<input name="TOKEN" type="password" autocomplete="off">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="TOKEN" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
 									<span>Discord client ID</span>
-									<input name="clientId" type="text" inputmode="numeric">
+									<div class="secret-field-row">
+										<input name="clientId" type="text" inputmode="numeric">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="clientId" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
-									<span>Guild ID</span>
-									<input name="guildId" type="text" inputmode="numeric">
+									<span>Guild IDs</span>
+									<input name="guildIds" type="text" inputmode="numeric" placeholder="One or more IDs">
 								</label>
 								<label class="field">
-									<span>Bot owner ID</span>
-									<input name="botOwner" type="text" inputmode="numeric">
+									<span>Bot owner IDs</span>
+									<input name="botOwners" type="text" inputmode="numeric" placeholder="One or more IDs">
 								</label>
 								<label class="field">
 									<span>Twitch client ID</span>
-									<input name="twitchClientId" type="text">
+									<div class="secret-field-row">
+										<input name="twitchClientId" type="text">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="twitchClientId" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
 									<span>Twitch secret</span>
-									<input name="twitchSecret" type="password" autocomplete="off">
+									<div class="secret-field-row">
+										<input name="twitchSecret" type="password" autocomplete="off">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="twitchSecret" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
 									<span>Kick client ID</span>
-									<input name="kickClientId" type="text">
+									<div class="secret-field-row">
+										<input name="kickClientId" type="text">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="kickClientId" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
 									<span>Kick secret</span>
-									<input name="kickSecret" type="password" autocomplete="off">
+									<div class="secret-field-row">
+										<input name="kickSecret" type="password" autocomplete="off">
+										<button class="button secondary compact" type="button" data-action="copy-secret" data-secret-field="kickSecret" disabled>Copy</button>
+									</div>
 								</label>
 								<label class="field">
 									<span>Twitch cron</span>
@@ -385,6 +403,57 @@
 							<button class="button danger" type="button" data-action="force-migrate-database" id="forceMigrateDatabaseButton" disabled>Force Migrate</button>
 							<button class="button primary" type="button" data-action="sanitize-database">Sanitize</button>
 						</div>
+					</div>
+
+					<div class="panel database-protection-panel">
+						<div class="database-protection-header">
+							<div>
+								<h2>Protection</h2>
+								<div class="panel-meta" id="databaseProtectionMeta">Protection status loading...</div>
+							</div>
+							<div class="button-row">
+								<button class="button primary" type="button" data-action="generate-database-key" id="databaseKeyActionButton">Generate Key</button>
+								<button class="button secondary" type="button" data-action="export-database-key-backup" id="exportDatabaseKeyBackupButton">Export Key Backup</button>
+								<button class="button secondary" type="button" data-action="rotate-database-backups" id="rotateDatabaseBackupsButton">Rotate Backups</button>
+								<button class="button info" type="button" data-action="verify-database-protection">Verify</button>
+							</div>
+						</div>
+						<div class="database-protection-status">
+							<span class="dot" id="databaseProtectionDot"></span>
+							<span id="databaseProtectionStatus">Checking</span>
+							<span id="databaseProtectionDetail">No protection state loaded.</span>
+						</div>
+						<dl class="detail-list database-protection-details">
+							<div>
+								<dt>Key File</dt>
+								<dd id="databaseProtectionKeyFile">Not configured</dd>
+							</div>
+							<div>
+								<dt>Default</dt>
+								<dd id="databaseProtectionRecommendedPath">Resolving</dd>
+							</div>
+							<div>
+								<dt>Database</dt>
+								<dd id="databaseProtectionDatabaseFile">Checking</dd>
+							</div>
+							<div>
+								<dt>Driver</dt>
+								<dd id="databaseProtectionDriver">Checking</dd>
+							</div>
+							<div>
+								<dt>Cipher Test</dt>
+								<dd id="databaseProtectionCipherTest">Not run</dd>
+							</div>
+							<div>
+								<dt>Runtime</dt>
+								<dd id="databaseProtectionRuntime">Checking</dd>
+							</div>
+							<div>
+								<dt>Checked</dt>
+								<dd id="databaseProtectionChecked">Not checked</dd>
+							</div>
+						</dl>
+						<div class="update-message" id="databaseProtectionMessage"></div>
 					</div>
 
 					<div class="database-grid">

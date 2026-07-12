@@ -1,3 +1,8 @@
+// Twitch role-sync feature.
+//
+// This module owns Twitch device-code authorization, broadcaster/member token
+// validation, VIP/moderator role mappings, and synchronization from Twitch state
+// to Discord roles.
 const { PermissionFlagsBits } = require(`discord.js`);
 const { URL, URLSearchParams } = require(`node:url`);
 const {

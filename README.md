@@ -4,7 +4,8 @@ Hachi is a Discord bot for Twitch and Kick live notifications. It can post when 
 
 Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager available from GitHub Releases or built from the `manager/` source.
 
-Release history is available in the [Changelog](CHANGELOG.md).
+Release history is available in the [Changelog](CHANGELOG.md). User-facing release notes are available in [Patch Notes](docs/patch-notes.md).
+Developer architecture notes are available in the [Developer Guide](docs/developer-guide.md).
 
 ## What Hachi Does
 
@@ -83,12 +84,12 @@ The Setup page in HachiGen writes the files Hachi needs. These values are requir
 			<td>Discord application/client ID used when deploying slash commands.</td>
 		</tr>
 		<tr>
-			<td><code>botOwner</code></td>
-			<td>Discord user ID for owner-only commands.</td>
+			<td><code>botOwners</code></td>
+			<td>Array of Discord user IDs allowed to use owner-only commands. Older <code>botOwner</code> configs are still accepted.</td>
 		</tr>
 		<tr>
-			<td><code>guildId</code></td>
-			<td>Discord server ID used for private guild commands and faster command testing.</td>
+			<td><code>guildIds</code></td>
+			<td>Array of Discord server IDs used for private guild commands and faster command testing. Older <code>guildId</code> configs are still accepted.</td>
 		</tr>
 		<tr>
 			<td><code>twitchClientId</code></td>
@@ -192,7 +193,7 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Utilities | `/uptime` | Reply with the current bot uptime. |
 | Admin | `/restart` | Owner-only bot restart command. Hidden from `/help`. |
 
-Global command updates can take time to appear in Discord. Guild commands are deployed only to the server matched by `guildId`, and usually appear much faster for testing.
+Global command updates can take time to appear in Discord. Guild commands are deployed to every server listed in `guildIds`, and usually appear much faster for testing.
 
 ## Command Details
 
@@ -216,6 +217,7 @@ Use `/setup` to open the setup hub. The hub routes to:
 - Stream Notifications
 - Security Reporting
 - Raid Protection
+- Hachi Updates
 
 Buttons do not literally invoke slash commands in Discord, but they route to the same panels used by `/stream setup`, `/security setup`, and `/raid setup`.
 
@@ -392,6 +394,10 @@ Before applying updates, HachiGen also backs up local runtime files such as `.en
 
 HachiGen's Database page can show read-only table data, sort columns by clicking table headers, create dated SQLite backups, restore a selected backup with confirmation, and review the current database for schema or data issues.
 
+Database backups are copied from the current database file. When the database is encrypted, normal backups are encrypted too. HachiGen writes a sidecar metadata file beside each backup (`.sqlite.meta.json`) with a non-secret key fingerprint so the Database page can show whether a backup matches the current key, an older key, plaintext, or an unknown key.
+
+Rotating the database key can also rotate existing backups while HachiGen still has both the old and new keys in memory. The separate Rotate Backups action encrypts plaintext backups and verifies or tags backups that already use the current key. Backups that require an older lost key cannot be rekeyed or restored.
+
 Sanitize validates the database schema, checks SQLite integrity, and shows a review popup before making changes. Any selected cleanup creates a safety backup first.
 
 The Dashboard also shows database schema status. If Hachi finds a schema mismatch, the Database page enables Migrate. Safe migration creates a backup first and stops if destructive changes would be required. Force Migrate is intentionally red because it can drop extra columns while reshaping the database to the current Hachi schema.
@@ -415,8 +421,8 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 ## Troubleshooting
 
 - If Discord global commands do not appear immediately, wait a while. Global command updates can take time to propagate.
-- If guild commands do not appear, confirm `guildId` is the Discord server where you are testing and run Deploy Commands again.
-- If HachiGen reports missing Node.js tooling, install Node.js 18.18.0 or newer. npm is included with Node.js and may be needed while HachiGen installs package dependencies.
+- If guild commands do not appear, confirm `guildIds` includes the Discord server where you are testing and run Deploy Commands again.
+- If HachiGen reports missing Node.js tooling, install Node.js 20.17.0 or newer. npm is included with Node.js and may be needed while HachiGen installs package dependencies.
 - If an executable icon looks stale after a rebuild, close File Explorer windows pointed at the folder or restart Windows Explorer. Windows caches icon previews aggressively.
 - If PM2 status looks stale, use Refresh in HachiGen and check the Logs page for command output.
 

@@ -1,6 +1,17 @@
+// Database schema audit and migration helpers.
+//
+// HachiGen uses this file to inspect existing SQLite/SQLCipher databases, compare
+// tables/columns/indexes against expected schema, and apply safe compatibility
+// migrations with backups.
 const fs = require(`node:fs`);
 const path = require(`node:path`);
-const sqlite3 = require(`sqlite3`).verbose();
+const {
+	closeDatabase,
+	all,
+	exec,
+	get,
+	openToolDatabase,
+} = require(`./dbToolConnection.js`);
 
 // dbAudit.js is the single database schema audit/migration entry point.
 // It can be run by a person from the console and by HachiGen through --json.
@@ -24,6 +35,8 @@ const EXPECTED_SCHEMA = [
 			column(`affiliateRoleId`, `VARCHAR(255)`, { nullable: true }),
 			column(`commandMonitoringEnabled`, `TINYINT(1)`, { defaultValue: `0` }),
 			column(`commandMonitoringChannelId`, `VARCHAR(255)`, { nullable: true }),
+			column(`hachiAnnouncementChannelId`, `VARCHAR(255)`, { nullable: true }),
+			column(`hachiAnnouncementLastId`, `VARCHAR(255)`, { nullable: true }),
 		],
 		indexes: [],
 	},
@@ -324,67 +337,10 @@ function quoteIdentifier(value) {
 }
 
 function openDatabase(dbPath = DB_PATH) {
-	return new Promise((resolve, reject) => {
-		const db = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE, error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(db);
-		});
-	});
-}
-
-function closeDatabase(db) {
-	return new Promise((resolve, reject) => {
-		db.close(error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve();
-		});
-	});
-}
-
-function all(db, sql, params = []) {
-	return new Promise((resolve, reject) => {
-		db.all(sql, params, (error, rows) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(rows || []);
-		});
-	});
-}
-
-function get(db, sql, params = []) {
-	return new Promise((resolve, reject) => {
-		db.get(sql, params, (error, row) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(row || null);
-		});
-	});
-}
-
-function exec(db, sql) {
-	return new Promise((resolve, reject) => {
-		db.exec(sql, error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve();
-		});
+	return openToolDatabase({
+		dbPath,
+		readonly: false,
+		root: process.cwd(),
 	});
 }
 
@@ -1089,8 +1045,8 @@ function humanIssueList(title, issues) {
 
 function printHumanResult(result) {
 	const lines = [
-		`Database audit: ${result.label}`,
-		result.detail,
+		`Database audit: ${result.label || (result.ok === false ? `Failed` : `Complete`)}`,
+		result.detail || result.error,
 		...humanIssueList(`Safe migration issues`, result.safeIssues || []),
 		...humanIssueList(`Force migration issues`, result.forceIssues || []),
 		...humanIssueList(`Compatible drift`, result.driftIssues || []),

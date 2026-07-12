@@ -1,3 +1,7 @@
+// Guild-only /time command.
+//
+// Simple utility for confirming command execution and displaying current runtime
+// time from the bot process.
 const { SlashCommandBuilder } = require(`discord.js`);
 
 module.exports = {

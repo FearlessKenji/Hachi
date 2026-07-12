@@ -1,3 +1,8 @@
+// Twitch channel lookup API client.
+//
+// VoD/offline updates sometimes need the broadcaster ID for a configured login.
+// This helper resolves a Twitch login into channel metadata with consistent
+// logging around API failures.
 const { warn, error } = require(`../utils/writeLog.js`);
 
 async function getChannel(channelName, clientID, authKey) {

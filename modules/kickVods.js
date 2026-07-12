@@ -1,3 +1,7 @@
+// Kick VoD lookup helper.
+//
+// After a Kick stream ends, Hachi asks Kick for the most recent video so it can
+// update the prior live notification with a replay link when one is available.
 const { error } = require(`../utils/writeLog.js`);
 
 async function getLatest(channelName) {

@@ -1,3 +1,7 @@
+// Cron job factory.
+//
+// The ready event calls this once with the Discord client. Each CronJob then
+// invokes the feature module it owns on the schedule from config/config.json.
 const { CronJob } = require(`cron`);
 const { getKick } = require(`../modules/getKick.js`);
 const { getTwitch } = require(`../modules/getTwitch.js`);

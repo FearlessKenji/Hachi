@@ -1,3 +1,7 @@
+// Named database migration entry points.
+//
+// This file stays intentionally small: migration implementation lives in
+// dbAudit.js, while this module gives scripts or future tooling a stable import.
 const { applyMigration } = require(`./dbAudit.js`);
 
 // Compatibility wrapper for older imports. Database migration is now audit-based

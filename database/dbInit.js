@@ -1,3 +1,8 @@
+// Database startup initialization.
+//
+// The ready event calls dbInit() after config validation has selected the correct
+// SQLite/SQLCipher runtime. Syncing here ensures tables exist before cron jobs or
+// commands query them.
 const { sequelize } = require(`./dbObjects.js`);
 const { auditDatabaseStartup } = require(`./dbAudit.js`);
 const { info } = require(`../utils/writeLog.js`);

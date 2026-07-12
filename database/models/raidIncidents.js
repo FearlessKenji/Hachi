@@ -1,3 +1,7 @@
+// Raid incident summary.
+//
+// A row is created when the raid detector decides a join spike crossed the
+// configured threshold. Child rows store users, messages, and evidence files.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`raidIncidents`, {
 		id: {

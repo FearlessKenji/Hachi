@@ -1,3 +1,7 @@
+// Color parsing and named color helpers.
+//
+// Several setup commands accept embed colors. This utility normalizes named
+// colors, hex strings, and defaults into Discord integer color values.
 const DEFAULT_RULES_COLOR = 0xff0000;
 
 const NAMED_COLORS = new Map([

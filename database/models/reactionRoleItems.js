@@ -1,3 +1,7 @@
+// One emoji-to-role mapping inside a reaction-role panel.
+//
+// Reaction events use these rows to know which Discord role should be granted or
+// removed for a given emoji on a panel message.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`reactionRoleItems`, {
 		id: {

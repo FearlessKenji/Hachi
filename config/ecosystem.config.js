@@ -1,3 +1,6 @@
+// PM2 process definition used by HachiGen when starting/restarting Hachi.
+// The process name must match manager/src/manager.js PROCESS_NAME so HachiGen
+// can find the same runtime in PM2 status, logs, stop, and restart actions.
 module.exports = {
 	apps: [
 		{

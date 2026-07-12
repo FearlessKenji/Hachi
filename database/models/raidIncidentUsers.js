@@ -1,3 +1,7 @@
+// Member captured as part of a raid incident.
+//
+// This lets reports list who joined during the detection window and what action
+// Hachi attempted for each member.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`raidIncidentUsers`, {
 		id: {

@@ -1,3 +1,8 @@
+// Discord ready event.
+//
+// This is the first point where Hachi has a connected Discord client. It
+// initializes database state, reconciles guild rows, starts cron jobs, and sets
+// the visible bot presence.
 const { Events, ActivityType } = require(`discord.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 const { dbInit } = require(`../database/dbInit.js`);

@@ -1,3 +1,7 @@
+// Reaction add event.
+//
+// This powers reaction roles and rules verification. The handler must ignore bot
+// reactions and partial objects where needed, then delegate to feature helpers.
 const { Events } = require(`discord.js`);
 const { handleReactionRoleReaction } = require(`../utils/reactionRoles.js`);
 const { handleRulesVerificationReaction } = require(`../utils/rulesVerification.js`);

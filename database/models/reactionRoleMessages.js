@@ -1,4 +1,9 @@
 
+// Reaction-role panel message record.
+//
+// The panel row owns one or more ReactionRoleItems and points at the Discord
+// message/channel that users react to.
+
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`reactionRoleMessages`, {
 		id: {

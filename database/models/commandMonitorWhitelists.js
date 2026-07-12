@@ -1,3 +1,7 @@
+// Security command-monitor whitelist entry.
+//
+// The security feature reports public app-command responses unless the app or
+// channel appears in this allow-list.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`commandMonitorWhitelists`, {
 		id: {

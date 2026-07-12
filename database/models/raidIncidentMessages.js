@@ -1,3 +1,7 @@
+// Message evidence linked to a raid incident.
+//
+// Raid reports can include suspicious message content around the incident window
+// without storing unrelated channel history.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`raidIncidentMessages`, {
 		id: {

@@ -1,3 +1,7 @@
+// Per-server birthday announcement configuration.
+//
+// This stores where birthday reminders/day-of messages go and which timezone/hour
+// should be used when the birthday cron checks due posts.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`birthdayConfigs`, {
 		guildId: {

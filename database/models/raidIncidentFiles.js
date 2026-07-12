@@ -1,3 +1,7 @@
+// File/evidence artifact linked to a raid incident.
+//
+// These rows track generated evidence attachments so moderators can repost or
+// review incident material later.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`raidIncidentFiles`, {
 		id: {

@@ -1,3 +1,8 @@
+// Rules verification reaction handler.
+//
+// Rules panels grant a configured role when a user reacts to the verification
+// message. The command creates the panel; this helper performs the event-time
+// lookup and role grant.
 const { RulesVerificationMessages } = require(`../database/dbObjects.js`);
 const { roleIsAssignable } = require(`./reactionRoles.js`);
 

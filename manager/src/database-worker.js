@@ -1,8 +1,9 @@
+// External Node worker for HachiGen database inspection and cleanup.
 const path = require("node:path");
 const { createRequire } = require("node:module");
 
 // This worker is run by the user's normal Node.js process, not Electron.
-// That matters because sqlite3 is a native dependency installed for Node.js.
+// That matters because database native dependencies are installed for Node.js.
 // HachiGen starts this file as a child process and reads one JSON result from
 // stdout. Keeping database work here avoids native-module problems in Electron.
 
@@ -348,17 +349,19 @@ function quoteIdentifier(value) {
 	return `"${String(value).replace(/"/g, "\"\"")}"`;
 }
 
-function loadSqlite3(root) {
-	// sqlite3 is installed in the Hachi root project, not inside HachiGen.
-	// createRequire lets this worker load the dependency from that root package.
+function createRootRequire(root) {
 	const rootRequire = createRequire(path.join(path.resolve(root || "."), "package.json"));
-	return rootRequire("sqlite3").verbose();
+	return rootRequire;
+}
+
+function loadToolConnection(root) {
+	return createRootRequire(root)("./database/dbToolConnection.js");
 }
 
 function loadExpectedSchema(root) {
 	// Use database/dbAudit.js as the schema source of truth. HachiGen only needs
 	// table order and column names for its viewer/sanitize review.
-	const rootRequire = createRequire(path.join(path.resolve(root || "."), "package.json"));
+	const rootRequire = createRootRequire(root);
 	const { EXPECTED_SCHEMA } = rootRequire("./database/dbAudit.js");
 
 	return Object.fromEntries(EXPECTED_SCHEMA.map(tableSpec => [
@@ -367,75 +370,33 @@ function loadExpectedSchema(root) {
 	]));
 }
 
-function openDatabase(sqlite3, dbPath, mode = sqlite3.OPEN_READWRITE) {
-	// The sqlite3 package uses callbacks, so helpers below wrap those callbacks
-	// in Promises. That lets the review/cleanup flow read top-to-bottom.
-	return new Promise((resolve, reject) => {
-		const db = new sqlite3.Database(dbPath, mode, error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(db);
-		});
+function openDatabase(root, dbPath, readonly = false) {
+	const { openToolDatabase } = loadToolConnection(root);
+	return openToolDatabase({
+		dbPath,
+		readonly,
+		root: path.resolve(root || "."),
 	});
 }
 
 function all(db, sql, params = []) {
 	// Run a SELECT query that returns many rows.
-	return new Promise((resolve, reject) => {
-		db.all(sql, params, (error, rows) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(rows || []);
-		});
-	});
+	return db.all(sql, params);
 }
 
 function get(db, sql, params = []) {
 	// Run a SELECT query that returns a single row.
-	return new Promise((resolve, reject) => {
-		db.get(sql, params, (error, row) => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve(row || null);
-		});
-	});
+	return db.get(sql, params);
 }
 
 function exec(db, sql) {
 	// Run SQL that does not need returned rows, including multi-statement fixes.
-	return new Promise((resolve, reject) => {
-		db.exec(sql, error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve();
-		});
-	});
+	return db.exec(sql);
 }
 
 function closeDatabase(db) {
 	// Always close SQLite cleanly so Windows releases the database file handle.
-	return new Promise((resolve, reject) => {
-		db.close(error => {
-			if (error) {
-				reject(error);
-				return;
-			}
-
-			resolve();
-		});
-	});
+	return db.close();
 }
 
 async function countRows(db, sql) {
@@ -811,10 +772,8 @@ async function main() {
 	// manager.js passes one JSON argument with action, dbPath, root, and optional
 	// actionIds. All success and failure responses are returned through output().
 	const request = JSON.parse(process.argv[2] || "{}");
-	const sqlite3 = loadSqlite3(request.root);
 	const expectedSchema = loadExpectedSchema(request.root);
-	const openMode = request.action === "view" ? sqlite3.OPEN_READONLY : sqlite3.OPEN_READWRITE;
-	const db = await openDatabase(sqlite3, request.dbPath, openMode);
+	const db = await openDatabase(request.root, request.dbPath, request.action === "view");
 
 	try {
 		if (request.action === "checkpoint") {
