@@ -271,7 +271,10 @@ class HachiGenLogger {
 
 	normalizeEvent({ type = "log", message = "", details = {}, time = new Date().toISOString() } = {}) {
 		const sanitizedDetails = sanitizeLogValue(details) || {};
+		const uiVisible = sanitizedDetails.uiVisible !== false;
 		const normalizedType = type === "error" || type === "shell" ? type : "log";
+
+		delete sanitizedDetails.uiVisible;
 
 		return {
 			area: normalizeArea(normalizedType, sanitizedDetails),
@@ -280,6 +283,7 @@ class HachiGenLogger {
 			message: redactHachiGenLogText(message),
 			time,
 			type: normalizedType,
+			uiVisible,
 		};
 	}
 
@@ -326,7 +330,7 @@ class HachiGenLogger {
 		}
 	}
 
-	readRecentEvents(limit = 160) {
+	readRecentEvents(limit = 160, { includeHidden = false } = {}) {
 		try {
 			const structuredPath = this.getLogPaths().structured;
 
@@ -337,7 +341,6 @@ class HachiGenLogger {
 			return fs.readFileSync(structuredPath, "utf8")
 				.split(/\r?\n/u)
 				.filter(Boolean)
-				.slice(-limit)
 				.map(line => {
 					try {
 						return JSON.parse(line);
@@ -345,7 +348,9 @@ class HachiGenLogger {
 						return null;
 					}
 				})
-				.filter(Boolean);
+				.filter(Boolean)
+				.filter(event => includeHidden || event.uiVisible !== false)
+				.slice(-limit);
 		} catch {
 			return [];
 		}

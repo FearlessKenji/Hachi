@@ -74,7 +74,7 @@ function spawnTarget(command, args) {
 
 // Forward command output into the HachiGen activity stream line by line. This
 // keeps long installs readable and lets the UI update while the process runs.
-function emitOutput(onLog, stream, chunk) {
+function emitOutput(onLog, stream, chunk, context = {}) {
 	if (!onLog) {
 		return;
 	}
@@ -83,7 +83,7 @@ function emitOutput(onLog, stream, chunk) {
 
 	for (const line of lines) {
 		if (line.trim()) {
-			onLog({ stream, message: line });
+			onLog({ ...context, stream, message: line });
 		}
 	}
 }
@@ -100,8 +100,14 @@ function run(command, args = [], options = {}) {
 		onLog,
 	} = options;
 
+	const logContext = {
+		args,
+		command,
+		displayCommand: displayCommand(command, args),
+	};
+
 	if (onLog) {
-		onLog({ stream: "command", message: `> ${displayCommand(command, args)}` });
+		onLog({ ...logContext, stream: "command", message: `> ${logContext.displayCommand}` });
 	}
 
 	return new Promise((resolve, reject) => {
@@ -131,12 +137,12 @@ function run(command, args = [], options = {}) {
 
 		child.stdout.on("data", chunk => {
 			stdout += chunk;
-			emitOutput(onLog, "stdout", chunk);
+			emitOutput(onLog, "stdout", chunk, logContext);
 		});
 
 		child.stderr.on("data", chunk => {
 			stderr += chunk;
-			emitOutput(onLog, "stderr", chunk);
+			emitOutput(onLog, "stderr", chunk, logContext);
 		});
 
 		child.on("error", error => {

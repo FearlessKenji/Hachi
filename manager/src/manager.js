@@ -1141,6 +1141,30 @@ function sanitizeShellLogEntry(entry) {
 	};
 }
 
+function shouldShowShellEntryInUi(entry) {
+	if (entry.stream === "command") {
+		return false;
+	}
+
+	const command = String(entry.command || "").toLowerCase();
+	const args = Array.isArray(entry.args) ? entry.args.map(arg => String(arg)) : [];
+	const firstArg = args[0] || "";
+
+	if (command === "git") {
+		return false;
+	}
+
+	if ((command === "node" || command === "npm") && ["--version", "-v", "version"].includes(firstArg)) {
+		return false;
+	}
+
+	if (["where", "which"].includes(command)) {
+		return false;
+	}
+
+	return true;
+}
+
 class HachiManager {
 	constructor({ managerRoot, defaultInstallPath, userDataPath, sendEvent }) {
 		// managerRoot is the manager folder in development and the bundled app
@@ -1218,7 +1242,9 @@ class HachiManager {
 			this.operationLog.shift();
 		}
 
-		this.sendEvent(event);
+		if (event.uiVisible !== false) {
+			this.sendEvent(event);
+		}
 	}
 
 	log(message, details = {}) {
@@ -1261,6 +1287,7 @@ class HachiManager {
 		this.event("shell", sanitized.message, {
 			area: "shell",
 			stream: sanitized.stream,
+			uiVisible: shouldShowShellEntryInUi(sanitized),
 		});
 	}
 
@@ -5375,6 +5402,7 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 
 		const backup = await this.backupBeforeUpdate();
 		this.log(`Backed up ${this.getRuntimeTarget()} config before update: ${backup.backupDir}`);
+		this.log(`Applying ${this.getRuntimeTarget()} update from ${UPDATE_TARGET}...`);
 		await this.runGit(["merge", "--ff-only", UPDATE_TARGET], {
 			timeoutMs: 300000,
 		});
