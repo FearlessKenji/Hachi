@@ -13,6 +13,12 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ### HachiGen
 
+- HachiGen now has a focused application menu for safe navigation, diagnostics,
+  documentation links, and version update checks.
+- The Updates page now separates Hachi bot updates from HachiGen updates, with
+  controls for checking and installing the latest HachiGen release.
+- The Database viewer now refreshes after sanitation and database maintenance so
+  old table rows do not remain on screen.
 - Sidebar navigation stays available while HachiGen is running manager actions.
 - Routine state refreshes no longer crowd the HachiGen log with repeated Git
   branch, remote, and stash checks.

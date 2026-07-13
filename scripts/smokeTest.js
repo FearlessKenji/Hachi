@@ -494,6 +494,73 @@ function validateProjectFiles() {
 	assert(releaseWorkflow.includes(`gh release upload`) && releaseWorkflow.includes(`gh release create`), `HachiGen release workflow should create or update releases.`);
 }
 
+function validateDatabaseViewerRefreshWiring() {
+	const source = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
+
+	assert(source.includes(`function refreshCurrentDatabaseViewer()`), `HachiGen renderer is missing the database viewer refresh helper.`);
+	assert(
+		/if \(action === "sanitize-database"\)[\s\S]*renderSanitizeModal\(result\);[\s\S]*refreshCurrentDatabaseViewer\(\);[\s\S]*return;/u.test(source),
+		`Sanitation review should refresh the database viewer cache after loading current findings.`,
+	);
+	assert(
+		/if \(action === "apply-sanitize"\)[\s\S]*api\.applyDatabaseSanitation\(actionIds\)[\s\S]*refreshCurrentDatabaseViewer\(\);[\s\S]*return;/u.test(source),
+		`Sanitation cleanup should refresh the database viewer cache after changing rows.`,
+	);
+	assert(
+		/const result = await runAction\("Restore database"[\s\S]*refreshCurrentDatabaseViewer\(\);/u.test(source),
+		`Database restore should refresh the database viewer cache after replacing the file.`,
+	);
+	assert(
+		/runAction\(force \? "Force migrate database"[\s\S]*refreshCurrentDatabaseViewer\(\);/u.test(source),
+		`Database migration should refresh the database viewer cache after schema changes.`,
+	);
+}
+
+function validateHachiGenMenuWiring() {
+	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
+	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
+	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+
+	assert(mainSource.includes(`Menu.setApplicationMenu(buildApplicationMenu())`), `HachiGen should install a custom application menu.`);
+	assert(mainSource.includes(`label: "File"`), `HachiGen menu is missing File.`);
+	assert(mainSource.includes(`label: "Export HachiGen Logs"`), `HachiGen File menu should include log export.`);
+	assert(mainSource.includes(`label: "View"`), `HachiGen menu is missing View.`);
+	assert(mainSource.includes(`label: "Window"`), `HachiGen menu is missing Window.`);
+	assert(mainSource.includes(`label: "Help"`), `HachiGen menu is missing Help.`);
+	assert(!mainSource.includes(`label: "Edit"`), `HachiGen menu should not include an Edit menu.`);
+	assert(!mainSource.includes(`toggleDevTools`), `HachiGen View menu should not expose DevTools.`);
+	assert(!mainSource.includes(`resetZoom`) && !mainSource.includes(`zoomIn`) && !mainSource.includes(`zoomOut`), `HachiGen View menu should not expose zoom controls.`);
+	assert(mainSource.includes(`label: "Check for Updates"`) && mainSource.includes(`check-version-updates`), `Help menu should include Check for Updates.`);
+	assert(mainSource.includes(`manager:check-version-updates`), `Main process should handle version update checks.`);
+	assert(preloadSource.includes(`checkVersionUpdates`) && preloadSource.includes(`manager:check-version-updates`), `Preload should expose version update checks.`);
+	assert(preloadSource.includes(`onMenuAction`) && preloadSource.includes(`manager:menu-action`), `Preload should expose menu actions.`);
+	assert(rendererSource.includes(`function handleMenuAction`) && rendererSource.includes(`api.checkVersionUpdates()`), `Renderer should route menu update checks.`);
+	assert(rendererSource.includes(`function refreshCurrentView()`), `Renderer should route Refresh Current View.`);
+	assert(typeof HachiManager.prototype.checkVersionUpdates === `function`, `HachiManager is missing checkVersionUpdates().`);
+}
+
+function validateHachiGenSelfUpdateWiring() {
+	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
+	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
+	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
+	const indexSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `index.html`), `utf8`);
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+
+	assert(mainSource.includes(`manager:check-hachigen-updates`), `Main process should handle HachiGen update checks.`);
+	assert(mainSource.includes(`manager:install-hachigen-update`), `Main process should handle HachiGen self-update installation.`);
+	assert(mainSource.includes(`manager:open-hachigen-release`), `Main process should expose HachiGen release opening.`);
+	assert(mainSource.includes(`installHachiGenUpdate`) && mainSource.includes(`HachiGen.exe`), `Main process should install HachiGen.exe release assets.`);
+	assert(preloadSource.includes(`checkHachiGenUpdates`) && preloadSource.includes(`manager:check-hachigen-updates`), `Preload should expose HachiGen update checks.`);
+	assert(preloadSource.includes(`installHachiGenUpdate`) && preloadSource.includes(`manager:install-hachigen-update`), `Preload should expose HachiGen update installation.`);
+	assert(preloadSource.includes(`openHachiGenRelease`) && preloadSource.includes(`manager:open-hachigen-release`), `Preload should expose HachiGen release opening.`);
+	assert(indexSource.includes(`id="hachigenUpdateMeta"`) && indexSource.includes(`data-action="install-hachigen-update"`), `Updates page should include HachiGen update controls.`);
+	assert(rendererSource.includes(`function renderHachiGenUpdate`) && rendererSource.includes(`api.checkHachiGenUpdates()`), `Renderer should render and check HachiGen updates.`);
+	assert(rendererSource.includes(`api.installHachiGenUpdate()`) && rendererSource.includes(`api.openHachiGenRelease()`), `Renderer should install HachiGen updates and open releases.`);
+	assert(typeof HachiManager.prototype.checkHachiGenUpdates === `function`, `HachiManager is missing checkHachiGenUpdates().`);
+	assert(typeof HachiManager.prototype.downloadHachiGenUpdate === `function`, `HachiManager is missing downloadHachiGenUpdate().`);
+}
+
 function validateBlankConfig() {
 	const { CronTime } = require(`cron`);
 	const blankConfig = readJson(`config`, `blank.json`);
@@ -1333,6 +1400,9 @@ async function main() {
 
 	await test(`package metadata and lockfile are consistent`, validatePackageMetadata);
 	await test(`required project files exist`, validateProjectFiles);
+	await test(`HachiGen database actions refresh viewer cache`, validateDatabaseViewerRefreshWiring);
+	await test(`HachiGen application menu is wired`, validateHachiGenMenuWiring);
+	await test(`HachiGen self-update controls are wired`, validateHachiGenSelfUpdateWiring);
 	await test(`blank config cron fields are valid`, validateBlankConfig);
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);

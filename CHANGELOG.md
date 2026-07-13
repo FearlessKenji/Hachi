@@ -6,12 +6,18 @@ Notable changes to Hachi are documented here.
 
 ### Fixed
 
+- HachiGen now refreshes the Database viewer after sanitation review and database maintenance actions so stale table data does not look current.
 - Fixed encrypted SQLite runtime binding so Sequelize boolean/Date writes work with SQLCipher-backed databases.
 - HachiGen sidebar navigation now remains responsive while manager actions are running.
 - HachiGen state refreshes no longer flood the event log with routine Git metadata probes.
 - HachiGen now writes persistent daily manager logs under the app data folder, including raw, structured, pretty structured, and crash logs with automatic archive cleanup.
 - HachiGen's visible Logs panel now hides raw shell commands and Git plumbing while preserving the sanitized transcript in AppData logs.
 - HachiGen shell stderr output is labeled as a notice instead of an error unless a real manager error is recorded.
+
+### Added
+
+- Added a focused HachiGen application menu with File, View, Window, and Help actions, including a Help check that compares the current Hachi version with the repo version.
+- Added a HachiGen update panel for checking, opening, and installing the latest `HachiGen.exe` release separately from Hachi bot Git updates.
 
 ## v3.3.1 - 2026-07-12
 
