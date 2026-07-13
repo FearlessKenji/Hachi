@@ -12,16 +12,10 @@ const { error, warn } = require(`./writeLog.js`);
 
 const PATCH_NOTES_PATH = path.resolve(__dirname, `..`, `docs`, `patch-notes.md`);
 const ANNOUNCEMENT_MESSAGE_LIMIT = 1900;
+const RELEASE_HEADING_PATTERN = /^##\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/u;
 
 function normalizeNewlines(text) {
 	return String(text || ``).replace(/\r\n?/gu, `\n`).trim();
-}
-
-function slugify(value) {
-	return String(value || ``)
-		.toLowerCase()
-		.replace(/[^a-z0-9]+/gu, `-`)
-		.replace(/^-|-$/gu, ``);
 }
 
 function normalizeAnnouncementId(value) {
@@ -67,22 +61,23 @@ function readPatchNotesDocument(filePath = PATCH_NOTES_PATH) {
 function parseLatestPatchNotes(documentText) {
 	const text = normalizeNewlines(documentText);
 	const lines = text.split(`\n`);
-	const firstReleaseIndex = lines.findIndex(line => /^##\s+/u.test(line));
+	const firstReleaseIndex = lines.findIndex(line => RELEASE_HEADING_PATTERN.test(line));
 
 	if (firstReleaseIndex === -1) {
 		return null;
 	}
 
 	const nextReleaseIndex = lines.findIndex((line, index) => index > firstReleaseIndex && /^##\s+/u.test(line));
+	const releaseMatch = lines[firstReleaseIndex].match(RELEASE_HEADING_PATTERN);
 	const heading = lines[firstReleaseIndex].replace(/^##\s+/u, ``).trim();
 	const bodyLines = lines.slice(firstReleaseIndex + 1, nextReleaseIndex === -1 ? undefined : nextReleaseIndex);
 	const body = normalizeNewlines(bodyLines.join(`\n`));
-	const version = heading.match(/v?\d+\.\d+\.\d+/u)?.[0] || ``;
+	const version = releaseMatch?.[1] || ``;
 
 	return {
 		body,
 		heading,
-		id: version ? (version.startsWith(`v`) ? version : `v${version}`) : slugify(heading),
+		id: version.startsWith(`v`) ? version : `v${version}`,
 		version,
 	};
 }
@@ -316,6 +311,7 @@ module.exports = {
 	getAnnouncementSettings,
 	getLatestPatchNotes,
 	normalizeAnnouncementId,
+	parseLatestPatchNotes,
 	saveAnnouncementChannel,
 	sendLatestPatchNotesToGuild,
 	splitAnnouncementText,

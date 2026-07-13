@@ -929,6 +929,7 @@ function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
+	const { parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
@@ -949,6 +950,16 @@ function validatePureHelpers() {
 	assert(findKickVodUrl({
 		fields: [{ name: `Kick`, value: `[Watch VoD](https://kick.com/piratesoftware/videos/smoke_vod)` }],
 	}) === `https://kick.com/piratesoftware/videos/smoke_vod`, `Kick VoD URL detection failed.`);
+	const latestPatchNotes = parseLatestPatchNotes(`## Unreleased
+
+- Draft manager note.
+
+## v3.3.1 - 2026-07-12
+
+- Released note.
+`);
+	assert(latestPatchNotes?.id === `v3.3.1`, `Patch-note parser should skip Unreleased sections.`);
+	assert(!latestPatchNotes.body.includes(`Draft manager note`), `Patch-note parser included Unreleased content.`);
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 

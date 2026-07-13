@@ -4,7 +4,9 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
-No unreleased changes yet.
+### Fixed
+
+- HachiGen sidebar navigation now remains responsive while manager actions are running.
 
 ## v3.3.1 - 2026-07-12
 

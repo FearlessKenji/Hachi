@@ -4,6 +4,12 @@ These notes are written for server owners and moderators. They include changes
 that affect setup, security, day-to-day use, or visible bot behavior. For the
 full developer history, see `CHANGELOG.md`.
 
+## Unreleased
+
+### HachiGen
+
+- Sidebar navigation stays available while HachiGen is running manager actions.
+
 ## v3.3.1 - 2026-07-12
 
 ### Setup
