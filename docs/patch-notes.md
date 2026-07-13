@@ -2,7 +2,7 @@
 
 These notes are written for server owners and moderators. They include changes
 that affect setup, security, day-to-day use, or visible bot behavior. For the
-full developer history, see `CHANGELOG.md`.
+full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md).
 
 ## Unreleased
 
@@ -52,7 +52,7 @@ full developer history, see `CHANGELOG.md`.
 
 ### Configuration
 
-- `config/config.json` now supports multiple bot owner IDs and multiple guild IDs
+- Config files now support multiple bot owner IDs and multiple guild IDs
   through `botOwners` and `guildIds` arrays.
 - Older `botOwner` and `guildId` config files still work, but new saves from
   HachiGen write the plural array format.
