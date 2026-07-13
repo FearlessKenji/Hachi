@@ -416,6 +416,8 @@ Migration backups are stored under `database/backups/migrations/`, and Hachi kee
 
 HachiGen shows PM2 and HachiGen activity on the Logs page. The Clear PM2 and Clear HachiGen buttons only clear the visible log windows; they do not delete real logs.
 
+HachiGen writes its own daily manager logs under the app data folder, such as `%APPDATA%\HachiGen\logs\YYYY-MM-DD\` on Windows. These logs include raw, structured, pretty structured, and crash files. Older daily folders are archived and old archives are removed automatically.
+
 Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored by Git.
 
 ## Troubleshooting

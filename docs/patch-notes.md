@@ -9,6 +9,12 @@ full developer history, see `CHANGELOG.md`.
 ### HachiGen
 
 - Sidebar navigation stays available while HachiGen is running manager actions.
+- Routine state refreshes no longer crowd the HachiGen log with repeated Git
+  branch, remote, and stash checks.
+- HachiGen keeps daily manager logs in the app data folder, including crash logs
+  and automatic cleanup of older log archives.
+- Command output that tools send through stderr is now shown as a notice instead
+  of looking like a manager error when the action succeeded.
 
 ## v3.3.1 - 2026-07-12
 

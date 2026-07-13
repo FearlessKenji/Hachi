@@ -314,7 +314,7 @@ function eventLine(event) {
 	const time = event.time ? new Date(event.time).toLocaleTimeString() : new Date().toLocaleTimeString();
 	const streamLabels = {
 		command: "Command",
-		stderr: "Error",
+		stderr: "Notice",
 		stdout: "Output",
 	};
 	const typeLabels = {

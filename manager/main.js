@@ -276,6 +276,8 @@ app.whenReady().then(() => {
 		userDataPath: app.getPath("userData"),
 		sendEvent,
 	});
+	manager.startLogCleanup({ runImmediately: true });
+	manager.initCrashHandlers();
 
 	registerIpc();
 	createWindow();
@@ -286,6 +288,12 @@ app.whenReady().then(() => {
 			createWindow();
 		}
 	});
+});
+
+app.on("before-quit", () => {
+	if (manager) {
+		manager.stopLogCleanup();
+	}
 });
 
 app.on("window-all-closed", () => {
