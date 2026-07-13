@@ -55,8 +55,20 @@ function normalizeNamedParameters(params) {
 
 	return Object.fromEntries(Object.entries(params).map(([key, value]) => [
 		key.replace(/^[$:@]/u, ``),
-		value,
+		normalizeBindableValue(value),
 	]));
+}
+
+function normalizeBindableValue(value) {
+	if (typeof value === `boolean`) {
+		return value ? 1 : 0;
+	}
+
+	if (value instanceof Date) {
+		return value.toISOString();
+	}
+
+	return value;
 }
 
 function bindStatement(statement, method, params) {
@@ -67,7 +79,7 @@ function bindStatement(statement, method, params) {
 	}
 
 	if (Array.isArray(normalizedParams)) {
-		return statement[method](...normalizedParams);
+		return statement[method](...normalizedParams.map(normalizeBindableValue));
 	}
 
 	return statement[method](normalizedParams);

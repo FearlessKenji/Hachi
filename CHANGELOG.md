@@ -6,6 +6,7 @@ Notable changes to Hachi are documented here.
 
 ### Fixed
 
+- Fixed encrypted SQLite runtime binding so Sequelize boolean/Date writes work with SQLCipher-backed databases.
 - HachiGen sidebar navigation now remains responsive while manager actions are running.
 - HachiGen state refreshes no longer flood the event log with routine Git metadata probes.
 - HachiGen now writes persistent daily manager logs under the app data folder, including raw, structured, pretty structured, and crash logs with automatic archive cleanup.
