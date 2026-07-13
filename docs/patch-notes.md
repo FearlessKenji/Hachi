@@ -6,6 +6,11 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ## Unreleased
 
+### Reliability
+
+- Encrypted database writes now handle bot state updates correctly, including
+  Kick live-notification status changes.
+
 ### HachiGen
 
 - Sidebar navigation stays available while HachiGen is running manager actions.

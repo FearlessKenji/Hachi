@@ -958,6 +958,90 @@ function restoreEnvValue(key, value) {
 	process.env[key] = value;
 }
 
+function adapterRun(database, sql, params = []) {
+	return new Promise((resolve, reject) => {
+		database.run(sql, params, function onRun(error) {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve(this);
+		});
+	});
+}
+
+function adapterGet(database, sql, params = []) {
+	return new Promise((resolve, reject) => {
+		database.get(sql, params, (error, row) => {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve(row);
+		});
+	});
+}
+
+function adapterClose(database) {
+	return new Promise((resolve, reject) => {
+		database.close(error => {
+			if (error) {
+				reject(error);
+				return;
+			}
+
+			resolve();
+		});
+	});
+}
+
+async function validateSqlcipherAdapterBindNormalization() {
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const { databaseFileStatus } = requireFresh(`database`, `dbEncryption.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-adapter-bind-`));
+	const dbPath = path.join(tempDir, `adapter.sqlite`);
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	let database = null;
+
+	try {
+		const initialDate = new Date(`2026-07-13T12:00:00.000Z`);
+		const updatedDate = new Date(`2026-07-13T12:05:00.000Z`);
+		process.env.HACHI_DB_KEY = `smoke-adapter-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+
+		database = new dialectModule.Database(dbPath);
+		await adapterRun(database, `CREATE TABLE sample (id INTEGER PRIMARY KEY, isLive INTEGER NOT NULL, checkedAt TEXT, note TEXT)`);
+		await adapterRun(database, `INSERT INTO sample (isLive, checkedAt, note) VALUES ($isLive, :checkedAt, @note)`, {
+			$isLive: true,
+			':checkedAt': initialDate,
+			'@note': `named`,
+		});
+		await adapterRun(database, `UPDATE sample SET isLive = ?, checkedAt = ? WHERE note = ?`, [false, updatedDate, `named`]);
+		const row = await adapterGet(database, `SELECT isLive, checkedAt, note FROM sample WHERE note = $note`, { $note: `named` });
+
+		assert(row?.isLive === 0, `SQLCipher adapter did not normalize a boolean bind value.`);
+		assert(row?.checkedAt === updatedDate.toISOString(), `SQLCipher adapter did not normalize a Date bind value.`);
+		assert(row?.note === `named`, `SQLCipher adapter did not normalize named bind prefixes.`);
+		await adapterClose(database);
+		database = null;
+
+		const status = databaseFileStatus(dbPath);
+		assert(status.encryptedLikely, `SQLCipher adapter bind test database was created with a plain SQLite header.`);
+	} finally {
+		if (database) {
+			await adapterClose(database).catch(() => null);
+		}
+
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
+
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 async function validateEncryptedSequelizeRuntime() {
 	const Sequelize = require(`sequelize`);
 	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
@@ -984,11 +1068,21 @@ async function validateEncryptedSequelizeRuntime() {
 				allowNull: false,
 				type: Sequelize.STRING,
 			},
+			isLive: {
+				allowNull: false,
+				defaultValue: false,
+				type: Sequelize.BOOLEAN,
+			},
+			checkedAt: {
+				allowNull: true,
+				type: Sequelize.DATE,
+			},
 		}, { timestamps: false });
 		await sequelize.sync();
-		await Sample.create({ value: `ok` });
+		const liveRow = await Sample.create({ checkedAt: new Date(`2026-07-13T10:00:00.000Z`), isLive: true, value: `ok` });
+		await liveRow.update({ checkedAt: new Date(`2026-07-13T10:01:00.000Z`), isLive: false });
 		await sequelize.transaction(async transaction => {
-			await Sample.create({ value: `tx` }, { transaction });
+			await Sample.create({ isLive: true, value: `tx` }, { transaction });
 		});
 		await sequelize.close();
 		sequelize = null;
@@ -1007,12 +1101,24 @@ async function validateEncryptedSequelizeRuntime() {
 				allowNull: false,
 				type: Sequelize.STRING,
 			},
+			isLive: {
+				allowNull: false,
+				defaultValue: false,
+				type: Sequelize.BOOLEAN,
+			},
+			checkedAt: {
+				allowNull: true,
+				type: Sequelize.DATE,
+			},
 		}, { timestamps: false });
 		const row = await ReopenedSample.findOne({ where: { value: `ok` } });
 		const transactionRow = await ReopenedSample.findOne({ where: { value: `tx` } });
 
 		assert(row?.get(`value`) === `ok`, `Encrypted runtime database did not reopen through Sequelize.`);
+		assert(row?.get(`isLive`) === false, `Encrypted runtime boolean update did not persist.`);
+		assert(row?.get(`checkedAt`) instanceof Date, `Encrypted runtime Date bind did not persist as a Date value.`);
 		assert(transactionRow?.get(`value`) === `tx`, `Encrypted runtime transaction row did not persist.`);
+		assert(transactionRow?.get(`isLive`) === true, `Encrypted runtime transaction boolean did not persist.`);
 	} finally {
 		if (sequelize) {
 			await sequelize.close().catch(() => null);
@@ -1238,6 +1344,7 @@ async function main() {
 	await test(`database models match audited schema columns`, () => {
 		dbObjects = validateDatabaseModels();
 	});
+	await test(`SQLCipher adapter normalizes Sequelize bind values`, validateSqlcipherAdapterBindNormalization);
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
