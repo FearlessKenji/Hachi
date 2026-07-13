@@ -26,8 +26,6 @@ const SECRET_FIELDS = [
 	"HACHI_SECRETS_KEY",
 ];
 
-const noop = () => undefined;
-
 function getDefaultHachiGenUserDataPath() {
 	const home = os.homedir();
 
@@ -227,10 +225,9 @@ function buildTarGz(folderPath) {
 }
 
 class HachiGenLogger {
-	constructor({ userDataPath, sendEvent = noop } = {}) {
+	constructor({ userDataPath } = {}) {
 		this.userDataPath = userDataPath || getDefaultHachiGenUserDataPath();
 		this.logsPath = path.join(this.userDataPath, "logs");
-		this.sendEvent = sendEvent;
 		this.cleanupInterval = null;
 		this.cleanupPromise = null;
 		this.crashHandlersInitialized = false;
