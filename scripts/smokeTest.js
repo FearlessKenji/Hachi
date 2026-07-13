@@ -4,6 +4,7 @@ const childProcess = require(`node:child_process`);
 const fs = require(`node:fs`);
 const os = require(`node:os`);
 const path = require(`node:path`);
+const { Buffer } = require(`node:buffer`);
 
 const projectRoot = path.resolve(__dirname, `..`);
 process.chdir(projectRoot);
@@ -459,6 +460,7 @@ function validateProjectFiles() {
 		`events/guildDelete.js`,
 		`events/ready.js`,
 		`index.js`,
+		`manager/src/hachigenLogger.js`,
 	];
 
 	for (const file of requiredFiles) {
@@ -661,16 +663,18 @@ async function validateHachiGenSecretConfigurationRoundTrip() {
 	}
 }
 
-function validateHachiGenRendererEventLogging() {
+async function validateHachiGenRendererEventLogging() {
 	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const { dateFolderName } = requireFresh(`manager`, `src`, `hachigenLogger.js`);
 	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-events-`));
 	const liveEvents = [];
 
 	try {
+		const userDataPath = path.join(tempDir, `userData`);
 		const manager = new HachiManager({
 			defaultInstallPath: tempDir,
 			managerRoot: resolveProject(`manager`),
-			userDataPath: path.join(tempDir, `userData`),
+			userDataPath,
 			sendEvent: event => liveEvents.push(event),
 		});
 		const result = manager.recordRendererEvent({
@@ -690,6 +694,185 @@ function validateHachiGenRendererEventLogging() {
 		assert(!logged.message.includes(`smoke-secret-token`), `Renderer event message leaked a secret.`);
 		assert(logged.message.includes(`[redacted]`), `Renderer event message was not redacted.`);
 		assert(!logged.details.label.includes(`smoke-secret-token`), `Renderer event details leaked a secret.`);
+
+		const logFolder = path.join(userDataPath, `logs`, dateFolderName());
+		const rawLog = fs.readFileSync(path.join(logFolder, `raw.log`), `utf8`);
+		const structuredLog = fs.readFileSync(path.join(logFolder, `structured.log`), `utf8`);
+		const prettyLog = fs.readFileSync(path.join(logFolder, `structured.pretty.log`), `utf8`);
+
+		assert(fs.existsSync(path.join(logFolder, `crash.log`)), `HachiGen crash log was not initialized.`);
+		assert(rawLog.includes(`[redacted]`), `HachiGen raw log did not persist redacted renderer event.`);
+		assert(!rawLog.includes(`smoke-secret-token`), `HachiGen raw log leaked a secret.`);
+		assert(structuredLog.includes(`"level":"ERROR"`), `HachiGen structured log did not include an error level.`);
+		assert(prettyLog.includes(`"source": "renderer"`), `HachiGen pretty structured log did not include renderer details.`);
+
+		const persistedLogs = await manager.getLogs();
+
+		assert(persistedLogs.events.some(event => event.details?.source === `renderer`), `HachiGen Logs tab payload did not read persisted renderer events.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateHachiGenUpdateCheckDeduplication() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-update-dedupe-`));
+	const manager = new HachiManager({
+		defaultInstallPath: tempDir,
+		managerRoot: resolveProject(`manager`),
+		userDataPath: path.join(tempDir, `userData`),
+	});
+	let workerCalls = 0;
+	const releases = [];
+
+	try {
+		manager.performUpdateCheck = () => {
+			workerCalls += 1;
+			return new Promise(resolve => {
+				releases.push(resolve);
+			});
+		};
+
+		const firstCheck = manager.checkUpdates();
+		const secondCheck = manager.checkUpdates();
+
+		assert(workerCalls === 1, `Overlapping update checks started ${workerCalls} workers instead of 1.`);
+		releases[0]({ status: `current`, message: `smoke` });
+
+		const [firstResult, secondResult] = await Promise.all([firstCheck, secondCheck]);
+
+		assert(firstResult.status === `current`, `First deduped update check returned unexpected state.`);
+		assert(secondResult.status === `current`, `Second deduped update check returned unexpected state.`);
+		assert(manager.checkUpdatesPromise === null, `Update check lock was not cleared after completion.`);
+
+		const thirdCheck = manager.checkUpdates();
+
+		assert(workerCalls === 2, `Follow-up update check did not start a new worker after completion.`);
+		releases[1]({ status: `current`, message: `follow-up` });
+		await thirdCheck;
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateHachiGenLogMaintenance() {
+	const { HachiGenLogger, dateFolderName, getDefaultHachiGenUserDataPath } = requireFresh(`manager`, `src`, `hachigenLogger.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-log-maintenance-`));
+
+	function daysAgo(days) {
+		return dateFolderName(new Date(Date.now() - (days * 86400000)));
+	}
+
+	try {
+		assert(getDefaultHachiGenUserDataPath().includes(`HachiGen`), `Default HachiGen user-data path should be app-data scoped.`);
+
+		const logger = new HachiGenLogger({
+			userDataPath: path.join(tempDir, `userData`),
+		});
+		const currentEvent = logger.writeEvent({
+			details: {
+				area: `smoke`,
+				nested: {
+					value: `clientSecret="smoke-secret-token"`,
+				},
+			},
+			message: `TOKEN="smoke-secret-token" persisted`,
+			type: `log`,
+		});
+
+		assert(currentEvent.message.includes(`[redacted]`), `HachiGen logger did not redact event message.`);
+
+		const todayPaths = logger.getLogPaths();
+		const rawLog = fs.readFileSync(todayPaths.raw, `utf8`);
+		const structuredLog = fs.readFileSync(todayPaths.structured, `utf8`);
+
+		assert(rawLog.includes(`[redacted]`), `HachiGen logger did not redact raw log output.`);
+		assert(!rawLog.includes(`smoke-secret-token`), `HachiGen logger leaked a secret to raw log output.`);
+		assert(JSON.parse(structuredLog.trim()).area === `smoke`, `HachiGen structured log did not preserve the event area.`);
+
+		logger.writeCrashDump(`smoke`, new Error(`TOKEN="smoke-secret-token" crashed`));
+
+		const crashLog = fs.readFileSync(todayPaths.crash, `utf8`);
+
+		assert(crashLog.includes(`[redacted]`), `HachiGen crash log did not redact secrets.`);
+		assert(!crashLog.includes(`smoke-secret-token`), `HachiGen crash log leaked a secret.`);
+
+		const archiveName = daysAgo(2);
+		const archiveFolder = path.join(logger.logsPath, archiveName);
+		fs.mkdirSync(archiveFolder, { recursive: true });
+		fs.writeFileSync(path.join(archiveFolder, `raw.log`), `old log`);
+
+		const staleArchiveName = `${daysAgo(35)}.tar.gz`;
+		const staleArchivePath = path.join(logger.logsPath, staleArchiveName);
+		fs.writeFileSync(staleArchivePath, Buffer.from([0x1f, 0x8b]));
+
+		await logger.cleanupOldLogs();
+
+		const archivePath = path.join(logger.logsPath, `${archiveName}.tar.gz`);
+
+		assert(!fs.existsSync(archiveFolder), `HachiGen cleanup did not remove archived daily log folder.`);
+		assert(fs.existsSync(archivePath), `HachiGen cleanup did not create a daily log archive.`);
+		assert(fs.readFileSync(archivePath).subarray(0, 2).equals(Buffer.from([0x1f, 0x8b])), `HachiGen archive is not gzip data.`);
+		assert(!fs.existsSync(staleArchivePath), `HachiGen cleanup did not delete stale log archives.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateHachiGenQuietStateProbes() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-quiet-probes-`));
+	const liveEvents = [];
+	const calls = [];
+
+	try {
+		fs.mkdirSync(path.join(tempDir, `.git`), { recursive: true });
+
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: resolveProject(`manager`),
+			userDataPath: path.join(tempDir, `userData`),
+			sendEvent: event => liveEvents.push(event),
+		});
+
+		manager.runGit = async (args, options = {}) => {
+			calls.push({
+				command: args.join(` `),
+				hasOnLog: typeof options.onLog === `function`,
+				log: options.log,
+			});
+
+			if (options.log !== false && options.onLog) {
+				options.onLog({
+					message: `> git ${args.join(` `)}`,
+					stream: `command`,
+				});
+			}
+
+			if (args[0] === `branch`) {
+				return { code: 0, stderr: ``, stdout: `main\n` };
+			}
+
+			if (args[0] === `remote`) {
+				return { code: 0, stderr: ``, stdout: `https://example.test/Hachi.git\n` };
+			}
+
+			return { code: 0, stderr: ``, stdout: `` };
+		};
+
+		await manager.getRepositoryInfo();
+		await manager.refreshActiveStash();
+
+		assert(calls.length === 3, `Quiet state probe executed ${calls.length} Git commands instead of 3.`);
+		assert(calls.every(call => call.log === false), `State probe Git commands were not marked quiet.`);
+		assert(!liveEvents.some(event => event.type === `shell`), `Quiet state probes wrote shell events.`);
+
+		calls.length = 0;
+		await manager.getRepositoryInfo({ onLog: entry => manager.logShell(entry) });
+
+		assert(calls.length === 2, `Logged repository probe executed ${calls.length} Git commands instead of 2.`);
+		assert(calls.every(call => call.log === true && call.hasOnLog), `Logged repository probe did not keep shell logging enabled.`);
+		assert(liveEvents.some(event => event.type === `shell`), `Explicitly logged repository probe did not write shell events.`);
 	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
@@ -1011,6 +1194,9 @@ async function main() {
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
 	await test(`HachiGen saves setup env values encrypted`, validateHachiGenSecretConfigurationRoundTrip);
 	await test(`HachiGen records renderer errors in event log`, validateHachiGenRendererEventLogging);
+	await test(`HachiGen persists and maintains AppData logs`, validateHachiGenLogMaintenance);
+	await test(`HachiGen deduplicates overlapping update checks`, validateHachiGenUpdateCheckDeduplication);
+	await test(`HachiGen keeps state refresh Git probes quiet`, validateHachiGenQuietStateProbes);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`git hygiene checks pass`, validateGitHygiene);

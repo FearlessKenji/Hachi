@@ -227,6 +227,8 @@ Main process files:
 - `manager/src/manager.js` is the backend coordinator. It performs filesystem,
   Git, SSH, PM2, validation, update, database, backup, encryption, and config
   actions.
+- `manager/src/hachigenLogger.js` writes HachiGen's AppData-backed daily logs,
+  structured event files, crash dumps, and archive cleanup.
 - `manager/src/shell.js` wraps child-process execution and streams normalized
   command/stdout/stderr events.
 - `manager/src/database-worker.js` is copied out of packaged app storage when
@@ -270,6 +272,11 @@ from HachiGen logs because those commands can contain quoted scripts and paths.
 Clipboard copy is handled in `manager/main.js`, not the renderer. The main
 process writes the secret to the system clipboard and clears it after 60 seconds
 if the clipboard still contains that same value.
+
+HachiGen logs are stored under Electron `userData`, including development runs.
+On Windows this resolves to `%APPDATA%\HachiGen\logs\YYYY-MM-DD\`. The visible
+Logs panel reads recent structured HachiGen events from that persisted location,
+while live events are still pushed to the renderer as actions run.
 
 ## Commands
 

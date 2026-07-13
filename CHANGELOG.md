@@ -7,6 +7,9 @@ Notable changes to Hachi are documented here.
 ### Fixed
 
 - HachiGen sidebar navigation now remains responsive while manager actions are running.
+- HachiGen state refreshes no longer flood the event log with routine Git metadata probes.
+- HachiGen now writes persistent daily manager logs under the app data folder, including raw, structured, pretty structured, and crash logs with automatic archive cleanup.
+- HachiGen shell stderr output is labeled as a notice instead of an error unless a real manager error is recorded.
 
 ## v3.3.1 - 2026-07-12
 

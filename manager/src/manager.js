@@ -4,6 +4,11 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 const { Buffer } = require("node:buffer");
+const {
+	HachiGenLogger,
+	getDefaultHachiGenUserDataPath,
+	redactHachiGenLogText,
+} = require("./hachigenLogger.js");
 const { commandExists, run } = require("./shell.js");
 
 // This file contains HachiGen's backend coordinator.
@@ -1114,22 +1119,8 @@ function parseJsonResult(result, fallbackMessage) {
 	}
 }
 
-function redactKnownSecretText(text) {
-	const fields = [
-		...ENV_FIELDS,
-		"HACHI_DB_KEY",
-		"HACHI_SECRETS_KEY",
-	];
-	const escaped = fields.map(field => field.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")).join("|");
-	const assignmentPattern = new RegExp(`((?:${escaped})=)(?:"[^"]*"|'[^']*'|\\S+)`, "giu");
-
-	return String(text || "")
-		.replace(assignmentPattern, "$1[redacted]")
-		.replace(/(client(?:ID|Id|id|Secret)|token|secret)(["':=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}]+)/giu, "$1$2[redacted]");
-}
-
 function sanitizeShellLogEntry(entry) {
-	let message = redactKnownSecretText(entry.message);
+	let message = redactHachiGenLogText(entry.message);
 
 	if (entry.stream === "command" && /^> ssh(?:\s|$)/u.test(message)) {
 		return {
@@ -1158,20 +1149,28 @@ class HachiManager {
 		this.managerRoot = managerRoot;
 		this.defaultInstallPath = defaultInstallPath || path.resolve(managerRoot, "..");
 
-		// userDataPath is Electron's app data folder, where small HachiGen
-		// settings can live outside the repo.
-		this.userDataPath = userDataPath || path.join(managerRoot, "data");
+		// userDataPath is Electron's app data folder. HachiGen uses this in both
+		// development and packaged builds so settings/logs do not live in source.
+		this.userDataPath = userDataPath || getDefaultHachiGenUserDataPath();
 		this.settingsPath = path.join(this.userDataPath, "settings.json");
 
 		// sendEvent comes from main.js and streams backend activity to the UI.
 		this.sendEvent = sendEvent || noop;
+		this.logger = new HachiGenLogger({
+			userDataPath: this.userDataPath,
+		});
 
-		// operationLog is the in-memory activity log shown on the Logs tab.
-		this.operationLog = [];
+		// operationLog is a small live cache for renderer events. The persisted
+		// HachiGen log in AppData is the durable source used by the Logs tab.
+		this.operationLog = this.logger.readRecentEvents(500);
 
 		// updateState stores the most recent update check so the UI can redraw
 		// without running Git commands every time it needs a label.
 		this.updateState = createUncheckedUpdateState();
+		// checkUpdatesPromise deduplicates overlapping update checks. Startup
+		// checks and manual button clicks can arrive together, especially for
+		// remote installs where SSH/Git commands take several seconds.
+		this.checkUpdatesPromise = null;
 		this.databaseCipherTest = null;
 
 		ensureDir(this.userDataPath);
@@ -1205,12 +1204,12 @@ class HachiManager {
 
 	event(type, message, details = {}) {
 		// Every event has the same shape so the renderer can format it predictably.
-		const event = {
-			type,
-			message,
+		const event = this.logger.writeEvent({
 			details,
+			message,
 			time: new Date().toISOString(),
-		};
+			type,
+		});
 
 		this.operationLog.push(event);
 
@@ -1232,14 +1231,14 @@ class HachiManager {
 		// the same operation log as backend work. The renderer cannot write that
 		// log directly, so it sends a narrow event payload through IPC.
 		const type = payload.type === "error" ? "error" : "log";
-		const message = redactKnownSecretText(payload.message || "").trim() || "HachiGen renderer event recorded without a message.";
+		const message = redactHachiGenLogText(payload.message || "").trim() || "HachiGen renderer event recorded without a message.";
 		const rawDetails = payload.details && typeof payload.details === "object" && !Array.isArray(payload.details) ?
 			payload.details :
 			{};
 		const details = {
 			...Object.fromEntries(Object.entries(rawDetails).map(([key, value]) => [
 				key,
-				typeof value === "string" ? redactKnownSecretText(value) : value,
+				typeof value === "string" ? redactHachiGenLogText(value) : value,
 			])),
 			source: "renderer",
 		};
@@ -1259,7 +1258,22 @@ class HachiManager {
 		// Shell output is tagged separately so the UI can show whether it came
 		// from stdout, stderr, or the displayed command itself.
 		const sanitized = sanitizeShellLogEntry(entry);
-		this.event("shell", sanitized.message, { stream: sanitized.stream });
+		this.event("shell", sanitized.message, {
+			area: "shell",
+			stream: sanitized.stream,
+		});
+	}
+
+	startLogCleanup(options = {}) {
+		return this.logger.startLogCleanup(options);
+	}
+
+	stopLogCleanup() {
+		this.logger.stopLogCleanup();
+	}
+
+	initCrashHandlers() {
+		this.logger.initCrashHandlers();
 	}
 
 	getInstallPath() {
@@ -4637,7 +4651,7 @@ process.stdout.write(JSON.stringify({
 			scan,
 			updates: this.updateState,
 			pm2: await this.getPm2Status(),
-			recentEvents: this.operationLog.slice(-80),
+			recentEvents: this.logger.readRecentEvents(80),
 		};
 	}
 
@@ -4961,7 +4975,7 @@ process.stdout.write(JSON.stringify({
 		};
 	}
 
-	async getLocalChanges() {
+	async getLocalChanges({ log = true } = {}) {
 		// Return raw Git porcelain lines for files changed locally. HachiGen
 		// shows these before updating so generated or edited files are visible.
 		const paths = this.getPaths();
@@ -4976,6 +4990,7 @@ process.stdout.write(JSON.stringify({
 
 		const result = await this.runGit(["status", "--porcelain=v1", "-uall"], {
 			allowFailure: true,
+			log,
 		});
 
 		// Raw lines are parsed later so the UI can show both grouped labels and
@@ -4987,7 +5002,7 @@ process.stdout.write(JSON.stringify({
 			.filter(line => line.trim());
 	}
 
-	async getRepositoryInfo({ onLog = null } = {}) {
+	async getRepositoryInfo({ onLog = null, log = Boolean(onLog) } = {}) {
 		const paths = this.getPaths();
 		const isRemote = this.getRuntimeTarget() === "remote";
 		const info = {
@@ -5008,6 +5023,7 @@ process.stdout.write(JSON.stringify({
 			try {
 				const result = await this.runGit(args, {
 					allowFailure: true,
+					log,
 					onLog: onLog || undefined,
 				});
 
@@ -5042,7 +5058,7 @@ process.stdout.write(JSON.stringify({
 			.map(parseIncomingCommit);
 	}
 
-	async getHachiGenStashes() {
+	async getHachiGenStashes({ log = false } = {}) {
 		// Return only auto-stashes created by HachiGen. User-created stashes are
 		// intentionally ignored so Restore/Delete buttons cannot touch them.
 		const paths = this.getPaths();
@@ -5057,6 +5073,7 @@ process.stdout.write(JSON.stringify({
 
 		const result = await this.runGit(["stash", "list", "--format=%H%x09%gd%x09%ct%x09%gs"], {
 			allowFailure: true,
+			log,
 		});
 
 		if (result.code !== 0) {
@@ -5071,7 +5088,7 @@ process.stdout.write(JSON.stringify({
 			.filter(stash => stash.message.includes(HACHIGEN_STASH_PREFIX));
 	}
 
-	async getStashChanges(stashRef) {
+	async getStashChanges(stashRef, { log = false } = {}) {
 		// Read the file list inside a stash. Git versions differ on untracked
 		// stash display, so this tries the richer command and falls back safely.
 		const commands = [
@@ -5082,6 +5099,7 @@ process.stdout.write(JSON.stringify({
 		for (const args of commands) {
 			const result = await this.runGit(args, {
 				allowFailure: true,
+				log,
 			});
 
 			if (result.code === 0) {
@@ -5096,17 +5114,17 @@ process.stdout.write(JSON.stringify({
 		return [];
 	}
 
-	async refreshActiveStash() {
+	async refreshActiveStash(options = {}) {
 		// Synchronize settings.activeStash with the real Git stash list. This is
 		// why Restore/Delete buttons update correctly if a stash is removed by Git
 		// or another tool outside HachiGen.
-		const stashes = await this.getHachiGenStashes();
+		const stashes = await this.getHachiGenStashes(options);
 		const savedHash = this.settings.activeStash?.hash;
 		const activeStashBase = stashes.find(stash => stash.hash === savedHash) || stashes[0] || null;
 		const activeStash = activeStashBase ?
 			{
 				...activeStashBase,
-				changes: await this.getStashChanges(activeStashBase.ref),
+				changes: await this.getStashChanges(activeStashBase.ref, options),
 			} :
 			null;
 
@@ -5146,6 +5164,20 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async checkUpdates() {
+		if (this.checkUpdatesPromise) {
+			return this.checkUpdatesPromise;
+		}
+
+		this.checkUpdatesPromise = this.performUpdateCheck();
+
+		try {
+			return await this.checkUpdatesPromise;
+		} finally {
+			this.checkUpdatesPromise = null;
+		}
+	}
+
+	async performUpdateCheck() {
 		// Fetch and compare local HEAD against the update target. This method reports
 		// update availability and local changes, but never modifies the worktree.
 		const paths = this.getPaths();
@@ -5678,7 +5710,7 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 				local: "",
 				pm2,
 				target: "remote",
-				events: this.operationLog.slice(-160),
+				events: this.logger.readRecentEvents(160),
 			};
 		}
 
@@ -5698,7 +5730,7 @@ process.stdout.write(JSON.stringify({ backupDir, copied }));
 			local,
 			pm2,
 			target: "local",
-			events: this.operationLog.slice(-160),
+			events: this.logger.readRecentEvents(160),
 		};
 	}
 }

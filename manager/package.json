@@ -8,7 +8,7 @@
 	"type": "commonjs",
 	"scripts": {
 		"start": "electron .",
-		"check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
+		"check": "node --check main.js && node --check preload.js && node --check src/shell.js && node --check src/hachigenLogger.js && node --check src/manager.js && node --check src/database-worker.js && node --check renderer/app.js",
 		"dist": "electron-builder --win portable"
 	},
 	"devDependencies": {
