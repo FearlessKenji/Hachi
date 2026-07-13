@@ -134,16 +134,16 @@ function openEncryptedDatabase({
 		keySource: keyInfo.source,
 		kind: `sqlcipher`,
 		status: databaseFileStatus(dbPath),
-		all(sql, params = []) {
+		async all(sql, params = []) {
 			return bind(handle.prepare(sql), `all`, params);
 		},
-		get(sql, params = []) {
+		async get(sql, params = []) {
 			return bind(handle.prepare(sql), `get`, params) || null;
 		},
-		exec(sql) {
+		async exec(sql) {
 			handle.exec(sql);
 		},
-		close() {
+		async close() {
 			handle.close();
 		},
 	};

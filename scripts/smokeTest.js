@@ -155,6 +155,39 @@ function allLockedVersions(lock, packageName) {
 		}));
 }
 
+function validateCommandOptionJson(commandName, option, pathParts = []) {
+	const optionPath = [...pathParts, option.name].filter(Boolean).join(` `);
+
+	assert(option.name, `${commandName} has an option without a name.`);
+	assert(/^[\p{Ll}\p{N}_-]{1,32}$/u.test(option.name), `${commandName} option ${optionPath} has an invalid name.`);
+	assert(option.description, `${commandName} option ${optionPath} is missing a description.`);
+	assert(option.description.length <= 100, `${commandName} option ${optionPath} description is longer than 100 characters.`);
+
+	if (option.choices) {
+		assert(Array.isArray(option.choices), `${commandName} option ${optionPath} choices should be an array.`);
+		assert(option.choices.length <= 25, `${commandName} option ${optionPath} has more than 25 choices.`);
+
+		for (const choice of option.choices) {
+			assert(choice.name, `${commandName} option ${optionPath} has a choice without a name.`);
+			assert(choice.name.length <= 100, `${commandName} option ${optionPath} choice ${choice.name} is longer than 100 characters.`);
+			assert(choice.value !== undefined, `${commandName} option ${optionPath} choice ${choice.name} is missing a value.`);
+		}
+	}
+
+	if (option.autocomplete) {
+		assert(!option.choices?.length, `${commandName} option ${optionPath} uses autocomplete and static choices together.`);
+	}
+
+	if (option.options) {
+		assert(Array.isArray(option.options), `${commandName} option ${optionPath} child options should be an array.`);
+		assert(option.options.length <= 25, `${commandName} option ${optionPath} has more than 25 child options.`);
+
+		for (const childOption of option.options) {
+			validateCommandOptionJson(commandName, childOption, [...pathParts, option.name]);
+		}
+	}
+}
+
 function validateCommandJson(command, json) {
 	assert(json.name, `${relative(command.filePath)} command JSON is missing name.`);
 	assert(json.name.length <= 32, `${json.name} command name is longer than 32 characters.`);
@@ -168,6 +201,10 @@ function validateCommandJson(command, json) {
 	if (json.options) {
 		assert(Array.isArray(json.options), `${json.name} options should be an array.`);
 		assert(json.options.length <= 25, `${json.name} has more than 25 top-level options.`);
+
+		for (const option of json.options) {
+			validateCommandOptionJson(json.name, option);
+		}
 	}
 
 	if (command.help?.entries) {
@@ -339,6 +376,47 @@ function assertHelpCatalogBuilds() {
 	assert(filtered.length === catalog.length, `Administrator help catalog should include all categories.`);
 }
 
+function validateHachiCommandSurfaces() {
+	assert(loadedCommands, `Commands must be loaded before command surface checks run.`);
+
+	const { buildHelpCatalog } = requireFresh(`utils`, `helpCatalog.js`);
+	const commandMap = new Map();
+
+	for (const { command, filePath, json } of loadedCommands) {
+		commandMap.set(json.name, command);
+
+		assert(command.execute.constructor.name === `AsyncFunction`, `${relative(filePath)} execute() should be async.`);
+
+		for (const optionalHandler of [`autocomplete`, `handleComponent`, `handleModalSubmit`]) {
+			if (command[optionalHandler] !== undefined) {
+				assert(typeof command[optionalHandler] === `function`, `${relative(filePath)} ${optionalHandler} should be a function when exported.`);
+				assert(command[optionalHandler].constructor.name === `AsyncFunction`, `${relative(filePath)} ${optionalHandler} should be async.`);
+			}
+		}
+
+		if (!command.help?.hidden) {
+			assert(command.help, `${relative(filePath)} should provide help metadata or explicitly hide itself.`);
+			assert(command.help.category || command.commandScope === `guild`, `${relative(filePath)} help metadata is missing a category.`);
+		}
+	}
+
+	const catalog = buildHelpCatalog(commandMap, { guildId: null });
+	const catalogEntries = catalog.flatMap(category => category.entries.map(entry => entry.command));
+
+	for (const { command, filePath, json } of loadedCommands) {
+		if (command.commandScope !== `global` || command.help?.hidden) {
+			continue;
+		}
+
+		const commandPrefix = json.type && json.type !== 1 ? json.name : `/${json.name}`;
+
+		assert(
+			catalogEntries.some(entry => entry === commandPrefix || entry.startsWith(`${commandPrefix} `)),
+			`${relative(filePath)} is not represented in the help catalog.`,
+		);
+	}
+}
+
 function validateEventFiles() {
 	const eventFiles = listFiles(resolveProject(`events`), filePath => filePath.endsWith(`.js`));
 
@@ -351,6 +429,11 @@ function validateEventFiles() {
 
 		assert(event.name, `${relative(filePath)} is missing event name.`);
 		assert(typeof event.execute === `function`, `${relative(filePath)} is missing execute().`);
+		assert(event.execute.constructor.name === `AsyncFunction`, `${relative(filePath)} execute() should be async.`);
+
+		if (event.once !== undefined) {
+			assert(typeof event.once === `boolean`, `${relative(filePath)} once should be a boolean when provided.`);
+		}
 
 		if (relative(filePath) === `events/ready.js`) {
 			assert(typeof event.reconcileServerRows === `function`, `events/ready.js is missing server-row reconciliation.`);
@@ -620,6 +703,63 @@ function validateConfigCheckIfConfigured() {
 	});
 
 	assert(result.status === 0, `configCheck failed:\n${result.stdout}${result.stderr}`);
+}
+
+function duplicateValues(values) {
+	const seen = new Set();
+	const duplicates = new Set();
+
+	for (const value of values) {
+		if (seen.has(value)) {
+			duplicates.add(value);
+			continue;
+		}
+
+		seen.add(value);
+	}
+
+	return [...duplicates];
+}
+
+function validateHachiGenIpcSurface() {
+	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
+	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
+	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const apiEntries = [...preloadSource.matchAll(/^\s*([A-Za-z]\w*)\s*:\s*(?:\([^)]*\)|[A-Za-z]\w*)\s*=>\s*invoke\("([^"]+)"/gmu)]
+		.map(match => ({ channel: match[2], name: match[1] }));
+	const methodEntries = [...preloadSource.matchAll(/^\s*([A-Za-z]\w*)\s*\([^)]*\)\s*\{/gmu)]
+		.map(match => match[1]);
+	const exposedApiNames = new Set([
+		...apiEntries.map(entry => entry.name),
+		...methodEntries,
+	]);
+	const preloadChannels = apiEntries.map(entry => entry.channel);
+	const handlerChannels = [...mainSource.matchAll(/^\s*ipcMain\.handle\("([^"]+)"/gmu)].map(match => match[1]);
+	const handlerChannelSet = new Set(handlerChannels);
+	const rendererCalls = [...rendererSource.matchAll(/\bapi\.([A-Za-z]\w*)\s*\(/gu)].map(match => match[1]);
+	const managerMethods = [...mainSource.matchAll(/\bmanager\.([A-Za-z]\w*)\s*\(/gu)].map(match => match[1]);
+
+	assert(apiEntries.length >= 30, `HachiGen preload exposes too few IPC actions.`);
+	assert(duplicateValues(apiEntries.map(entry => entry.name)).length === 0, `HachiGen preload has duplicate API names.`);
+	assert(duplicateValues(preloadChannels).length === 0, `HachiGen preload has duplicate IPC channels.`);
+	assert(duplicateValues(handlerChannels).length === 0, `HachiGen main has duplicate IPC handlers.`);
+
+	for (const channel of preloadChannels) {
+		assert(handlerChannelSet.has(channel), `HachiGen preload exposes ${channel}, but main.js does not handle it.`);
+		assert(channel.startsWith(`manager:`), `HachiGen IPC channel ${channel} should use the manager: prefix.`);
+	}
+
+	for (const apiName of rendererCalls) {
+		assert(exposedApiNames.has(apiName), `HachiGen renderer calls api.${apiName}(), but preload.js does not expose it.`);
+	}
+
+	for (const methodName of managerMethods) {
+		assert(typeof HachiManager.prototype[methodName] === `function`, `main.js calls manager.${methodName}(), but HachiManager does not define it.`);
+	}
+
+	assert(exposedApiNames.has(`onEvent`), `HachiGen preload must expose the live event subscription helper.`);
+	assert(mainSource.includes(`manager:event`), `HachiGen main process must forward manager:event updates.`);
 }
 
 function validateSecretEncryptionHelpers() {
@@ -1025,6 +1165,84 @@ function restoreEnvValue(key, value) {
 	process.env[key] = value;
 }
 
+function smokeQuoteIdentifier(value) {
+	return `"${String(value).replace(/"/gu, `""`)}"`;
+}
+
+function smokeColumnSql(spec) {
+	const parts = [smokeQuoteIdentifier(spec.name), spec.type];
+
+	if (spec.primaryKey) {
+		parts.push(`PRIMARY KEY`);
+	}
+
+	if (spec.autoIncrement) {
+		parts.push(`AUTOINCREMENT`);
+	}
+
+	if (!spec.primaryKey && !spec.nullable) {
+		parts.push(`NOT NULL`);
+	}
+
+	if (spec.defaultValue !== null) {
+		parts.push(`DEFAULT ${spec.defaultValue}`);
+	}
+
+	if (spec.references) {
+		parts.push(`REFERENCES ${spec.references}`);
+	}
+
+	return parts.join(` `);
+}
+
+function smokeCreateTableSql(tableSpec) {
+	return `CREATE TABLE ${smokeQuoteIdentifier(tableSpec.name)} (${tableSpec.columns.map(smokeColumnSql).join(`, `)})`;
+}
+
+function smokeCreateIndexSql(tableName, indexSpec) {
+	const unique = indexSpec.unique ? `UNIQUE ` : ``;
+	const columns = indexSpec.columns.map(smokeQuoteIdentifier).join(`, `);
+
+	return `CREATE ${unique}INDEX IF NOT EXISTS ${smokeQuoteIdentifier(indexSpec.name)} ON ${smokeQuoteIdentifier(tableName)} (${columns})`;
+}
+
+function createSmokeSchema(db, expectedSchema) {
+	for (const tableSpec of expectedSchema) {
+		db.exec(smokeCreateTableSql(tableSpec));
+
+		for (const indexSpec of tableSpec.indexes || []) {
+			db.exec(smokeCreateIndexSql(tableSpec.name, indexSpec));
+		}
+	}
+}
+
+function runDatabaseWorkerSmoke(action, options = {}) {
+	const { key, ...requestOptions } = options;
+	const result = spawnNode([
+		`manager/src/database-worker.js`,
+		JSON.stringify({
+			action,
+			root: projectRoot,
+			...requestOptions,
+		}),
+	], {
+		env: key ? { HACHI_DB_KEY: key } : {},
+	});
+	const output = (result.stdout || ``).trim();
+	let parsed = null;
+
+	try {
+		parsed = JSON.parse(output);
+	} catch {
+		throw new Error(`Database worker returned invalid JSON:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
+	}
+
+	assert(result.status === 0, `Database worker exited with ${result.status}: ${result.stderr || result.stdout}`);
+	assert(parsed.ok, `Database worker ${action} failed: ${parsed.error || parsed.message || result.stderr}`);
+
+	return parsed;
+}
+
 function adapterRun(database, sql, params = []) {
 	return new Promise((resolve, reject) => {
 		database.run(sql, params, function onRun(error) {
@@ -1330,6 +1548,151 @@ async function validateDatabaseEncryptionConversion() {
 	}
 }
 
+async function validateToolDatabaseConnectionPromises() {
+	const {
+		openSqlCipherDatabase,
+	} = requireFresh(`database`, `dbEncryption.js`);
+	const {
+		all,
+		closeDatabase,
+		exec,
+		get,
+		openToolDatabase,
+	} = requireFresh(`database`, `dbToolConnection.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-tool-db-`));
+	const dbPath = path.join(tempDir, `database.sqlite`);
+	const key = `smoke-tool-${Date.now()}`;
+	let toolDb = null;
+
+	try {
+		const setupDb = openSqlCipherDatabase({
+			dbPath,
+			fileMustExist: false,
+			key,
+			root: projectRoot,
+		});
+		setupDb.exec(`CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`);
+		setupDb.close();
+
+		fs.writeFileSync(path.join(tempDir, `.env`), `HACHI_DB_KEY=${key}\n`, `utf8`);
+
+		toolDb = await openToolDatabase({
+			dbPath,
+			envPath: path.join(tempDir, `.env`),
+			root: projectRoot,
+		});
+		const execResult = exec(toolDb, `INSERT INTO sample (value) VALUES ('ok')`);
+
+		assert(typeof execResult?.then === `function`, `Encrypted tool database exec() did not return a Promise.`);
+		await execResult;
+		await exec(toolDb, `BEGIN IMMEDIATE TRANSACTION`);
+		await exec(toolDb, `ROLLBACK`).catch(() => null);
+
+		const row = await get(toolDb, `SELECT value FROM sample WHERE id = ?`, [1]);
+
+		assert(row?.value === `ok`, `Encrypted tool database get() did not read inserted data.`);
+
+		const allResult = all(toolDb, `SELECT value FROM sample ORDER BY id`);
+
+		assert(typeof allResult?.then === `function`, `Encrypted tool database all() did not return a Promise.`);
+		assert((await allResult)[0]?.value === `ok`, `Encrypted tool database all() did not read inserted data.`);
+
+		const closeResult = closeDatabase(toolDb);
+
+		assert(typeof closeResult?.then === `function`, `Encrypted tool database close() did not return a Promise.`);
+		await closeResult;
+		toolDb = null;
+	} finally {
+		if (toolDb) {
+			await closeDatabase(toolDb).catch(() => null);
+		}
+
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateDatabaseWorkerEncryptedMaintenance() {
+	const {
+		EXPECTED_SCHEMA,
+	} = requireFresh(`database`, `dbAudit.js`);
+	const {
+		openSqlCipherDatabase,
+	} = requireFresh(`database`, `dbEncryption.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-worker-db-`));
+	const dbPath = path.join(tempDir, `database.sqlite`);
+	const key = `smoke-worker-${Date.now()}`;
+	let setupDb = null;
+
+	try {
+		setupDb = openSqlCipherDatabase({
+			dbPath,
+			fileMustExist: false,
+			key,
+			root: projectRoot,
+		});
+		setupDb.exec(`PRAGMA foreign_keys = OFF`);
+		createSmokeSchema(setupDb, EXPECTED_SCHEMA);
+		setupDb.exec(`
+			INSERT INTO servers (guildId) VALUES ('valid-guild');
+			INSERT INTO channels (id, channelName, twitchNotif, kickNotif, guildId)
+				VALUES (5, 'valid-streamer', 1, 0, 'valid-guild');
+			INSERT INTO channels (id, channelName, twitchNotif, kickNotif, guildId)
+				VALUES (9, 'orphan-streamer', 1, 0, 'missing-guild');
+		`);
+		setupDb.close();
+		setupDb = null;
+
+		const review = runDatabaseWorkerSmoke(`review`, { dbPath, key });
+		const findingIds = review.findings.map(finding => finding.id);
+
+		assert(findingIds.includes(`channels-orphan-guild`), `Database worker review did not find orphan channel rows.`);
+		assert(findingIds.includes(`channels-compact-ids`), `Database worker review did not find channel ID gaps.`);
+		assert(review.summary.cleanableCount >= 2, `Database worker review did not report cleanable findings.`);
+
+		const view = runDatabaseWorkerSmoke(`view`, {
+			dbPath,
+			key,
+			sort: { column: `channelName`, direction: `asc` },
+			table: `channels`,
+		});
+
+		assert(view.selectedTable === `channels`, `Database worker viewer did not load the requested channels table.`);
+		assert(view.totalRows === 2, `Database worker viewer reported ${view.totalRows} channel rows instead of 2.`);
+		assert(view.rows[0]?.channelName === `orphan-streamer`, `Database worker viewer did not sort channel rows.`);
+
+		const applied = runDatabaseWorkerSmoke(`apply`, {
+			actionIds: [`channels-orphan-guild`, `channels-compact-ids`],
+			dbPath,
+			key,
+		});
+		const appliedById = new Map(applied.applied.map(action => [action.id, action]));
+
+		assert(appliedById.get(`channels-orphan-guild`)?.changed === 1, `Database worker did not clean one orphan channel row.`);
+		assert(appliedById.has(`channels-compact-ids`), `Database worker did not apply channel ID compaction.`);
+		assert(!applied.findings.some(finding => finding.id === `channels-orphan-guild`), `Database worker still reports orphan channel rows after cleanup.`);
+		assert(!applied.findings.some(finding => finding.id === `channels-compact-ids`), `Database worker still reports channel ID gaps after cleanup.`);
+
+		const verifyDb = openSqlCipherDatabase({
+			dbPath,
+			key,
+			readonly: true,
+			root: projectRoot,
+		});
+		const remainingRows = verifyDb.prepare(`SELECT id, channelName, guildId FROM channels ORDER BY id`).all();
+		verifyDb.close();
+
+		assert(remainingRows.length === 1, `Database worker left ${remainingRows.length} channel rows instead of 1.`);
+		assert(remainingRows[0]?.id === 1, `Database worker did not compact the remaining channel ID to 1.`);
+		assert(remainingRows[0]?.channelName === `valid-streamer`, `Database worker removed the wrong channel row.`);
+	} finally {
+		if (setupDb) {
+			setupDb.close();
+		}
+
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 function validatePureHelpers() {
 	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
@@ -1405,18 +1768,22 @@ async function main() {
 	await test(`HachiGen self-update controls are wired`, validateHachiGenSelfUpdateWiring);
 	await test(`blank config cron fields are valid`, validateBlankConfig);
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
+	await test(`HachiGen IPC surface is fully wired`, validateHachiGenIpcSurface);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
 	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);
+	await test(`Hachi command surfaces expose valid contracts`, validateHachiCommandSurfaces);
 	await test(`database models match audited schema columns`, () => {
 		dbObjects = validateDatabaseModels();
 	});
 	await test(`SQLCipher adapter normalizes Sequelize bind values`, validateSqlcipherAdapterBindNormalization);
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
+	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
+	await test(`database worker reviews, views, and sanitizes encrypted databases`, validateDatabaseWorkerEncryptedMaintenance);
 	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
 	await test(`HachiGen saves setup env values encrypted`, validateHachiGenSecretConfigurationRoundTrip);
