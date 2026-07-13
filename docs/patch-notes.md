@@ -13,6 +13,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ### HachiGen
 
+- Encrypted database sanitation can now clean selected findings without failing
+  after creating the safety backup.
 - Sidebar navigation stays available while HachiGen is running manager actions.
 - Routine state refreshes no longer crowd the HachiGen log with repeated Git
   branch, remote, and stash checks.

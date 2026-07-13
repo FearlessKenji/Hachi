@@ -6,6 +6,7 @@ Notable changes to Hachi are documented here.
 
 ### Fixed
 
+- Fixed HachiGen encrypted database sanitation so rollback/finally cleanup can run after SQLCipher maintenance actions.
 - Fixed encrypted SQLite runtime binding so Sequelize boolean/Date writes work with SQLCipher-backed databases.
 - HachiGen sidebar navigation now remains responsive while manager actions are running.
 - HachiGen state refreshes no longer flood the event log with routine Git metadata probes.
