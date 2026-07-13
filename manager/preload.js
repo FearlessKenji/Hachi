@@ -43,6 +43,10 @@ contextBridge.exposeInMainWorld("hachiGen", {
 	setRuntimeTarget: target => invoke("manager:set-runtime-target", target),
 	testRemoteConnection: () => invoke("manager:test-remote-connection"),
 	checkUpdates: () => invoke("manager:check-updates"),
+	checkVersionUpdates: () => invoke("manager:check-version-updates"),
+	checkHachiGenUpdates: () => invoke("manager:check-hachigen-updates"),
+	installHachiGenUpdate: () => invoke("manager:install-hachigen-update"),
+	openHachiGenRelease: () => invoke("manager:open-hachigen-release"),
 	applyUpdate: () => invoke("manager:apply-update"),
 	restoreStashedChanges: () => invoke("manager:restore-stashed-changes"),
 	deleteStashedChanges: () => invoke("manager:delete-stashed-changes"),
@@ -79,5 +83,11 @@ contextBridge.exposeInMainWorld("hachiGen", {
 		const listener = (_event, payload) => callback(payload);
 		ipcRenderer.on("manager:event", listener);
 		return () => ipcRenderer.removeListener("manager:event", listener);
+	},
+
+	onMenuAction(callback) {
+		const listener = (_event, payload) => callback(payload);
+		ipcRenderer.on("manager:menu-action", listener);
+		return () => ipcRenderer.removeListener("manager:menu-action", listener);
 	},
 });
