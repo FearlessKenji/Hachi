@@ -147,6 +147,23 @@ function formatBytes(bytes) {
 	return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function formatFileSize(bytes) {
+	if (!bytes) {
+		return "0 B";
+	}
+
+	const units = ["B", "KB", "MB", "GB"];
+	let value = Number(bytes) || 0;
+	let unitIndex = 0;
+
+	while (value >= 1024 && unitIndex < units.length - 1) {
+		value /= 1024;
+		unitIndex += 1;
+	}
+
+	return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+}
+
 // Convert machine-ish statuses like "not-registered" into readable UI text.
 function formatStatusLabel(status) {
 	const text = String(status || "Unknown").trim();
@@ -239,6 +256,21 @@ function updateMetaLabel(updates, repository, scan) {
 	const branch = updates.currentBranch || repository?.currentBranch || "Unknown";
 	const target = updateTargetLabel(updates);
 	return `Last checked: ${checkedAt} | Branch: ${branch} | Target: ${target} | Version: ${version}`;
+}
+
+function hachiGenUpdateMetaLabel(update, hachiGenVersion) {
+	const version = update?.currentVersion || hachiGenVersion || "Unknown";
+
+	if (!update?.checkedAt) {
+		return `Not checked | HachiGen version: ${version}`;
+	}
+
+	const checkedAt = new Date(update.checkedAt).toLocaleString();
+	const current = update.currentTag || "Not recorded";
+	const latest = update.latestTag || "Unknown";
+	const size = update.assetSize ? ` | Asset: ${formatFileSize(update.assetSize)}` : "";
+
+	return `Last checked: ${checkedAt} | HachiGen version: ${version} | Installed release: ${current} | Latest release: ${latest}${size}`;
 }
 
 // Disable action buttons while a backend action is running. Sidebar navigation
@@ -843,6 +875,14 @@ function renderStashedChanges(updates) {
 		`Saved changes are available to restore from ${stash.ref}. Created ${created}. Restore applies them and keeps the stash until you delete it.`,
 	);
 	renderGroupedChangesList("#stashChangesList", changes, "No file list available for this stash.");
+}
+
+function renderHachiGenUpdate(update) {
+	// HachiGen updates come from GitHub release assets rather than the Hachi Git
+	// checkout, so they have their own status text and install button.
+	setText("#hachigenUpdateMeta", hachiGenUpdateMetaLabel(update, state?.hachiGenVersion));
+	setText("#hachigenUpdateMessage", update?.message || "Check for the latest HachiGen.exe release.");
+	setDisabled("#installHachiGenUpdateButton", !update?.canInstall);
 }
 
 function formatDateTime(value) {
@@ -1452,7 +1492,7 @@ function confirmDatabaseMigration(force) {
 					forceMigrationUnlocked = false;
 					databaseView = null;
 					setDatabaseSort({ column: "", direction: "" });
-					loadDatabaseViewer();
+					refreshCurrentDatabaseViewer();
 				} else if (!force) {
 					forceMigrationUnlocked = true;
 					renderDatabase(state?.database);
@@ -1541,6 +1581,39 @@ async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 	}
 }
 
+function refreshCurrentDatabaseViewer() {
+	// The viewer caches the last table payload for fast redraws. After database
+	// maintenance actions, reload that payload so stale IDs/rows are not shown as
+	// if they still exist.
+	if (!state?.database?.exists) {
+		databaseView = null;
+		renderDatabaseViewer(null);
+		return Promise.resolve(null);
+	}
+
+	return loadDatabaseViewer(databaseView?.selectedTable || $("#databaseTableSelect")?.value || "", databaseSort);
+}
+
+async function refreshCurrentView() {
+	if (activeView === "database") {
+		await refreshCurrentDatabaseViewer();
+		return { message: "Database view refreshed." };
+	}
+
+	if (activeView === "logs") {
+		await refreshLogs();
+		return { message: "Logs refreshed." };
+	}
+
+	if (activeView === "setup") {
+		await refreshConfig();
+		return { message: "Setup refreshed." };
+	}
+
+	await refreshState();
+	return { message: "Current view refreshed." };
+}
+
 function renderState(nextState) {
 	// Main redraw function for the app. It takes one backend state object and
 	// updates every status card, path label, update list, and setup checklist.
@@ -1596,6 +1669,7 @@ function renderState(nextState) {
 	renderIncomingUpdates(state.updates);
 	renderLocalChanges(state.updates);
 	renderStashedChanges(state.updates);
+	renderHachiGenUpdate(state.hachiGenUpdate);
 	if (!state.database?.audit?.migrationAvailable && !state.database?.audit?.forceMigrationAvailable) {
 		forceMigrationUnlocked = false;
 	}
@@ -1729,6 +1803,7 @@ async function runAction(label, action, options = {}) {
 		// Buttons may have been disabled while busy; re-apply stash-specific
 		// and database-specific enable/disable rules after restoring button state.
 		renderStashedChanges(state?.updates);
+		renderHachiGenUpdate(state?.hachiGenUpdate);
 		renderDatabase(state?.database);
 		renderDatabaseViewer(databaseView);
 		renderConfig(lastConfig);
@@ -1795,6 +1870,38 @@ function handleChange(event) {
 					loadDatabaseViewer();
 				}
 			});
+	}
+}
+
+function handleMenuAction(payload = {}) {
+	const action = payload.action || "";
+
+	if (action === "show-view") {
+		showView(payload.view || "dashboard");
+		return;
+	}
+
+	if (action === "refresh-current-view") {
+		runAction("Refresh current view", refreshCurrentView);
+		return;
+	}
+
+	if (action === "check-version-updates") {
+		showView("updates");
+		runAction("Check for updates", async () => {
+			const hachi = await api.checkVersionUpdates();
+			const hachiGen = await api.checkHachiGenUpdates();
+
+			return {
+				message: `${hachi.message || "Hachi check complete."} ${hachiGen.message || "HachiGen check complete."}`,
+				ok: true,
+			};
+		});
+		return;
+	}
+
+	if (action === "open-folder") {
+		runAction("Open folder", () => api.openInstallFolder());
 	}
 }
 
@@ -1900,6 +2007,39 @@ function handleAction(event) {
 		return;
 	}
 
+	if (action === "check-hachigen-update") {
+		runAction("Check HachiGen update", () => api.checkHachiGenUpdates());
+		return;
+	}
+
+	if (action === "install-hachigen-update") {
+		showConfirmModal({
+			confirmText: "Install Latest",
+			details: [
+				"HachiGen will download the latest HachiGen.exe release asset.",
+				"Packaged Windows builds close, replace the running executable, and relaunch.",
+				"Development builds open the release download instead of replacing Electron.",
+			],
+			meta: "HachiGen self-update",
+			summary: "Install the latest HachiGen release?",
+			title: "Install HachiGen update?",
+			variant: "primary",
+		}).then(confirmed => {
+			if (!confirmed) {
+				toast("HachiGen update canceled.");
+				return;
+			}
+
+			runAction("Install HachiGen update", () => api.installHachiGenUpdate());
+		});
+		return;
+	}
+
+	if (action === "open-hachigen-release") {
+		runAction("Open HachiGen releases", () => api.openHachiGenRelease());
+		return;
+	}
+
 	if (action === "restore-stash") {
 		// Apply the active HachiGen stash without deleting it.
 		runAction("Restore changes", () => api.restoreStashedChanges());
@@ -1972,7 +2112,12 @@ function handleAction(event) {
 				return;
 			}
 
-			runAction("Rotate database key", () => api.rotateDatabaseKey({ rotateBackups: result.checked }));
+			runAction("Rotate database key", () => api.rotateDatabaseKey({ rotateBackups: result.checked }))
+				.then(actionResult => {
+					if (actionResult?.ok) {
+						refreshCurrentDatabaseViewer();
+					}
+				});
 		});
 		return;
 	}
@@ -2095,7 +2240,7 @@ function handleAction(event) {
 
 				if (result?.ok) {
 					databaseView = null;
-					loadDatabaseViewer();
+					refreshCurrentDatabaseViewer();
 				}
 			});
 		return;
@@ -2137,6 +2282,7 @@ function handleAction(event) {
 			.then(result => {
 				if (result?.ok) {
 					renderSanitizeModal(result);
+					refreshCurrentDatabaseViewer();
 				}
 			});
 		return;
@@ -2183,7 +2329,7 @@ function handleAction(event) {
 						hideSanitizeModal();
 						sanitizeReport = result;
 						renderSanitizeSummary(result);
-						loadDatabaseViewer(databaseView?.selectedTable);
+						refreshCurrentDatabaseViewer();
 					}
 				});
 		});
@@ -2261,6 +2407,8 @@ async function init() {
 		// Live backend events arrive here while commands are running.
 		appendEvent(event);
 	});
+
+	api.onMenuAction(handleMenuAction);
 
 	// First render: show static view state, then fetch dynamic backend data.
 	renderViews();

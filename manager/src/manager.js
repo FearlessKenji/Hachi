@@ -3,7 +3,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
+const https = require("node:https");
 const { Buffer } = require("node:buffer");
+const { URL } = require("node:url");
 const {
 	HachiGenLogger,
 	getDefaultHachiGenUserDataPath,
@@ -21,6 +23,9 @@ const REPO_URL = "https://github.com/FearlessKenji/Hachi.git";
 const UPDATE_REMOTE = "origin";
 const UPDATE_BRANCH = "main";
 const UPDATE_TARGET = `${UPDATE_REMOTE}/${UPDATE_BRANCH}`;
+const HACHIGEN_RELEASE_API = "https://api.github.com/repos/FearlessKenji/Hachi/releases/latest";
+const HACHIGEN_RELEASES_URL = "https://github.com/FearlessKenji/Hachi/releases/latest";
+const HACHIGEN_ASSET_NAME = "HachiGen.exe";
 const DEFAULT_SSH_PORT = 22;
 
 function createUncheckedUpdateState(message = "Updates have not been checked yet.") {
@@ -29,6 +34,23 @@ function createUncheckedUpdateState(message = "Updates have not been checked yet
 		available: false,
 		checkedAt: null,
 		updateTarget: UPDATE_TARGET,
+		message,
+	};
+}
+
+function createUncheckedHachiGenUpdateState(message = "HachiGen updates have not been checked yet.") {
+	return {
+		status: "unchecked",
+		assetName: HACHIGEN_ASSET_NAME,
+		assetSize: 0,
+		assetUrl: "",
+		checkedAt: null,
+		currentTag: null,
+		currentVersion: "",
+		latestTag: null,
+		releaseUrl: HACHIGEN_RELEASES_URL,
+		canInstall: false,
+		updateAvailable: false,
 		message,
 	};
 }
@@ -818,6 +840,174 @@ function parseNodeVersion(versionText) {
 	};
 }
 
+function parsePackageVersion(versionText) {
+	const match = String(versionText || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)/u);
+
+	if (!match) {
+		return null;
+	}
+
+	return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function comparePackageVersions(left, right) {
+	const leftParts = parsePackageVersion(left);
+	const rightParts = parsePackageVersion(right);
+
+	if (!leftParts || !rightParts) {
+		return String(left || "").localeCompare(String(right || ""));
+	}
+
+	for (let index = 0; index < 3; index += 1) {
+		if (leftParts[index] > rightParts[index]) {
+			return 1;
+		}
+
+		if (leftParts[index] < rightParts[index]) {
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+function resolveRedirectUrl(location, sourceUrl) {
+	try {
+		return new URL(location, sourceUrl).toString();
+	} catch {
+		return location;
+	}
+}
+
+function requestHttps(url, { accept = "*/*", maxRedirects = 5, timeoutMs = 60000 } = {}) {
+	return new Promise((resolve, reject) => {
+		const request = https.get(url, {
+			headers: {
+				Accept: accept,
+				"User-Agent": "HachiGen Update Checker",
+			},
+		}, response => {
+			const statusCode = response.statusCode || 0;
+			const location = response.headers.location;
+
+			if ([301, 302, 303, 307, 308].includes(statusCode) && location && maxRedirects > 0) {
+				response.resume();
+				resolve(requestHttps(resolveRedirectUrl(location, url), {
+					accept,
+					maxRedirects: maxRedirects - 1,
+					timeoutMs,
+				}));
+				return;
+			}
+
+			const chunks = [];
+			response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+			response.on("end", () => {
+				const buffer = Buffer.concat(chunks);
+
+				if (statusCode < 200 || statusCode >= 300) {
+					reject(new Error(`HTTP ${statusCode} while requesting ${url}: ${buffer.toString("utf8").slice(0, 240)}`));
+					return;
+				}
+
+				resolve({
+					buffer,
+					headers: response.headers,
+					statusCode,
+				});
+			});
+			response.on("error", reject);
+		});
+
+		request.setTimeout(timeoutMs, () => {
+			request.destroy(new Error(`Request timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+		});
+		request.on("error", reject);
+	});
+}
+
+async function requestJson(url) {
+	const response = await requestHttps(url, {
+		accept: "application/vnd.github+json",
+	});
+	const parsed = parseJsonText(response.buffer.toString("utf8"), null);
+
+	if (!parsed) {
+		throw new Error(`Could not parse JSON response from ${url}.`);
+	}
+
+	return parsed;
+}
+
+function downloadUrlToFile(url, targetPath, { maxRedirects = 5, timeoutMs = 300000 } = {}) {
+	return new Promise((resolve, reject) => {
+		ensureDir(path.dirname(targetPath));
+
+		const request = https.get(url, {
+			headers: {
+				Accept: "application/octet-stream",
+				"User-Agent": "HachiGen Update Downloader",
+			},
+		}, response => {
+			const statusCode = response.statusCode || 0;
+			const location = response.headers.location;
+
+			if ([301, 302, 303, 307, 308].includes(statusCode) && location && maxRedirects > 0) {
+				response.resume();
+				resolve(downloadUrlToFile(resolveRedirectUrl(location, url), targetPath, {
+					maxRedirects: maxRedirects - 1,
+					timeoutMs,
+				}));
+				return;
+			}
+
+			if (statusCode < 200 || statusCode >= 300) {
+				const chunks = [];
+				response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+				response.on("end", () => {
+					reject(new Error(`HTTP ${statusCode} while downloading HachiGen: ${Buffer.concat(chunks).toString("utf8").slice(0, 240)}`));
+				});
+				response.on("error", reject);
+				return;
+			}
+
+			const file = fs.createWriteStream(targetPath);
+			response.pipe(file);
+			file.on("finish", () => {
+				file.close(error => {
+					if (error) {
+						reject(error);
+						return;
+					}
+
+					resolve({
+						bytes: fileExists(targetPath) ? fs.statSync(targetPath).size : 0,
+						targetPath,
+					});
+				});
+			});
+			file.on("error", error => {
+				response.destroy();
+				try {
+					fs.rmSync(targetPath, { force: true });
+				} catch {
+					// Best-effort cleanup. The caller will still receive the write error.
+				}
+				reject(error);
+			});
+			response.on("error", error => {
+				file.destroy();
+				reject(error);
+			});
+		});
+
+		request.setTimeout(timeoutMs, () => {
+			request.destroy(new Error(`Download timed out after ${Math.round(timeoutMs / 1000)} seconds.`));
+		});
+		request.on("error", reject);
+	});
+}
+
 function nodeVersionMeetsMinimum(versionText) {
 	const parsed = parseNodeVersion(versionText);
 
@@ -1191,6 +1381,7 @@ class HachiManager {
 		// updateState stores the most recent update check so the UI can redraw
 		// without running Git commands every time it needs a label.
 		this.updateState = createUncheckedUpdateState();
+		this.hachiGenUpdateState = createUncheckedHachiGenUpdateState();
 		// checkUpdatesPromise deduplicates overlapping update checks. Startup
 		// checks and manual button clicks can arrive together, especially for
 		// remote installs where SSH/Git commands take several seconds.
@@ -1207,6 +1398,7 @@ class HachiManager {
 		const defaults = {
 			installPath: this.defaultInstallPath,
 			activeStash: null,
+			hachiGenReleaseTag: null,
 			remote: { ...DEFAULT_REMOTE_SETTINGS },
 			runtimeTarget: "local",
 		};
@@ -1307,6 +1499,12 @@ class HachiManager {
 		// Return the folder HachiGen should treat as the Hachi install. Most
 		// backend operations start by resolving paths relative to this value.
 		return this.settings.installPath;
+	}
+
+	getHachiGenVersion() {
+		// HachiGen has its own package metadata because the manager executable is
+		// released separately from the bot checkout it manages.
+		return readJson(path.join(this.managerRoot, "package.json"), {}).version || "";
 	}
 
 	loadSecretEncryption() {
@@ -4671,6 +4869,8 @@ process.stdout.write(JSON.stringify({
 		return {
 			appName: "HachiGen",
 			database: await this.getDatabaseState(),
+			hachiGenUpdate: this.hachiGenUpdateState,
+			hachiGenVersion: this.getHachiGenVersion(),
 			installPath: this.getInstallPath(),
 			repository,
 			remote: this.getRemoteState(),
@@ -5202,6 +5402,159 @@ process.stdout.write(JSON.stringify({
 		} finally {
 			this.checkUpdatesPromise = null;
 		}
+	}
+
+	async checkVersionUpdates() {
+		// Help -> Check for Updates is intentionally a version comparison. The
+		// Updates page can still run the deeper commit/worktree check before
+		// applying changes.
+		const paths = this.getPaths();
+		const scan = await this.getQuickScan();
+		const currentVersion = scan.packageVersion || readJson(paths.packageJson, {}).version || "";
+		const repository = await this.getRepositoryInfo({ onLog: entry => this.logShell(entry) });
+
+		if (!repository.isGit) {
+			return {
+				currentVersion,
+				message: "This install is not a Git checkout, so HachiGen cannot compare versions with the repo.",
+				ok: false,
+				repositoryVersion: "",
+				updateAvailable: false,
+			};
+		}
+
+		this.log(`${this.getRuntimeTarget() === "remote" ? "Remote" : "Local"}: checking Hachi version against ${UPDATE_TARGET}...`);
+		await this.runGit(["fetch", UPDATE_REMOTE, UPDATE_BRANCH], {
+			timeoutMs: 300000,
+		});
+
+		const remotePackageResult = await this.runGit(["show", `${UPDATE_TARGET}:package.json`], {
+			allowFailure: true,
+		});
+
+		if (remotePackageResult.code !== 0) {
+			throw new Error(remotePackageResult.stderr || `Could not read package.json from ${UPDATE_TARGET}.`);
+		}
+
+		const repositoryPackage = parseJsonText(remotePackageResult.stdout, {});
+		const repositoryVersion = repositoryPackage.version || "";
+
+		if (!currentVersion || !repositoryVersion) {
+			throw new Error(`Could not compare versions. Current: ${currentVersion || "unknown"}, repo: ${repositoryVersion || "unknown"}.`);
+		}
+
+		const comparison = comparePackageVersions(repositoryVersion, currentVersion);
+		const updateAvailable = comparison > 0;
+		const message = updateAvailable ?
+			`Hachi ${repositoryVersion} is available. Current version is ${currentVersion}.` :
+			comparison === 0 ?
+				`Hachi is current at ${currentVersion}.` :
+				`Current version ${currentVersion} is newer than ${UPDATE_TARGET} (${repositoryVersion}).`;
+
+		this.log(`Version check complete. ${message}`);
+
+		return {
+			currentBranch: repository.currentBranch,
+			currentVersion,
+			message,
+			ok: true,
+			repositoryVersion,
+			updateAvailable,
+			updateTarget: UPDATE_TARGET,
+		};
+	}
+
+	async fetchLatestHachiGenRelease() {
+		// HachiGen is distributed as a release asset rather than a Git-tracked
+		// source file, so self-update checks use the GitHub Releases API.
+		const release = await requestJson(HACHIGEN_RELEASE_API);
+		const asset = (release.assets || []).find(item => item.name === HACHIGEN_ASSET_NAME);
+
+		if (!asset?.browser_download_url) {
+			throw new Error(`Latest release does not include ${HACHIGEN_ASSET_NAME}.`);
+		}
+
+		return {
+			assetName: asset.name,
+			assetSize: asset.size || 0,
+			assetUrl: asset.browser_download_url,
+			latestTag: release.tag_name || "",
+			publishedAt: release.published_at || null,
+			releaseName: release.name || release.tag_name || "Latest release",
+			releaseUrl: release.html_url || HACHIGEN_RELEASES_URL,
+		};
+	}
+
+	async checkHachiGenUpdates() {
+		const checkedAt = new Date().toISOString();
+
+		try {
+			const latest = await this.fetchLatestHachiGenRelease();
+			const currentTag = this.settings.hachiGenReleaseTag || null;
+			const currentVersion = this.getHachiGenVersion();
+			const updateAvailable = currentTag ? currentTag !== latest.latestTag : true;
+			const message = currentTag ?
+				updateAvailable ?
+					`HachiGen ${latest.latestTag || "latest"} is available. Current installed release is ${currentTag}.` :
+					`HachiGen is current at ${currentTag}.` :
+				`Latest HachiGen release is ${latest.latestTag || "available"}. Install Latest can update or reinstall ${HACHIGEN_ASSET_NAME}.`;
+
+			this.hachiGenUpdateState = {
+				...latest,
+				canInstall: Boolean(latest.assetUrl),
+				checkedAt,
+				currentTag,
+				currentVersion,
+				message,
+				status: updateAvailable ? "available" : "current",
+				updateAvailable,
+			};
+			this.log(`HachiGen update check complete. ${message}`);
+			return this.hachiGenUpdateState;
+		} catch (error) {
+			this.hachiGenUpdateState = {
+				...createUncheckedHachiGenUpdateState(error.message || "HachiGen update check failed."),
+				checkedAt,
+				currentVersion: this.getHachiGenVersion(),
+				status: "error",
+			};
+			this.event("error", `HachiGen update check failed: ${error.message || error}`);
+			throw error;
+		}
+	}
+
+	async downloadHachiGenUpdate(targetPath, updateState = null) {
+		// Download only the release asset the checker selected. The main process
+		// decides whether to install it, open it, or hand the path to the user.
+		const update = updateState?.assetUrl ? updateState : await this.checkHachiGenUpdates();
+
+		if (!update.assetUrl) {
+			throw new Error("No HachiGen release asset is available to download.");
+		}
+
+		const result = await downloadUrlToFile(update.assetUrl, targetPath);
+		this.log(`Downloaded ${HACHIGEN_ASSET_NAME} update to ${displayPath(targetPath)}.`);
+
+		return {
+			...update,
+			bytes: result.bytes,
+			targetPath,
+		};
+	}
+
+	markHachiGenReleaseInstalled(tag) {
+		if (!tag) {
+			return;
+		}
+
+		this.settings.hachiGenReleaseTag = tag;
+		this.saveSettings();
+		this.hachiGenUpdateState = {
+			...this.hachiGenUpdateState,
+			currentTag: tag,
+			status: "current",
+			updateAvailable: false,
+		};
 	}
 
 	async performUpdateCheck() {

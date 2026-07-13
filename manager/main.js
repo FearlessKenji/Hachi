@@ -1,4 +1,7 @@
 // Electron main process for HachiGen.
+const childProcess = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const {
 	app,
@@ -9,9 +12,19 @@ const {
 	// main process to perform approved actions through named IPC channels.
 	ipcMain,
 	dialog,
+	Menu,
 	shell,
 } = require("electron");
 const { HachiManager } = require("./src/manager.js");
+const managerPackage = require("./package.json");
+
+const HELP_LINKS = {
+	changelog: "https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md",
+	docs: "https://fearlesskenji.github.io/Hachi/",
+	patchNotes: "https://github.com/FearlessKenji/Hachi/blob/main/docs/patch-notes.md",
+	readme: "https://github.com/FearlessKenji/Hachi#readme",
+	releases: "https://github.com/FearlessKenji/Hachi/releases/latest",
+};
 
 // Electron apps have a "main process" and one or more windows.
 // This file is the main process: it creates the HachiGen window and
@@ -31,6 +44,15 @@ function sendEvent(event) {
 	}
 }
 
+function sendMenuAction(action, details = {}) {
+	if (mainWindow && !mainWindow.isDestroyed()) {
+		mainWindow.webContents.send("manager:menu-action", {
+			action,
+			...details,
+		});
+	}
+}
+
 function scheduleClipboardClear(secret, ttlMs) {
 	if (clipboardClearTimer) {
 		clearTimeout(clipboardClearTimer);
@@ -45,6 +67,274 @@ function scheduleClipboardClear(secret, ttlMs) {
 	if (typeof clipboardClearTimer.unref === "function") {
 		clipboardClearTimer.unref();
 	}
+}
+
+function openExternal(url) {
+	shell.openExternal(url);
+}
+
+async function openHachiGenLogFolder() {
+	const logFolder = manager?.logger?.logsPath;
+
+	if (!logFolder) {
+		return;
+	}
+
+	const result = await shell.openPath(logFolder);
+
+	if (result) {
+		dialog.showErrorBox("Open HachiGen Log Folder", result);
+	}
+}
+
+function readLogSection(label, filePath) {
+	if (!filePath || !fs.existsSync(filePath)) {
+		return `## ${label}\n\nNot found.`;
+	}
+
+	return `## ${label}\n\n${fs.readFileSync(filePath, "utf8").trim() || "Empty."}`;
+}
+
+async function exportHachiGenLogs() {
+	if (!manager?.logger) {
+		return;
+	}
+
+	const paths = manager.logger.ensureLogs();
+	const stamp = new Date().toISOString().replace(/\D/gu, "").slice(0, 14);
+	const result = await dialog.showSaveDialog(mainWindow, {
+		defaultPath: `hachigen-logs-${stamp}.txt`,
+		filters: [
+			{ name: "Text logs", extensions: ["txt"] },
+			{ name: "All files", extensions: ["*"] },
+		],
+		title: "Export HachiGen Logs",
+	});
+
+	if (result.canceled || !result.filePath) {
+		return;
+	}
+
+	const content = [
+		`# HachiGen Logs Export`,
+		`Exported: ${new Date().toISOString()}`,
+		`HachiGen: ${managerPackage.version}`,
+		`Install path: ${manager.getInstallPath()}`,
+		readLogSection("Raw Log", paths.raw),
+		readLogSection("Structured Pretty Log", paths.structuredPretty),
+		readLogSection("Crash Log", paths.crash),
+	].join("\n\n");
+
+	fs.writeFileSync(result.filePath, `${content}\n`, "utf8");
+	manager.log(`HachiGen logs exported to ${result.filePath}.`);
+}
+
+async function copyDiagnosticInfo() {
+	const scan = manager ? await manager.getQuickScan().catch(() => null) : null;
+	const repository = manager ? await manager.getRepositoryInfo().catch(() => null) : null;
+	const lines = [
+		`HachiGen: ${managerPackage.version}`,
+		`Hachi: ${scan?.packageVersion || "unknown"}`,
+		`Runtime target: ${manager?.getRuntimeTarget?.() || "unknown"}`,
+		`Install path: ${manager?.getInstallPath?.() || "unknown"}`,
+		`Branch: ${repository?.currentBranch || "unknown"}`,
+		`Update target: ${repository?.updateTarget || "origin/main"}`,
+		`Git remote: ${repository?.originUrl || "unknown"}`,
+		`Project found: ${scan?.projectFound === undefined ? "unknown" : scan.projectFound}`,
+	].join("\n");
+
+	clipboard.writeText(lines);
+	manager?.log("Diagnostic info copied to clipboard.");
+}
+
+async function showAboutDialog() {
+	const scan = manager ? await manager.getQuickScan().catch(() => null) : null;
+
+	dialog.showMessageBox(mainWindow, {
+		buttons: ["OK"],
+		message: "HachiGen",
+		detail: [
+			`HachiGen version: ${managerPackage.version}`,
+			`Hachi version: ${scan?.packageVersion || "unknown"}`,
+			`Runtime target: ${manager?.getRuntimeTarget?.() || "unknown"}`,
+		].join("\n"),
+		type: "info",
+	});
+}
+
+function escapeBatchValue(value) {
+	return String(value || "").replace(/%/gu, "%%");
+}
+
+async function installHachiGenUpdate() {
+	const update = await manager.checkHachiGenUpdates();
+
+	if (!update.canInstall) {
+		throw new Error(update.message || "No HachiGen release asset is available.");
+	}
+
+	if (!app.isPackaged || process.platform !== "win32") {
+		openExternal(update.assetUrl || update.releaseUrl || HELP_LINKS.releases);
+		return {
+			...update,
+			message: "Development builds cannot replace the running Electron process. Opened the latest HachiGen release download.",
+			ok: true,
+		};
+	}
+
+	const tempDir = path.join(os.tmpdir(), `hachigen-update-${Date.now()}`);
+	const updatePath = path.join(tempDir, "HachiGen.exe");
+	const scriptPath = path.join(tempDir, "install-hachigen-update.cmd");
+	const installed = await manager.downloadHachiGenUpdate(updatePath, update);
+	const targetPath = process.execPath;
+	const script = [
+		"@echo off",
+		"setlocal",
+		`set "TARGET=${escapeBatchValue(targetPath)}"`,
+		`set "UPDATE=${escapeBatchValue(updatePath)}"`,
+		`set "PID=${process.pid}"`,
+		":wait",
+		"tasklist /FI \"PID eq %PID%\" | findstr /R /C:\"%PID%\" >nul",
+		"if not errorlevel 1 (",
+		"	timeout /t 1 /nobreak >nul",
+		"	goto wait",
+		")",
+		"copy /Y \"%UPDATE%\" \"%TARGET%\" >nul",
+		"if errorlevel 1 exit /b 1",
+		"start \"\" \"%TARGET%\"",
+		"del \"%UPDATE%\" >nul 2>nul",
+		"del \"%~f0\" >nul 2>nul",
+		"",
+	].join("\r\n");
+
+	fs.writeFileSync(scriptPath, script, "utf8");
+	manager.markHachiGenReleaseInstalled(update.latestTag);
+	manager.log(`HachiGen ${update.latestTag || "update"} downloaded. HachiGen will close, replace itself, and relaunch.`);
+
+	const child = childProcess.spawn(scriptPath, [], {
+		detached: true,
+		shell: true,
+		stdio: "ignore",
+		windowsHide: true,
+	});
+	child.unref();
+
+	setTimeout(() => app.quit(), 500);
+
+	return {
+		...installed,
+		message: `HachiGen ${update.latestTag || "update"} downloaded. HachiGen will close, replace itself, and relaunch.`,
+		ok: true,
+	};
+}
+
+function buildApplicationMenu() {
+	return Menu.buildFromTemplate([
+		{
+			label: "File",
+			submenu: [
+				{
+					label: "Open Hachi Folder",
+					click: () => sendMenuAction("open-folder"),
+				},
+				{
+					label: "Open HachiGen Log Folder",
+					click: () => openHachiGenLogFolder(),
+				},
+				{
+					label: "Export HachiGen Logs",
+					click: () => exportHachiGenLogs(),
+				},
+				{ type: "separator" },
+				{
+					label: "Exit",
+					role: "quit",
+				},
+			],
+		},
+		{
+			label: "View",
+			submenu: [
+				{
+					label: "Dashboard",
+					click: () => sendMenuAction("show-view", { view: "dashboard" }),
+				},
+				{
+					label: "Setup",
+					click: () => sendMenuAction("show-view", { view: "setup" }),
+				},
+				{
+					label: "Remote",
+					click: () => sendMenuAction("show-view", { view: "remote" }),
+				},
+				{
+					label: "Updates",
+					click: () => sendMenuAction("show-view", { view: "updates" }),
+				},
+				{
+					label: "Database",
+					click: () => sendMenuAction("show-view", { view: "database" }),
+				},
+				{
+					label: "Logs",
+					click: () => sendMenuAction("show-view", { view: "logs" }),
+				},
+				{ type: "separator" },
+				{
+					label: "Refresh Current View",
+					accelerator: "F5",
+					click: () => sendMenuAction("refresh-current-view"),
+				},
+			],
+		},
+		{
+			label: "Window",
+			submenu: [
+				{ role: "minimize" },
+				{ role: "close" },
+			],
+		},
+		{
+			label: "Help",
+			submenu: [
+				{
+					label: "Check for Updates",
+					click: () => sendMenuAction("check-version-updates"),
+				},
+				{ type: "separator" },
+				{
+					label: "Open Documentation",
+					click: () => openExternal(HELP_LINKS.docs),
+				},
+				{
+					label: "Open README",
+					click: () => openExternal(HELP_LINKS.readme),
+				},
+				{
+					label: "Open Changelog",
+					click: () => openExternal(HELP_LINKS.changelog),
+				},
+				{
+					label: "Open Patch Notes",
+					click: () => openExternal(HELP_LINKS.patchNotes),
+				},
+				{ type: "separator" },
+				{
+					label: "Open HachiGen Log Folder",
+					click: () => openHachiGenLogFolder(),
+				},
+				{
+					label: "Copy Diagnostic Info",
+					click: () => copyDiagnosticInfo(),
+				},
+				{ type: "separator" },
+				{
+					label: "About HachiGen",
+					click: () => showAboutDialog(),
+				},
+			],
+		},
+	]);
 }
 
 // Create the visible desktop window and load the renderer files. Security
@@ -172,6 +462,14 @@ function registerIpc() {
 	// Update/runtime channels. These cover Git update checks, stashes, command
 	// deployment, PM2 process control, and log/status reads.
 	ipcMain.handle("manager:check-updates", () => manager.checkUpdates());
+	ipcMain.handle("manager:check-version-updates", () => manager.checkVersionUpdates());
+	ipcMain.handle("manager:check-hachigen-updates", () => manager.checkHachiGenUpdates());
+	ipcMain.handle("manager:install-hachigen-update", () => installHachiGenUpdate());
+	ipcMain.handle("manager:open-hachigen-release", () => {
+		const releaseUrl = manager.hachiGenUpdateState?.releaseUrl || HELP_LINKS.releases;
+		openExternal(releaseUrl);
+		return { ok: true, message: "Opened HachiGen releases." };
+	});
 	ipcMain.handle("manager:apply-update", () => manager.applyUpdate());
 	ipcMain.handle("manager:restore-stashed-changes", () => manager.restoreStashedChanges());
 	ipcMain.handle("manager:delete-stashed-changes", () => manager.deleteStashedChanges());
@@ -280,6 +578,7 @@ app.whenReady().then(() => {
 	manager.initCrashHandlers();
 
 	registerIpc();
+	Menu.setApplicationMenu(buildApplicationMenu());
 	createWindow();
 
 	app.on("activate", () => {
