@@ -844,6 +844,8 @@ async function validateHachiGenQuietStateProbes() {
 
 			if (options.log !== false && options.onLog) {
 				options.onLog({
+					args,
+					command: `git`,
 					message: `> git ${args.join(` `)}`,
 					stream: `command`,
 				});
@@ -872,7 +874,55 @@ async function validateHachiGenQuietStateProbes() {
 
 		assert(calls.length === 2, `Logged repository probe executed ${calls.length} Git commands instead of 2.`);
 		assert(calls.every(call => call.log === true && call.hasOnLog), `Logged repository probe did not keep shell logging enabled.`);
-		assert(liveEvents.some(event => event.type === `shell`), `Explicitly logged repository probe did not write shell events.`);
+		assert(!liveEvents.some(event => event.type === `shell`), `Logged repository probe wrote Git plumbing to the live UI log.`);
+		assert(manager.logger.readRecentEvents(10, { includeHidden: true }).some(event => event.type === `shell`), `Logged repository probe was not persisted to the raw HachiGen event log.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+function validateHachiGenShellLogVisibility() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-shell-visibility-`));
+	const liveEvents = [];
+
+	try {
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: resolveProject(`manager`),
+			userDataPath: path.join(tempDir, `userData`),
+			sendEvent: event => liveEvents.push(event),
+		});
+
+		manager.logShell({
+			args: [`rev-parse`, `HEAD`],
+			command: `git`,
+			message: `> git rev-parse HEAD`,
+			stream: `command`,
+		});
+		manager.logShell({
+			args: [`rev-parse`, `HEAD`],
+			command: `git`,
+			message: `abc123`,
+			stream: `stdout`,
+		});
+		manager.logShell({
+			args: [`install`],
+			command: `npm`,
+			message: `up to date, audited 190 packages in 2s`,
+			stream: `stdout`,
+		});
+
+		const visibleEvents = manager.logger.readRecentEvents(10);
+		const allEvents = manager.logger.readRecentEvents(10, { includeHidden: true });
+
+		assert(liveEvents.length === 1, `Shell visibility wrote ${liveEvents.length} live UI events instead of 1.`);
+		assert(liveEvents[0].message.includes(`up to date`), `Visible shell output was not sent to the live UI log.`);
+		assert(!visibleEvents.some(event => event.message.includes(`git rev-parse`)), `Visible HachiGen log included a raw Git command.`);
+		assert(!visibleEvents.some(event => event.message === `abc123`), `Visible HachiGen log included Git plumbing output.`);
+		assert(allEvents.some(event => event.message.includes(`git rev-parse`) && event.uiVisible === false), `Hidden Git command was not persisted with uiVisible=false.`);
+		assert(allEvents.some(event => event.message === `abc123` && event.uiVisible === false), `Hidden Git output was not persisted with uiVisible=false.`);
+		assert(allEvents.some(event => event.message.includes(`up to date`) && event.uiVisible !== false), `Visible npm output was not persisted as UI-visible.`);
 	} finally {
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
@@ -1197,6 +1247,7 @@ async function main() {
 	await test(`HachiGen persists and maintains AppData logs`, validateHachiGenLogMaintenance);
 	await test(`HachiGen deduplicates overlapping update checks`, validateHachiGenUpdateCheckDeduplication);
 	await test(`HachiGen keeps state refresh Git probes quiet`, validateHachiGenQuietStateProbes);
+	await test(`HachiGen hides shell plumbing from visible logs`, validateHachiGenShellLogVisibility);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`git hygiene checks pass`, validateGitHygiene);

@@ -13,6 +13,8 @@ full developer history, see `CHANGELOG.md`.
   branch, remote, and stash checks.
 - HachiGen keeps daily manager logs in the app data folder, including crash logs
   and automatic cleanup of older log archives.
+- The visible Logs panel now focuses on readable manager activity instead of
+  raw shell commands, while the app data logs retain the full sanitized details.
 - Command output that tools send through stderr is now shown as a notice instead
   of looking like a manager error when the action succeeded.
 

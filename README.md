@@ -418,6 +418,8 @@ HachiGen shows PM2 and HachiGen activity on the Logs page. The Clear PM2 and Cle
 
 HachiGen writes its own daily manager logs under the app data folder, such as `%APPDATA%\HachiGen\logs\YYYY-MM-DD\` on Windows. These logs include raw, structured, pretty structured, and crash files. Older daily folders are archived and old archives are removed automatically.
 
+The visible HachiGen activity log hides raw shell commands and Git plumbing. The AppData raw and structured logs keep the sanitized transcript for debugging.
+
 Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored by Git.
 
 ## Troubleshooting
