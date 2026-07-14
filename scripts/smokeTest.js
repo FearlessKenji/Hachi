@@ -667,18 +667,26 @@ function validateHachiGenSelfUpdateWiring() {
 	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
 	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
 	const indexSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `index.html`), `utf8`);
+	const stylesSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `styles.css`), `utf8`);
 	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
 
 	assert(mainSource.includes(`manager:check-hachigen-updates`), `Main process should handle HachiGen update checks.`);
 	assert(mainSource.includes(`manager:install-hachigen-update`), `Main process should handle HachiGen self-update installation.`);
 	assert(mainSource.includes(`manager:open-hachigen-release`), `Main process should expose HachiGen release opening.`);
 	assert(mainSource.includes(`installHachiGenUpdate`) && mainSource.includes(`HachiGen.exe`), `Main process should install HachiGen.exe release assets.`);
+	assert(mainSource.includes(`emitHachiGenUpdateProgress`) && mainSource.includes(`onProgress`), `HachiGen self-update should emit wizard progress events.`);
+	assert(mainSource.includes(`-WindowStyle`) && mainSource.includes(`Hidden`), `HachiGen self-update helper should run without opening a visible shell window.`);
+	assert(mainSource.includes(`app.exit(0)`), `HachiGen self-update should force the old process to exit if normal quit stalls.`);
+	assert(!mainSource.includes(`tasklist /FI`) && !mainSource.includes(`findstr /R`), `HachiGen self-update should not use the old visible cmd.exe wait loop.`);
 	assert(preloadSource.includes(`checkHachiGenUpdates`) && preloadSource.includes(`manager:check-hachigen-updates`), `Preload should expose HachiGen update checks.`);
 	assert(preloadSource.includes(`installHachiGenUpdate`) && preloadSource.includes(`manager:install-hachigen-update`), `Preload should expose HachiGen update installation.`);
 	assert(preloadSource.includes(`openHachiGenRelease`) && preloadSource.includes(`manager:open-hachigen-release`), `Preload should expose HachiGen release opening.`);
 	assert(indexSource.includes(`id="hachigenUpdateMeta"`) && indexSource.includes(`data-action="install-hachigen-update"`), `Updates page should include HachiGen update controls.`);
 	assert(rendererSource.includes(`function renderHachiGenUpdate`) && rendererSource.includes(`api.checkHachiGenUpdates()`), `Renderer should render and check HachiGen updates.`);
 	assert(rendererSource.includes(`api.installHachiGenUpdate()`) && rendererSource.includes(`api.openHachiGenRelease()`), `Renderer should install HachiGen updates and open releases.`);
+	assert(rendererSource.includes(`showHachiGenUpdateWizard`) && rendererSource.includes(`hachigenUpdateWizardProgressBar`), `Renderer should show a HachiGen self-update wizard with progress.`);
+	assert(rendererSource.includes(`handleHachiGenUpdateWizardEvent(event)`), `Renderer should consume HachiGen self-update progress events.`);
+	assert(stylesSource.includes(`.update-wizard-progress`) && stylesSource.includes(`.update-wizard-step.active`), `HachiGen update wizard styles are missing.`);
 	assert(
 		managerSource.includes(`HACHIGEN_RELEASE_TAG_PREFIX = "hachigen-v"`) && !managerSource.includes(`releases/latest`),
 		`HachiGen update checks should use hachigen-v* releases instead of the repo-wide latest release.`,
@@ -687,6 +695,58 @@ function validateHachiGenSelfUpdateWiring() {
 	assert(rendererSource.includes(`Installed release`) && rendererSource.includes(`Latest HachiGen release`), `HachiGen update metadata should label HachiGen release tags clearly.`);
 	assert(typeof HachiManager.prototype.checkHachiGenUpdates === `function`, `HachiManager is missing checkHachiGenUpdates().`);
 	assert(typeof HachiManager.prototype.downloadHachiGenUpdate === `function`, `HachiManager is missing downloadHachiGenUpdate().`);
+}
+
+async function validateHachiGenSelfUpdateUnavailableState() {
+	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-update-unavailable-`));
+
+	try {
+		const manager = new HachiManager({
+			defaultInstallPath: tempDir,
+			managerRoot: resolveProject(`manager`),
+			userDataPath: path.join(tempDir, `userData`),
+		});
+
+		manager.fetchLatestHachiGenRelease = async () => ({
+			assetName: `HachiGen.exe`,
+			assetSize: 0,
+			assetUrl: null,
+			latestTag: `hachigen-v9.9.9`,
+			publishedAt: `2026-07-14T12:00:00.000Z`,
+			releaseName: `HachiGen v9.9.9`,
+			releaseUrl: `https://example.invalid/hachigen-v9.9.9`,
+			unavailableReason: `Latest HachiGen release hachigen-v9.9.9 does not include HachiGen.exe.`,
+		});
+
+		const update = await manager.checkHachiGenUpdates();
+
+		assert(update.status === `unavailable`, `Missing HachiGen release assets should return an unavailable update state.`);
+		assert(update.canInstall === false, `Missing HachiGen release assets should not enable installation.`);
+		assert(update.updateAvailable === false, `Missing HachiGen release assets should not be treated as installable updates.`);
+		assert(update.message.includes(`does not include HachiGen.exe`), `Unavailable HachiGen update state should explain the missing asset.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateHachiGenShellWrapperHardening() {
+	const shellSource = fs.readFileSync(resolveProject(`manager`, `src`, `shell.js`), `utf8`);
+	const { commandExists, run } = requireFresh(`manager`, `src`, `shell.js`);
+	let unsupportedCommandRejected = false;
+
+	assert(shellSource.includes(`ALLOWED_COMMANDS`), `HachiGen shell wrapper should constrain executable names.`);
+	assert(shellSource.includes(`resolveCommandPath(command`), `HachiGen shell wrapper should resolve executables before spawning.`);
+	assert(!shellSource.includes(`env: { ...process.env`), `HachiGen shell wrapper should not spread process.env into spawn options.`);
+	assert(await commandExists(`node`), `HachiGen shell wrapper should resolve the current Node command.`);
+
+	try {
+		await run(`not-a-hachigen-tool`, [], { allowFailure: true, timeoutMs: 1000 });
+	} catch (error) {
+		unsupportedCommandRejected = error.message.includes(`Unsupported command`);
+	}
+
+	assert(unsupportedCommandRejected, `HachiGen shell wrapper should reject unsupported executable names before spawning.`);
 }
 
 function validateBlankConfig() {
@@ -1746,6 +1806,7 @@ function validatePureHelpers() {
 	const { formatPatchNotesMessages, parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
+	const { normalizeEventSubWebSocketUrl } = requireFresh(`modules`, `twitchRoleEventSub.js`);
 	const { offlineEmbed } = requireFresh(`modules`, `streamUtils.js`);
 	const getKickSource = fs.readFileSync(resolveProject(`modules`, `getKick.js`), `utf8`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
@@ -1766,6 +1827,19 @@ function validatePureHelpers() {
 	assert(findKickVodUrl({
 		fields: [{ name: `Kick`, value: `[Watch VoD](https://kick.com/piratesoftware/videos/smoke_vod)` }],
 	}) === `https://kick.com/piratesoftware/videos/smoke_vod`, `Kick VoD URL detection failed.`);
+	assert(
+		normalizeEventSubWebSocketUrl(`wss://eventsub.wss.twitch.tv/ws?session_id=smoke`) ===
+		`wss://eventsub.wss.twitch.tv/ws?session_id=smoke`,
+		`Twitch EventSub WebSocket URL validation rejected the canonical endpoint.`,
+	);
+	assert(
+		normalizeEventSubWebSocketUrl(`wss://127.0.0.1/ws?session_id=smoke`) === null,
+		`Twitch EventSub WebSocket URL validation accepted an internal host.`,
+	);
+	assert(
+		normalizeEventSubWebSocketUrl(`https://eventsub.wss.twitch.tv/ws?session_id=smoke`) === null,
+		`Twitch EventSub WebSocket URL validation accepted a non-WebSocket scheme.`,
+	);
 	let missingVodRejected = false;
 
 	try {
@@ -1836,6 +1910,8 @@ async function main() {
 	await test(`HachiGen database actions refresh viewer cache`, validateDatabaseViewerRefreshWiring);
 	await test(`HachiGen application menu is wired`, validateHachiGenMenuWiring);
 	await test(`HachiGen self-update controls are wired`, validateHachiGenSelfUpdateWiring);
+	await test(`HachiGen self-update reports missing assets without IPC failure`, validateHachiGenSelfUpdateUnavailableState);
+	await test(`HachiGen shell wrapper resolves allowed commands safely`, validateHachiGenShellWrapperHardening);
 	await test(`blank config cron fields are valid`, validateBlankConfig);
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
 	await test(`HachiGen IPC surface is fully wired`, validateHachiGenIpcSurface);

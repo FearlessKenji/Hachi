@@ -3,6 +3,7 @@
 // The polling/sync command path remains the source of truth, but EventSub can
 // keep connected broadcaster state fresher when the provider connection is live.
 const WebSocket = require(`ws`);
+const { URL } = require(`node:url`);
 const { TwitchRoleConfigs, TwitchRoleEventMessages } = require(`../database/dbObjects.js`);
 const {
 	applyTwitchRoleEvent,
@@ -11,6 +12,8 @@ const {
 const { info, warn, error } = require(`../utils/writeLog.js`);
 
 const EVENTSUB_WEBSOCKET_URL = `wss://eventsub.wss.twitch.tv/ws`;
+const EVENTSUB_WEBSOCKET_HOST = `eventsub.wss.twitch.tv`;
+const EVENTSUB_WEBSOCKET_PATHS = new Set([`/`, `/ws`]);
 const RECONNECT_DELAY_MS = 15000;
 const SUBSCRIPTION_TYPES = [
 	{ roleType: `vip`, shouldHave: true, type: `channel.vip.add` },
@@ -23,6 +26,33 @@ let activeService = null;
 
 function eventDetails(subscriptionType) {
 	return SUBSCRIPTION_TYPES.find(details => details.type === subscriptionType) || null;
+}
+
+function normalizeEventSubWebSocketUrl(rawUrl) {
+	let parsedUrl;
+
+	try {
+		parsedUrl = new URL(String(rawUrl));
+	} catch {
+		return null;
+	}
+
+	if (
+		parsedUrl.protocol !== `wss:` ||
+		parsedUrl.hostname !== EVENTSUB_WEBSOCKET_HOST ||
+		!EVENTSUB_WEBSOCKET_PATHS.has(parsedUrl.pathname) ||
+		parsedUrl.username ||
+		parsedUrl.password ||
+		parsedUrl.hash
+	) {
+		return null;
+	}
+
+	const trustedUrl = new URL(EVENTSUB_WEBSOCKET_URL);
+
+	trustedUrl.pathname = parsedUrl.pathname;
+	trustedUrl.search = parsedUrl.search;
+	return trustedUrl.href;
 }
 
 function createService(client) {
@@ -199,9 +229,17 @@ function createService(client) {
 			return;
 		}
 
+		const trustedUrl = normalizeEventSubWebSocketUrl(url);
+
+		if (!trustedUrl) {
+			warn(`Rejected untrusted Twitch EventSub WebSocket URL.`);
+			scheduleReconnect();
+			return;
+		}
+
 		clearReconnectTimer();
 
-		const ws = new WebSocket(url);
+		const ws = new WebSocket(trustedUrl);
 		socket = ws;
 
 		ws.on(`open`, () => {
@@ -307,6 +345,7 @@ function stopTwitchRoleEventSub() {
 }
 
 module.exports = {
+	normalizeEventSubWebSocketUrl,
 	startTwitchRoleEventSub,
 	stopTwitchRoleEventSub,
 };

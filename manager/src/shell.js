@@ -3,7 +3,26 @@
 // HachiGen runs Git, npm, node scripts, PM2, ssh, and platform tools. Keeping
 // process execution here gives manager.js one consistent timeout, logging, and
 // Windows command-shim behavior.
-const { spawn } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const ALLOWED_COMMANDS = new Set([
+	"git",
+	"node",
+	"npm",
+	"npx",
+	"pm2",
+	"ssh",
+	"where",
+	"which",
+	"winget",
+]);
+const WINDOWS_COMMAND_PROCESSOR = "C:\\Windows\\System32\\cmd.exe";
+const WINDOWS_COMMAND_RESOLVER = "C:\\Windows\\System32\\where.exe";
+const POSIX_COMMAND_RESOLVERS = ["/usr/bin/which", "/bin/which"];
+const WINDOWS_COMMAND_SHIMS = new Set(["npm", "npx", "pm2"]);
+const commandPathCache = new Map();
 
 // ShellError wraps command failures with the command result attached. Callers
 // can show a friendly error while still keeping stdout/stderr for the Logs tab.
@@ -37,6 +56,23 @@ function needsWindowsCommandShell(command) {
 	return process.platform === "win32" && ["npm", "npx", "pm2"].includes(command);
 }
 
+function shellError(message, command, args = [], cwd = null) {
+	return new ShellError(message, {
+		args,
+		code: 1,
+		command,
+		cwd,
+		stderr: message,
+		stdout: "",
+	});
+}
+
+function validateCommand(command, args = [], cwd = null) {
+	if (!ALLOWED_COMMANDS.has(command)) {
+		throw shellError(`Unsupported command: ${command}.`, command, args, cwd);
+	}
+}
+
 // Quote one argument for the cmd.exe path used by Windows shims. The caret
 // escapes characters that cmd.exe would otherwise interpret as syntax.
 function quoteForCmd(value) {
@@ -53,21 +89,124 @@ function quoteForCmd(value) {
 	return `"${text.replace(/(["^&<>|])/g, "^$1")}"`;
 }
 
+function getWindowsLookupNames(command) {
+	if (WINDOWS_COMMAND_SHIMS.has(command)) {
+		return [`${command}.cmd`, command];
+	}
+
+	return [command];
+}
+
+function getPosixCommandResolver() {
+	return POSIX_COMMAND_RESOLVERS.find(resolver => fs.existsSync(resolver)) || null;
+}
+
+function parseCommandResolverOutput(output) {
+	return String(output || "")
+		.split(/\r?\n/u)
+		.map(line => line.trim())
+		.filter(Boolean);
+}
+
+function firstExistingAbsolutePath(paths) {
+	return paths.find(candidate => path.isAbsolute(candidate) && fs.existsSync(candidate)) || null;
+}
+
+function resolveWindowsCommandPath(command) {
+	if (command === "where") {
+		return WINDOWS_COMMAND_RESOLVER;
+	}
+
+	const resolver = fs.existsSync(WINDOWS_COMMAND_RESOLVER) ? WINDOWS_COMMAND_RESOLVER : "where.exe";
+
+	for (const lookupName of getWindowsLookupNames(command)) {
+		const result = spawnSync(resolver, [lookupName], {
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			windowsHide: true,
+		});
+		const commandPath = firstExistingAbsolutePath(parseCommandResolverOutput(result.stdout));
+
+		if (commandPath) {
+			return commandPath;
+		}
+	}
+
+	return null;
+}
+
+function resolvePosixCommandPath(command) {
+	const resolver = getPosixCommandResolver();
+
+	if (!resolver) {
+		return null;
+	}
+
+	if (command === "which") {
+		return resolver;
+	}
+
+	const result = spawnSync(resolver, [command], {
+		encoding: "utf8",
+		stdio: ["ignore", "pipe", "ignore"],
+	});
+
+	return firstExistingAbsolutePath(parseCommandResolverOutput(result.stdout));
+}
+
+function resolveCommandPath(command, args = [], cwd = null) {
+	validateCommand(command, args, cwd);
+
+	if (commandPathCache.has(command)) {
+		return commandPathCache.get(command);
+	}
+
+	const commandPath = process.platform === "win32" ?
+		resolveWindowsCommandPath(command) :
+		resolvePosixCommandPath(command);
+
+	if (!commandPath) {
+		throw shellError(`Command not found: ${command}.`, command, args, cwd);
+	}
+
+	commandPathCache.set(command, commandPath);
+	return commandPath;
+}
+
+function buildSpawnOptions({ cwd, env }) {
+	const options = {
+		cwd,
+		shell: false,
+		stdio: ["ignore", "pipe", "pipe"],
+		windowsHide: true,
+	};
+
+	if (env) {
+		options.env = Object.fromEntries(
+			Object.entries(env).map(([key, value]) => [key, String(value)]),
+		);
+	}
+
+	return options;
+}
+
 // Decide the real process and arguments passed to spawn().
 // Most commands run directly; Windows npm/npx/pm2 commands are translated to:
 // cmd.exe /d /s /c npm.cmd ...
-function spawnTarget(command, args) {
+function spawnTarget(command, args, cwd = null) {
+	const commandPath = resolveCommandPath(command, args, cwd);
+
 	if (!needsWindowsCommandShell(command)) {
 		return {
-			command,
+			command: commandPath,
 			args,
 		};
 	}
 
-	const commandLine = [`${command}.cmd`, ...args].map(quoteForCmd).join(" ");
+	const commandLine = [commandPath, ...args].map(quoteForCmd).join(" ");
 
 	return {
-		command: "cmd.exe",
+		command: WINDOWS_COMMAND_PROCESSOR,
 		args: ["/d", "/s", "/c", commandLine],
 	};
 }
@@ -106,6 +245,8 @@ function run(command, args = [], options = {}) {
 		displayCommand: displayCommand(command, args),
 	};
 
+	validateCommand(command, args, cwd);
+
 	if (onLog) {
 		onLog({ ...logContext, stream: "command", message: `> ${logContext.displayCommand}` });
 	}
@@ -117,13 +258,8 @@ function run(command, args = [], options = {}) {
 		let stderr = "";
 		let settled = false;
 
-		const target = spawnTarget(command, args);
-		const child = spawn(target.command, target.args, {
-			cwd,
-			env: { ...process.env, ...env },
-			windowsHide: true,
-			stdio: ["ignore", "pipe", "pipe"],
-		});
+		const target = spawnTarget(command, args, cwd);
+		const child = spawn(target.command, target.args, buildSpawnOptions({ cwd, env }));
 
 		// Long-running installs can hang if another process is waiting for input.
 		// The timeout turns that into a visible error instead of a frozen app.
@@ -181,13 +317,12 @@ function run(command, args = [], options = {}) {
 // Check whether a command exists on PATH without throwing. HachiGen uses this
 // before deciding whether it can run a tool or should offer/install a repair.
 async function commandExists(command) {
-	const checker = process.platform === "win32" ? "where" : "which";
-	const result = await run(checker, [command], {
-		allowFailure: true,
-		timeoutMs: 10000,
-	});
-
-	return result.code === 0;
+	try {
+		resolveCommandPath(command);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 module.exports = {

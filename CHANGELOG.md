@@ -4,6 +4,17 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Updated HachiGen package metadata to version `1.0.2`.
+
+### Fixed
+
+- Fixed HachiGen self-update checks so a missing `HachiGen.exe` release asset shows as unavailable instead of throwing an IPC error.
+- Fixed HachiGen self-updates so they use an in-app wizard with progress, run the replacement helper hidden, wait on the old app safely, and force HachiGen to exit if normal shutdown stalls.
+- Hardened HachiGen shell command launching by resolving allowed executables before spawning and avoiding inherited environment expansion in spawn options.
+- Hardened Twitch role EventSub reconnect handling by validating WebSocket reconnect URLs against Twitch's expected EventSub endpoint before opening sockets.
+
 ## v3.3.2 - 2026-07-14
 
 ### Changed

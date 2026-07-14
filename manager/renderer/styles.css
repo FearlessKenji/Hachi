@@ -1056,6 +1056,100 @@ h2 {
 	line-height: 1.4;
 }
 
+.update-wizard {
+	display: grid;
+	gap: 14px;
+}
+
+.update-wizard-progress {
+	position: relative;
+	overflow: hidden;
+	height: 28px;
+	border: 1px solid rgba(216, 225, 229, 0.28);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.06);
+}
+
+.update-wizard-progress-bar {
+	width: 0;
+	height: 100%;
+	background: var(--primary);
+	transition: width 160ms ease;
+}
+
+.update-wizard-progress-text {
+	position: absolute;
+	inset: 0;
+	display: grid;
+	place-items: center;
+	color: var(--text);
+	font-size: 12px;
+	font-weight: 750;
+}
+
+.update-wizard-message {
+	min-height: 22px;
+	color: var(--text);
+	font-weight: 650;
+	line-height: 1.4;
+}
+
+.update-wizard-steps {
+	display: grid;
+	gap: 8px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.update-wizard-step {
+	display: grid;
+	grid-template-columns: 18px minmax(0, 1fr);
+	gap: 10px;
+	align-items: center;
+	min-height: 32px;
+	border: 1px solid rgba(216, 225, 229, 0.22);
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.05);
+	color: var(--muted);
+	padding: 7px 10px;
+}
+
+.update-wizard-marker {
+	width: 10px;
+	height: 10px;
+	border-radius: 999px;
+	background: #a7b2b8;
+}
+
+.update-wizard-step.active {
+	border-color: rgba(63, 111, 159, 0.58);
+	color: var(--text);
+}
+
+.update-wizard-step.active .update-wizard-marker {
+	background: var(--info);
+}
+
+.update-wizard-step.done .update-wizard-marker {
+	background: #22c55e;
+}
+
+.update-wizard-step.error {
+	border-color: rgba(239, 68, 68, 0.58);
+	color: var(--text);
+}
+
+.update-wizard-step.error .update-wizard-marker {
+	background: #ef4444;
+}
+
+.update-wizard-note {
+	color: var(--muted);
+	font-size: 12px;
+	line-height: 1.45;
+}
+
 .sanitize-findings {
 	display: grid;
 	gap: 10px;
