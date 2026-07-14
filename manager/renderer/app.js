@@ -270,7 +270,7 @@ function hachiGenUpdateMetaLabel(update, hachiGenVersion) {
 	const latest = update.latestTag || "Unknown";
 	const size = update.assetSize ? ` | Asset: ${formatFileSize(update.assetSize)}` : "";
 
-	return `Last checked: ${checkedAt} | HachiGen version: ${version} | Installed release: ${current} | Latest release: ${latest}${size}`;
+	return `Last checked: ${checkedAt} | HachiGen version: ${version} | Installed release: ${current} | Latest HachiGen release: ${latest}${size}`;
 }
 
 // Disable action buttons while a backend action is running. Sidebar navigation
@@ -881,7 +881,7 @@ function renderHachiGenUpdate(update) {
 	// HachiGen updates come from GitHub release assets rather than the Hachi Git
 	// checkout, so they have their own status text and install button.
 	setText("#hachigenUpdateMeta", hachiGenUpdateMetaLabel(update, state?.hachiGenVersion));
-	setText("#hachigenUpdateMessage", update?.message || "Check for the latest HachiGen.exe release.");
+	setText("#hachigenUpdateMessage", update?.message || "Check for the latest HachiGen release.");
 	setDisabled("#installHachiGenUpdateButton", !update?.canInstall);
 }
 
@@ -2016,7 +2016,7 @@ function handleAction(event) {
 		showConfirmModal({
 			confirmText: "Install Latest",
 			details: [
-				"HachiGen will download the latest HachiGen.exe release asset.",
+				"HachiGen will download HachiGen.exe from the latest HachiGen release.",
 				"Packaged Windows builds close, replace the running executable, and relaunch.",
 				"Development builds open the release download instead of replacing Electron.",
 			],

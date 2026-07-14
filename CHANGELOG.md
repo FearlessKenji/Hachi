@@ -4,10 +4,18 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.3.2 - 2026-07-14
+
+### Changed
+
+- Updated the project version to `3.3.2`.
+- Updated HachiGen package metadata to version `1.0.1`.
+
 ### Fixed
 
 - Fixed HachiGen encrypted database sanitation so rollback/finally cleanup can run after SQLCipher maintenance actions.
 - Fixed encrypted SQLite runtime binding so Sequelize boolean/Date writes work with SQLCipher-backed databases.
+- Fixed Kick offline notification retries so Hachi keeps looking for a VoD link after a blocked or delayed replay lookup instead of giving up after one miss.
 - HachiGen sidebar navigation now remains responsive while manager actions are running.
 - HachiGen state refreshes no longer flood the event log with routine Git metadata probes.
 - HachiGen now writes persistent daily manager logs under the app data folder, including raw, structured, pretty structured, and crash logs with automatic archive cleanup.
@@ -17,7 +25,9 @@ Notable changes to Hachi are documented here.
 ### Added
 
 - Added a focused HachiGen application menu with File, View, Window, and Help actions, including a Help check that compares the current Hachi version with the repo version.
-- Added a HachiGen update panel for checking, opening, and installing the latest `HachiGen.exe` release separately from Hachi bot Git updates.
+- Added separate release tracks: Hachi releases use `hachi-vX.X.X`, while HachiGen releases use `hachigen-vX.X.X`.
+- Added a HachiGen update panel for checking, opening, and installing `HachiGen.exe` from the latest HachiGen release separately from Hachi bot Git updates.
+- Added a Twitch verification privacy note clarifying that Hachi never sees Twitch passwords or stores OAuth tokens from member verification.
 
 ## v3.3.1 - 2026-07-12
 

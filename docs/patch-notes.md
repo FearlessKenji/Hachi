@@ -1,21 +1,46 @@
-# Hachi Patch Notes
+Hachi Patch Notes
 
 These notes are written for server owners and moderators. They include changes
 that affect setup, security, day-to-day use, or visible bot behavior. For the
 full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md).
 
-## Unreleased
+# Unreleased
+
+# v3.3.2 - 2026-07-14
+
+## Hachi
 
 ### Reliability
 
 - Encrypted database writes now handle bot state updates correctly, including
   Kick live-notification status changes.
+- Kick notifications now keep retrying for a replay link after a stream ends
+  instead of giving up after one blocked or delayed VoD lookup.
 
-### HachiGen
+### Security and Privacy
+
+- Twitch verification now includes a privacy note clarifying that Hachi never
+  sees Twitch passwords or stores OAuth tokens from member verification.
+
+## HachiGen
+
+### Database
 
 - Encrypted database sanitation can now clean selected findings without failing
   after creating the safety backup.
+
+### Updates
+
+- HachiGen now uses `1.0.1` for its packaged app metadata.
+- Hachi and HachiGen now use separate release tracks, so small HachiGen updates
+  can ship without changing the Hachi bot version.
+
+### Navigation
+
 - Sidebar navigation stays available while HachiGen is running manager actions.
+
+### Logging
+
 - Routine state refreshes no longer crowd the HachiGen log with repeated Git
   branch, remote, and stash checks.
 - HachiGen keeps daily manager logs in the app data folder, including crash logs
@@ -25,7 +50,9 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - Command output that tools send through stderr is now shown as a notice instead
   of looking like a manager error when the action succeeded.
 
-## v3.3.1 - 2026-07-12
+# v3.3.1 - 2026-07-12
+
+## Hachi
 
 ### Setup
 
@@ -33,7 +60,6 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
   setup easier to find.
 - Fixed Hachi Updates channel selection so saving an announcement channel no
   longer fails with a database binding error.
-- HachiGen now uses `1.0.0` for its packaged app metadata.
 
 ### Reliability
 
@@ -41,9 +67,20 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
   the replay endpoint after a stream ends.
 - If a Kick notification already has a valid VoD link, Hachi now clears the
   stale live state without making another blocked lookup.
+
+## HachiGen
+
+### Updates
+
+- HachiGen now uses `1.0.0` for its packaged app metadata.
+
+### Logging
+
 - HachiGen errors now appear in its log as well as popup notifications.
 
-## v3.3.0 - 2026-07-12
+# v3.3.0 - 2026-07-12
+
+## Hachi
 
 ### Security and Setup
 

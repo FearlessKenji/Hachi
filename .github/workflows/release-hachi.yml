@@ -1,15 +1,15 @@
-name: Release HachiGen
+name: Release Hachi
 
 on:
   push:
     branches:
       - main
     tags:
-      - "hachigen-v*"
+      - "hachi-v*"
   workflow_dispatch:
     inputs:
       tag:
-        description: "HachiGen release tag, for example hachigen-v1.0.1"
+        description: "Hachi release tag, for example hachi-v3.3.2"
         required: true
         type: string
 
@@ -17,9 +17,9 @@ permissions:
   contents: write
 
 jobs:
-  build-hachigen:
-    name: Build HachiGen
-    runs-on: windows-latest
+  release-hachi:
+    name: Release Hachi
+    runs-on: ubuntu-latest
 
     steps:
       - name: Check out repository
@@ -28,7 +28,7 @@ jobs:
           ref: ${{ github.ref_type == 'tag' && github.ref_name || github.ref }}
           fetch-depth: 0
 
-      - name: Resolve HachiGen release tag
+      - name: Resolve Hachi release tag
         id: release
         shell: pwsh
         run: |
@@ -37,7 +37,7 @@ jobs:
           $inputTag = "${{ github.event.inputs.tag }}"
           $before = "${{ github.event.before }}"
           $shouldRelease = "true"
-          $tagPrefix = "hachigen-v"
+          $tagPrefix = "hachi-v"
 
           if ($inputTag) {
             $tag = $inputTag
@@ -46,11 +46,11 @@ jobs:
             $tag = $refName
             $version = $tag -replace "^$tagPrefix", ""
           } else {
-            $package = Get-Content manager/package.json -Raw | ConvertFrom-Json
+            $package = Get-Content package.json -Raw | ConvertFrom-Json
             $version = [string]$package.version
 
             if (-not $version) {
-              Write-Error "manager/package.json does not define a version."
+              Write-Error "package.json does not define a version."
               exit 1
             }
 
@@ -58,7 +58,7 @@ jobs:
             $previousVersion = ""
 
             if ($before -and $before -notmatch "^0+$") {
-              $previousPackageText = git show "$before`:manager/package.json" 2>$null
+              $previousPackageText = git show "$before`:package.json" 2>$null
 
               if ($LASTEXITCODE -eq 0 -and $previousPackageText) {
                 $previousPackage = $previousPackageText | ConvertFrom-Json
@@ -76,19 +76,19 @@ jobs:
             }
 
             if ($tagExists) {
-              Write-Host "HachiGen release tag $tag already exists; skipping automatic release."
+              Write-Host "Hachi release tag $tag already exists; skipping automatic release."
               $shouldRelease = "false"
             } elseif ($previousVersion -eq $version) {
-              Write-Host "manager/package.json version is still $version, but $tag does not exist; creating release for the current HachiGen version."
+              Write-Host "package.json version is still $version, but $tag does not exist; creating release for the current Hachi version."
             } elseif ($previousVersion) {
-              Write-Host "manager/package.json version changed from $previousVersion to $version; creating $tag."
+              Write-Host "package.json version changed from $previousVersion to $version; creating $tag."
             } else {
-              Write-Host "Could not read the previous manager/package.json version; creating $tag because the tag does not exist."
+              Write-Host "Could not read the previous package.json version; creating $tag because the tag does not exist."
             }
           }
 
-          if ($tag -notmatch "^hachigen-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$") {
-            Write-Error "HachiGen release tag '$tag' must look like hachigen-v1.0.1."
+          if ($tag -notmatch "^hachi-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$") {
+            Write-Error "Hachi release tag '$tag' must look like hachi-v3.3.2."
             exit 1
           }
 
@@ -97,37 +97,15 @@ jobs:
           }
 
           "release_tag=$tag" >> $env:GITHUB_OUTPUT
-          "release_title=HachiGen v$version" >> $env:GITHUB_OUTPUT
+          "release_title=Hachi v$version" >> $env:GITHUB_OUTPUT
           "release_version=$version" >> $env:GITHUB_OUTPUT
           "should_release=$shouldRelease" >> $env:GITHUB_OUTPUT
           Write-Host "release_tag=$tag"
-          Write-Host "release_title=HachiGen v$version"
+          Write-Host "release_title=Hachi v$version"
           Write-Host "should_release=$shouldRelease"
           exit 0
 
-      - name: Set up Node.js
-        if: steps.release.outputs.should_release == 'true'
-        uses: actions/setup-node@v6
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            manager/package-lock.json
-
-      - name: Install bot dependencies
-        if: steps.release.outputs.should_release == 'true'
-        run: npm ci
-
-      - name: Install HachiGen dependencies
-        if: steps.release.outputs.should_release == 'true'
-        run: npm --prefix manager ci
-
-      - name: Build HachiGen
-        if: steps.release.outputs.should_release == 'true'
-        run: npm run build:hachigen
-
-      - name: Create HachiGen release tag
+      - name: Create Hachi release tag
         if: steps.release.outputs.should_release == 'true' && github.ref_type != 'tag' && github.event_name != 'workflow_dispatch'
         shell: pwsh
         env:
@@ -138,7 +116,7 @@ jobs:
           git tag $env:RELEASE_TAG
           git push origin $env:RELEASE_TAG
 
-      - name: Create or update GitHub release
+      - name: Create GitHub release
         if: steps.release.outputs.should_release == 'true'
         shell: pwsh
         env:
@@ -156,9 +134,9 @@ jobs:
           gh release view $tag *> $null
 
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag HachiGen.exe --clobber
-            exit $LASTEXITCODE
+            Write-Host "Release $tag already exists."
+            exit 0
           }
 
-          gh release create $tag HachiGen.exe --title "$env:RELEASE_TITLE" --generate-notes --latest=false
+          gh release create $tag --title "$env:RELEASE_TITLE" --generate-notes --latest
           exit $LASTEXITCODE

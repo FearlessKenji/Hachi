@@ -1,6 +1,6 @@
 {
 	"name": "hachigen",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "Desktop manager for installing, configuring, updating, and running Hachi.",
 	"author": "FearlessKenji",
 	"private": true,

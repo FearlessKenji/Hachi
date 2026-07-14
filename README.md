@@ -436,7 +436,7 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 
 HachiGen is packaged with Electron Builder. The portable executable is created at `manager/dist/HachiGen.exe`, then copied to the repository root as `HachiGen.exe`.
 
-`HachiGen.exe` is generated output and is not committed to the repository. When a `v*` version tag is pushed, `.github/workflows/release-hachigen.yml` builds HachiGen on a Windows runner and attaches `HachiGen.exe` to the matching GitHub Release. The same workflow can also be run manually for an existing tag from the GitHub Actions tab.
+`HachiGen.exe` is generated output and is not committed to the repository. Hachi bot releases use `hachi-vX.X.X` tags from the root `package.json`, while HachiGen releases use `hachigen-vX.X.X` tags from `manager/package.json`. When a `hachigen-v*` tag is pushed, `.github/workflows/release-hachigen.yml` builds HachiGen on a Windows runner and attaches `HachiGen.exe` to the matching GitHub Release. The workflow can also be run manually from the GitHub Actions tab.
 
 To rebuild HachiGen locally, run:
 
