@@ -84,7 +84,9 @@ function buildPanelComponents() {
 
 function buildPanelContent() {
 	return `## Twitch Verification
-Click the button to verify your Twitch account with Hachi. If your Twitch account is a VIP or Moderator for the connected channel, Hachi will update your Discord roles.`;
+Click the button to verify your Twitch account with Hachi. If your Twitch account is a VIP or Moderator for the connected channel, Hachi will update your Discord roles.
+
+-# Hachi never sees your Twitch password and does not store OAuth tokens from this verification.`;
 }
 
 async function safeFollowUp(interaction, payload) {

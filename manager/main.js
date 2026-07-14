@@ -23,7 +23,7 @@ const HELP_LINKS = {
 	docs: "https://fearlesskenji.github.io/Hachi/",
 	patchNotes: "https://github.com/FearlessKenji/Hachi/blob/main/docs/patch-notes.md",
 	readme: "https://github.com/FearlessKenji/Hachi#readme",
-	releases: "https://github.com/FearlessKenji/Hachi/releases/latest",
+	releases: "https://github.com/FearlessKenji/Hachi/releases",
 };
 
 // Electron apps have a "main process" and one or more windows.

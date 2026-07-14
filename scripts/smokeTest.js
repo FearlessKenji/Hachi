@@ -288,6 +288,36 @@ async function validateSetupHubOrdering() {
 	assert(buttons.slice(1).every(button => button.style === ButtonStyle.Secondary), `Non-primary setup buttons should use secondary style.`);
 }
 
+async function validateTwitchVerificationPanelPrivacyCopy() {
+	const { PermissionFlagsBits } = require(`discord.js`);
+	const twitch = requireFresh(`commands`, `globalCommands`, `utility`, `twitch.js`);
+	let sentPayload = null;
+	let replyPayload = null;
+
+	await twitch.execute({
+		options: {
+			getSubcommand: () => `panel`,
+		},
+		memberPermissions: {
+			has: permission => permission === PermissionFlagsBits.ManageGuild,
+		},
+		channel: {
+			send(payload) {
+				sentPayload = payload;
+				return Promise.resolve();
+			},
+		},
+		reply(payload) {
+			replyPayload = payload;
+			return Promise.resolve();
+		},
+	});
+
+	assert(sentPayload?.content?.includes(`-# Hachi never sees your Twitch password`), `Twitch verification panel is missing Discord subtext privacy copy.`);
+	assert(sentPayload?.content?.includes(`does not store OAuth tokens from this verification`), `Twitch verification panel should explain OAuth token storage behavior.`);
+	assert(replyPayload?.content === `Twitch verification panel posted.`, `Twitch panel command did not confirm posting.`);
+}
+
 async function validateAnnouncementChannelIdNormalization() {
 	const announcements = requireFresh(`utils`, `announcements.js`);
 	const { Servers } = require(resolveProject(`database`, `dbObjects.js`));
@@ -529,6 +559,7 @@ function validateProjectFiles() {
 	const requiredFiles = [
 		`CHANGELOG.md`,
 		`.github/workflows/ci.yml`,
+		`.github/workflows/release-hachi.yml`,
 		`.github/workflows/release-hachigen.yml`,
 		`README.md`,
 		`blank.env`,
@@ -559,22 +590,29 @@ function validateProjectFiles() {
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
-	const releaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
+	const hachiReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachi.yml`), `utf8`);
+	const hachiGenReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
 	const currentTag = `v${readJson(`package.json`).version}`;
 
 	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
-	assert(patchNotes.includes(`## ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
+	assert(patchNotes.includes(`# ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
+	assert(patchNotes.includes(`## Hachi`) && patchNotes.includes(`## HachiGen`), `docs/patch-notes.md should separate Hachi and HachiGen notes with Discord heading levels.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
-	assert(releaseWorkflow.includes(`branches:`) && releaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
-	assert(releaseWorkflow.includes(`Resolve release tag`) && releaseWorkflow.includes(`package.json`), `HachiGen release workflow should resolve tags from package.json version bumps.`);
-	assert(releaseWorkflow.includes(`version is still $version, but $tag does not exist`), `HachiGen release workflow should release the current version when its tag is missing.`);
-	assert(!releaseWorkflow.includes(`ls-remote --exit-code --tags`), `HachiGen release workflow should not fail when a release tag is missing.`);
-	assert(releaseWorkflow.includes(`tags:`) && releaseWorkflow.includes(`"v*"`), `HachiGen release workflow should run for v* tags.`);
-	assert(releaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
-	assert(releaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
-	assert(releaseWorkflow.includes(`gh release upload`) && releaseWorkflow.includes(`gh release create`), `HachiGen release workflow should create or update releases.`);
+	assert(hachiReleaseWorkflow.includes(`branches:`) && hachiReleaseWorkflow.includes(`main`), `Hachi release workflow should run when main changes.`);
+	assert(hachiReleaseWorkflow.includes(`"hachi-v*"`) && hachiReleaseWorkflow.includes(`$tagPrefix = "hachi-v"`), `Hachi release workflow should use hachi-v* tags.`);
+	assert(hachiReleaseWorkflow.includes(`release_title=Hachi v$version`), `Hachi release workflow should title releases as Hachi vX.X.X.`);
+	assert(!hachiReleaseWorkflow.includes(`HachiGen.exe`), `Hachi release workflow should not upload HachiGen.exe.`);
+	assert(hachiGenReleaseWorkflow.includes(`branches:`) && hachiGenReleaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
+	assert(hachiGenReleaseWorkflow.includes(`manager/package.json`), `HachiGen release workflow should resolve tags from manager/package.json version bumps.`);
+	assert(hachiGenReleaseWorkflow.includes(`"hachigen-v*"`) && hachiGenReleaseWorkflow.includes(`$tagPrefix = "hachigen-v"`), `HachiGen release workflow should use hachigen-v* tags.`);
+	assert(hachiGenReleaseWorkflow.includes(`release_title=HachiGen v$version`), `HachiGen release workflow should title releases as HachiGen vX.X.X.`);
+	assert(hachiGenReleaseWorkflow.includes(`version is still $version, but $tag does not exist`), `HachiGen release workflow should release the current version when its tag is missing.`);
+	assert(!hachiGenReleaseWorkflow.includes(`ls-remote --exit-code --tags`), `HachiGen release workflow should not fail when a release tag is missing.`);
+	assert(hachiGenReleaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
+	assert(hachiGenReleaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
+	assert(hachiGenReleaseWorkflow.includes(`gh release upload`) && hachiGenReleaseWorkflow.includes(`gh release create`), `HachiGen release workflow should create or update releases.`);
 }
 
 function validateDatabaseViewerRefreshWiring() {
@@ -625,6 +663,7 @@ function validateHachiGenMenuWiring() {
 
 function validateHachiGenSelfUpdateWiring() {
 	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
+	const managerSource = fs.readFileSync(resolveProject(`manager`, `src`, `manager.js`), `utf8`);
 	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
 	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
 	const indexSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `index.html`), `utf8`);
@@ -640,6 +679,12 @@ function validateHachiGenSelfUpdateWiring() {
 	assert(indexSource.includes(`id="hachigenUpdateMeta"`) && indexSource.includes(`data-action="install-hachigen-update"`), `Updates page should include HachiGen update controls.`);
 	assert(rendererSource.includes(`function renderHachiGenUpdate`) && rendererSource.includes(`api.checkHachiGenUpdates()`), `Renderer should render and check HachiGen updates.`);
 	assert(rendererSource.includes(`api.installHachiGenUpdate()`) && rendererSource.includes(`api.openHachiGenRelease()`), `Renderer should install HachiGen updates and open releases.`);
+	assert(
+		managerSource.includes(`HACHIGEN_RELEASE_TAG_PREFIX = "hachigen-v"`) && !managerSource.includes(`releases/latest`),
+		`HachiGen update checks should use hachigen-v* releases instead of the repo-wide latest release.`,
+	);
+	assert(managerSource.includes(`Latest HachiGen release is`), `HachiGen update text should describe HachiGen releases after release tracks are split.`);
+	assert(rendererSource.includes(`Installed release`) && rendererSource.includes(`Latest HachiGen release`), `HachiGen update metadata should label HachiGen release tags clearly.`);
 	assert(typeof HachiManager.prototype.checkHachiGenUpdates === `function`, `HachiManager is missing checkHachiGenUpdates().`);
 	assert(typeof HachiManager.prototype.downloadHachiGenUpdate === `function`, `HachiManager is missing downloadHachiGenUpdate().`);
 }
@@ -1698,9 +1743,11 @@ function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
-	const { parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
+	const { formatPatchNotesMessages, parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
+	const { offlineEmbed } = requireFresh(`modules`, `streamUtils.js`);
+	const getKickSource = fs.readFileSync(resolveProject(`modules`, `getKick.js`), `utf8`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
 	const {
 		getTimezoneChoicesForRegion,
@@ -1719,16 +1766,39 @@ function validatePureHelpers() {
 	assert(findKickVodUrl({
 		fields: [{ name: `Kick`, value: `[Watch VoD](https://kick.com/piratesoftware/videos/smoke_vod)` }],
 	}) === `https://kick.com/piratesoftware/videos/smoke_vod`, `Kick VoD URL detection failed.`);
-	const latestPatchNotes = parseLatestPatchNotes(`## Unreleased
+	let missingVodRejected = false;
+
+	try {
+		offlineEmbed({
+			existingEmbed: { fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/piratesoftware)` }] },
+			imageUrl: null,
+			provider: `Kick`,
+			vodUrl: null,
+		});
+	} catch (error) {
+		missingVodRejected = /requires a VoD URL/u.test(error.message);
+	}
+
+	assert(missingVodRejected, `Offline stream embeds should require a VoD URL.`);
+	assert(getKickSource.includes(`Keep kickIsLive true so the next Kick cron tick retries`), `Kick VoD misses should keep retrying instead of clearing live state.`);
+	assert(!getKickSource.includes(`without a VoD link`), `Kick offline updates should not edit embeds without a VoD link.`);
+	const latestPatchNotes = parseLatestPatchNotes(`# Unreleased
 
 - Draft manager note.
 
-## v3.3.1 - 2026-07-12
+# v3.3.1 - 2026-07-12
+
+## Hachi
+
+### Reliability
 
 - Released note.
 `);
 	assert(latestPatchNotes?.id === `v3.3.1`, `Patch-note parser should skip Unreleased sections.`);
 	assert(!latestPatchNotes.body.includes(`Draft manager note`), `Patch-note parser included Unreleased content.`);
+	const patchNoteMessage = formatPatchNotesMessages(latestPatchNotes)[0] || ``;
+	assert(patchNoteMessage.startsWith(`# Hachi v3.3.1 - 2026-07-12`), `Patch-note announcement should use a Discord level-one release heading.`);
+	assert(patchNoteMessage.includes(`## Hachi`) && patchNoteMessage.includes(`### Reliability`), `Patch-note announcement should preserve Discord product and area headings.`);
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 
@@ -1771,6 +1841,7 @@ async function main() {
 	await test(`HachiGen IPC surface is fully wired`, validateHachiGenIpcSurface);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
+	await test(`/twitch panel includes privacy subtext`, validateTwitchVerificationPanelPrivacyCopy);
 	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`events load with valid handlers`, validateEventFiles);

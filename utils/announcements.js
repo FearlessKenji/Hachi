@@ -12,7 +12,7 @@ const { error, warn } = require(`./writeLog.js`);
 
 const PATCH_NOTES_PATH = path.resolve(__dirname, `..`, `docs`, `patch-notes.md`);
 const ANNOUNCEMENT_MESSAGE_LIMIT = 1900;
-const RELEASE_HEADING_PATTERN = /^##\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/u;
+const RELEASE_HEADING_PATTERN = /^#\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/u;
 
 function normalizeNewlines(text) {
 	return String(text || ``).replace(/\r\n?/gu, `\n`).trim();
@@ -67,9 +67,9 @@ function parseLatestPatchNotes(documentText) {
 		return null;
 	}
 
-	const nextReleaseIndex = lines.findIndex((line, index) => index > firstReleaseIndex && /^##\s+/u.test(line));
+	const nextReleaseIndex = lines.findIndex((line, index) => index > firstReleaseIndex && /^#\s+/u.test(line));
 	const releaseMatch = lines[firstReleaseIndex].match(RELEASE_HEADING_PATTERN);
-	const heading = lines[firstReleaseIndex].replace(/^##\s+/u, ``).trim();
+	const heading = lines[firstReleaseIndex].replace(/^#\s+/u, ``).trim();
 	const bodyLines = lines.slice(firstReleaseIndex + 1, nextReleaseIndex === -1 ? undefined : nextReleaseIndex);
 	const body = normalizeNewlines(bodyLines.join(`\n`));
 	const version = releaseMatch?.[1] || ``;

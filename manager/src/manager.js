@@ -23,8 +23,9 @@ const REPO_URL = "https://github.com/FearlessKenji/Hachi.git";
 const UPDATE_REMOTE = "origin";
 const UPDATE_BRANCH = "main";
 const UPDATE_TARGET = `${UPDATE_REMOTE}/${UPDATE_BRANCH}`;
-const HACHIGEN_RELEASE_API = "https://api.github.com/repos/FearlessKenji/Hachi/releases/latest";
-const HACHIGEN_RELEASES_URL = "https://github.com/FearlessKenji/Hachi/releases/latest";
+const HACHIGEN_RELEASE_TAG_PREFIX = "hachigen-v";
+const HACHIGEN_RELEASE_API = "https://api.github.com/repos/FearlessKenji/Hachi/releases?per_page=50";
+const HACHIGEN_RELEASES_URL = "https://github.com/FearlessKenji/Hachi/releases";
 const HACHIGEN_ASSET_NAME = "HachiGen.exe";
 const DEFAULT_SSH_PORT = 22;
 
@@ -869,6 +870,30 @@ function comparePackageVersions(left, right) {
 	}
 
 	return 0;
+}
+
+function hachiGenReleaseVersion(tagName) {
+	const tag = String(tagName || "").trim();
+
+	if (!tag.startsWith(HACHIGEN_RELEASE_TAG_PREFIX)) {
+		return "";
+	}
+
+	return tag.slice(HACHIGEN_RELEASE_TAG_PREFIX.length);
+}
+
+function compareHachiGenReleases(left, right) {
+	const versionComparison = comparePackageVersions(
+		hachiGenReleaseVersion(left?.tag_name),
+		hachiGenReleaseVersion(right?.tag_name),
+	);
+
+	if (versionComparison !== 0) {
+		return versionComparison;
+	}
+
+	return new Date(left?.published_at || left?.created_at || 0).getTime() -
+		new Date(right?.published_at || right?.created_at || 0).getTime();
 }
 
 function resolveRedirectUrl(location, sourceUrl) {
@@ -5465,13 +5490,28 @@ process.stdout.write(JSON.stringify({
 	}
 
 	async fetchLatestHachiGenRelease() {
-		// HachiGen is distributed as a release asset rather than a Git-tracked
-		// source file, so self-update checks use the GitHub Releases API.
-		const release = await requestJson(HACHIGEN_RELEASE_API);
+		// HachiGen is distributed as its own release track. The repo can also
+		// contain Hachi bot releases, so filter to hachigen-v* tags before
+		// selecting the newest manager build.
+		const releases = await requestJson(HACHIGEN_RELEASE_API);
+		const matchingReleases = Array.isArray(releases) ?
+			releases.filter(release => {
+				const tag = String(release?.tag_name || "");
+				return !release?.draft && /^hachigen-v\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(tag);
+			}) :
+			[];
+		const stableReleases = matchingReleases.filter(release => !release.prerelease);
+		const candidates = stableReleases.length ? stableReleases : matchingReleases;
+		const release = candidates.sort((left, right) => compareHachiGenReleases(right, left))[0];
+
+		if (!release) {
+			throw new Error("No HachiGen releases were found. Publish a hachigen-v* release that includes HachiGen.exe.");
+		}
+
 		const asset = (release.assets || []).find(item => item.name === HACHIGEN_ASSET_NAME);
 
 		if (!asset?.browser_download_url) {
-			throw new Error(`Latest release does not include ${HACHIGEN_ASSET_NAME}.`);
+			throw new Error(`Latest HachiGen release does not include ${HACHIGEN_ASSET_NAME}.`);
 		}
 
 		return {
@@ -5490,14 +5530,17 @@ process.stdout.write(JSON.stringify({
 
 		try {
 			const latest = await this.fetchLatestHachiGenRelease();
-			const currentTag = this.settings.hachiGenReleaseTag || null;
+			const savedTag = this.settings.hachiGenReleaseTag || null;
+			const currentTag = String(savedTag || "").startsWith(HACHIGEN_RELEASE_TAG_PREFIX) ? savedTag : null;
 			const currentVersion = this.getHachiGenVersion();
 			const updateAvailable = currentTag ? currentTag !== latest.latestTag : true;
+			const versionLabel = currentVersion ? `HachiGen ${currentVersion}` : "HachiGen";
+			const latestTagLabel = latest.latestTag || "the latest HachiGen release";
 			const message = currentTag ?
 				updateAvailable ?
-					`HachiGen ${latest.latestTag || "latest"} is available. Current installed release is ${currentTag}.` :
-					`HachiGen is current at ${currentTag}.` :
-				`Latest HachiGen release is ${latest.latestTag || "available"}. Install Latest can update or reinstall ${HACHIGEN_ASSET_NAME}.`;
+					`HachiGen release ${latestTagLabel} is available. ${versionLabel} is installed from ${currentTag}.` :
+					`${versionLabel} is current at ${currentTag}.` :
+				`Latest HachiGen release is ${latestTagLabel}. Install Latest can update or reinstall ${versionLabel}.`;
 
 			this.hachiGenUpdateState = {
 				...latest,

@@ -62,11 +62,9 @@ async function updateVodMessage(chan, server, guild, client) {
 	const vod = await kickVods.getLatest(chan.channelName);
 
 	if (!vod?.url) {
-		if (vod?.blocked && vod.retryable === false) {
-			warn(`Kick VoD update skipped for ${chan.channelName}; Kick blocked the replay lookup, so Hachi marked the stream offline without retrying.`);
-			await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
-		}
-
+		// Keep kickIsLive true so the next Kick cron tick retries until Kick
+		// exposes a replay URL. The live embed should only become an ended embed
+		// when Hachi can include a real VoD link.
 		return;
 	}
 
@@ -119,7 +117,11 @@ async function getKick(client) {
 
 			if (!streamInfo?.stream?.is_live) {
 				if (chan.kickIsLive) {
-					await updateVodMessage(chan, server, guild, client);
+					try {
+						await updateVodMessage(chan, server, guild, client);
+					} catch (err) {
+						error(`Failed to update ended Kick message for ${chan.channelName}:`, err);
+					}
 				}
 
 				return;

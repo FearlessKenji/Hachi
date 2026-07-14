@@ -188,6 +188,10 @@ function liveEmbed({
 }
 
 function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl }) {
+	if (!vodUrl) {
+		throw new Error(`${provider} offline embed requires a VoD URL.`);
+	}
+
 	const embed = existingEmbed ?
 		EmbedBuilder.from(existingEmbed) :
 		new EmbedBuilder();
