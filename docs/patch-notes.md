@@ -6,17 +6,10 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
-## HachiGen
+## Hachi
 
-### Updates
+### Reliability
 
-- HachiGen now reports missing self-update release assets as unavailable instead
-  of showing a manager error popup.
-- HachiGen self-updates now use an in-app wizard with progress instead of
-  opening a blank command window while waiting to replace and relaunch the app.
-- HachiGen now uses `1.0.2` for its packaged app metadata.
-- HachiGen now resolves approved system tools before launching them, reducing
-  shell-command security warnings from GitHub CodeQL.
 - Twitch role EventSub reconnects now validate Twitch WebSocket URLs before
   opening a replacement connection.
 

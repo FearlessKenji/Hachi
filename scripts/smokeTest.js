@@ -4,7 +4,6 @@ const childProcess = require(`node:child_process`);
 const fs = require(`node:fs`);
 const os = require(`node:os`);
 const path = require(`node:path`);
-const { Buffer } = require(`node:buffer`);
 
 const projectRoot = path.resolve(__dirname, `..`);
 process.chdir(projectRoot);
@@ -12,7 +11,7 @@ process.chdir(projectRoot);
 // Smoke tests are intentionally broad rather than deeply mocked. They catch the
 // integration failures most likely to break a self-hosted bot install: missing
 // files, command export drift, database/schema drift, encrypted runtime support,
-// HachiGen config writes, and generated artifact hygiene.
+// and generated artifact hygiene.
 const results = {
 	failed: 0,
 	passed: 0,
@@ -522,21 +521,15 @@ function validatePackageMetadata() {
 	const pkg = readJson(`package.json`);
 	const lock = readJson(`package-lock.json`);
 	const rootPackage = lock.packages?.[``];
-	const managerPkg = readJson(`manager`, `package.json`);
-	const managerLock = readJson(`manager`, `package-lock.json`);
-	const managerRootPackage = managerLock.packages?.[``];
 
 	assert(pkg.name === `Hachi`, `package.json name should be Hachi.`);
 	assert(pkg.version === lock.version, `package.json and package-lock.json versions do not match.`);
 	assert(rootPackage?.version === pkg.version, `package-lock root package version does not match package.json.`);
 	assert(pkg.type === `commonjs`, `package type should be commonjs.`);
 	assert(fs.existsSync(resolveProject(pkg.main)), `package main file does not exist: ${pkg.main}.`);
+	assert(pkg.scripts?.check === `node scripts/syntaxCheck.js`, `package.json is missing the check script.`);
 	assert(pkg.scripts?.smoke === `node scripts/smokeTest.js`, `package.json is missing the smoke script.`);
 	assert(versionAtLeast(process.version, pkg.engines.node), `Node ${process.version} does not satisfy ${pkg.engines.node}.`);
-	assert(managerPkg.name === `hachigen`, `manager/package.json name should be hachigen.`);
-	assert(versionAtLeast(managerPkg.version, `1.0.0`), `HachiGen package version should be at least 1.0.0.`);
-	assert(managerPkg.version === managerLock.version, `manager/package.json and manager/package-lock.json versions do not match.`);
-	assert(managerRootPackage?.version === managerPkg.version, `manager/package-lock root package version does not match manager/package.json.`);
 
 	for (const packageName of Object.keys(pkg.dependencies || {})) {
 		assertLockPackage(lock, packageName);
@@ -560,7 +553,6 @@ function validateProjectFiles() {
 		`CHANGELOG.md`,
 		`.github/workflows/ci.yml`,
 		`.github/workflows/release-hachi.yml`,
-		`.github/workflows/release-hachigen.yml`,
 		`README.md`,
 		`blank.env`,
 		`config/blank.json`,
@@ -574,7 +566,7 @@ function validateProjectFiles() {
 		`events/guildDelete.js`,
 		`events/ready.js`,
 		`index.js`,
-		`manager/src/hachigenLogger.js`,
+		`scripts/syntaxCheck.js`,
 	];
 
 	for (const file of requiredFiles) {
@@ -590,163 +582,21 @@ function validateProjectFiles() {
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
+	const ciWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `ci.yml`), `utf8`);
 	const hachiReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachi.yml`), `utf8`);
-	const hachiGenReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachigen.yml`), `utf8`);
 	const currentTag = `v${readJson(`package.json`).version}`;
 
 	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
 	assert(patchNotes.includes(`# ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
-	assert(patchNotes.includes(`## Hachi`) && patchNotes.includes(`## HachiGen`), `docs/patch-notes.md should separate Hachi and HachiGen notes with Discord heading levels.`);
+	assert(patchNotes.includes(`## Hachi`), `docs/patch-notes.md should include Hachi notes with Discord heading levels.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(hachiReleaseWorkflow.includes(`branches:`) && hachiReleaseWorkflow.includes(`main`), `Hachi release workflow should run when main changes.`);
+	assert(ciWorkflow.includes(`name: check`) && ciWorkflow.includes(`npm run check`), `Hachi CI should run the syntax check job.`);
 	assert(hachiReleaseWorkflow.includes(`"hachi-v*"`) && hachiReleaseWorkflow.includes(`$tagPrefix = "hachi-v"`), `Hachi release workflow should use hachi-v* tags.`);
 	assert(hachiReleaseWorkflow.includes(`release_title=Hachi v$version`), `Hachi release workflow should title releases as Hachi vX.X.X.`);
 	assert(!hachiReleaseWorkflow.includes(`HachiGen.exe`), `Hachi release workflow should not upload HachiGen.exe.`);
-	assert(hachiGenReleaseWorkflow.includes(`branches:`) && hachiGenReleaseWorkflow.includes(`main`), `HachiGen release workflow should run when main changes.`);
-	assert(hachiGenReleaseWorkflow.includes(`manager/package.json`), `HachiGen release workflow should resolve tags from manager/package.json version bumps.`);
-	assert(hachiGenReleaseWorkflow.includes(`"hachigen-v*"`) && hachiGenReleaseWorkflow.includes(`$tagPrefix = "hachigen-v"`), `HachiGen release workflow should use hachigen-v* tags.`);
-	assert(hachiGenReleaseWorkflow.includes(`release_title=HachiGen v$version`), `HachiGen release workflow should title releases as HachiGen vX.X.X.`);
-	assert(hachiGenReleaseWorkflow.includes(`version is still $version, but $tag does not exist`), `HachiGen release workflow should release the current version when its tag is missing.`);
-	assert(!hachiGenReleaseWorkflow.includes(`ls-remote --exit-code --tags`), `HachiGen release workflow should not fail when a release tag is missing.`);
-	assert(hachiGenReleaseWorkflow.includes(`workflow_dispatch:`), `HachiGen release workflow should support manual runs for existing releases.`);
-	assert(hachiGenReleaseWorkflow.includes(`HachiGen.exe`), `HachiGen release workflow should upload HachiGen.exe.`);
-	assert(hachiGenReleaseWorkflow.includes(`gh release upload`) && hachiGenReleaseWorkflow.includes(`gh release create`), `HachiGen release workflow should create or update releases.`);
-}
-
-function validateDatabaseViewerRefreshWiring() {
-	const source = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
-
-	assert(source.includes(`function refreshCurrentDatabaseViewer()`), `HachiGen renderer is missing the database viewer refresh helper.`);
-	assert(
-		/if \(action === "sanitize-database"\)[\s\S]*renderSanitizeModal\(result\);[\s\S]*refreshCurrentDatabaseViewer\(\);[\s\S]*return;/u.test(source),
-		`Sanitation review should refresh the database viewer cache after loading current findings.`,
-	);
-	assert(
-		/if \(action === "apply-sanitize"\)[\s\S]*api\.applyDatabaseSanitation\(actionIds\)[\s\S]*refreshCurrentDatabaseViewer\(\);[\s\S]*return;/u.test(source),
-		`Sanitation cleanup should refresh the database viewer cache after changing rows.`,
-	);
-	assert(
-		/const result = await runAction\("Restore database"[\s\S]*refreshCurrentDatabaseViewer\(\);/u.test(source),
-		`Database restore should refresh the database viewer cache after replacing the file.`,
-	);
-	assert(
-		/runAction\(force \? "Force migrate database"[\s\S]*refreshCurrentDatabaseViewer\(\);/u.test(source),
-		`Database migration should refresh the database viewer cache after schema changes.`,
-	);
-}
-
-function validateHachiGenMenuWiring() {
-	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
-	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
-	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-
-	assert(mainSource.includes(`Menu.setApplicationMenu(buildApplicationMenu())`), `HachiGen should install a custom application menu.`);
-	assert(mainSource.includes(`label: "File"`), `HachiGen menu is missing File.`);
-	assert(mainSource.includes(`label: "Export HachiGen Logs"`), `HachiGen File menu should include log export.`);
-	assert(mainSource.includes(`label: "View"`), `HachiGen menu is missing View.`);
-	assert(mainSource.includes(`label: "Window"`), `HachiGen menu is missing Window.`);
-	assert(mainSource.includes(`label: "Help"`), `HachiGen menu is missing Help.`);
-	assert(!mainSource.includes(`label: "Edit"`), `HachiGen menu should not include an Edit menu.`);
-	assert(!mainSource.includes(`toggleDevTools`), `HachiGen View menu should not expose DevTools.`);
-	assert(!mainSource.includes(`resetZoom`) && !mainSource.includes(`zoomIn`) && !mainSource.includes(`zoomOut`), `HachiGen View menu should not expose zoom controls.`);
-	assert(mainSource.includes(`label: "Check for Updates"`) && mainSource.includes(`check-version-updates`), `Help menu should include Check for Updates.`);
-	assert(mainSource.includes(`manager:check-version-updates`), `Main process should handle version update checks.`);
-	assert(preloadSource.includes(`checkVersionUpdates`) && preloadSource.includes(`manager:check-version-updates`), `Preload should expose version update checks.`);
-	assert(preloadSource.includes(`onMenuAction`) && preloadSource.includes(`manager:menu-action`), `Preload should expose menu actions.`);
-	assert(rendererSource.includes(`function handleMenuAction`) && rendererSource.includes(`api.checkVersionUpdates()`), `Renderer should route menu update checks.`);
-	assert(rendererSource.includes(`function refreshCurrentView()`), `Renderer should route Refresh Current View.`);
-	assert(typeof HachiManager.prototype.checkVersionUpdates === `function`, `HachiManager is missing checkVersionUpdates().`);
-}
-
-function validateHachiGenSelfUpdateWiring() {
-	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
-	const managerSource = fs.readFileSync(resolveProject(`manager`, `src`, `manager.js`), `utf8`);
-	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
-	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
-	const indexSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `index.html`), `utf8`);
-	const stylesSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `styles.css`), `utf8`);
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-
-	assert(mainSource.includes(`manager:check-hachigen-updates`), `Main process should handle HachiGen update checks.`);
-	assert(mainSource.includes(`manager:install-hachigen-update`), `Main process should handle HachiGen self-update installation.`);
-	assert(mainSource.includes(`manager:open-hachigen-release`), `Main process should expose HachiGen release opening.`);
-	assert(mainSource.includes(`installHachiGenUpdate`) && mainSource.includes(`HachiGen.exe`), `Main process should install HachiGen.exe release assets.`);
-	assert(mainSource.includes(`emitHachiGenUpdateProgress`) && mainSource.includes(`onProgress`), `HachiGen self-update should emit wizard progress events.`);
-	assert(mainSource.includes(`-WindowStyle`) && mainSource.includes(`Hidden`), `HachiGen self-update helper should run without opening a visible shell window.`);
-	assert(mainSource.includes(`app.exit(0)`), `HachiGen self-update should force the old process to exit if normal quit stalls.`);
-	assert(!mainSource.includes(`tasklist /FI`) && !mainSource.includes(`findstr /R`), `HachiGen self-update should not use the old visible cmd.exe wait loop.`);
-	assert(preloadSource.includes(`checkHachiGenUpdates`) && preloadSource.includes(`manager:check-hachigen-updates`), `Preload should expose HachiGen update checks.`);
-	assert(preloadSource.includes(`installHachiGenUpdate`) && preloadSource.includes(`manager:install-hachigen-update`), `Preload should expose HachiGen update installation.`);
-	assert(preloadSource.includes(`openHachiGenRelease`) && preloadSource.includes(`manager:open-hachigen-release`), `Preload should expose HachiGen release opening.`);
-	assert(indexSource.includes(`id="hachigenUpdateMeta"`) && indexSource.includes(`data-action="install-hachigen-update"`), `Updates page should include HachiGen update controls.`);
-	assert(rendererSource.includes(`function renderHachiGenUpdate`) && rendererSource.includes(`api.checkHachiGenUpdates()`), `Renderer should render and check HachiGen updates.`);
-	assert(rendererSource.includes(`api.installHachiGenUpdate()`) && rendererSource.includes(`api.openHachiGenRelease()`), `Renderer should install HachiGen updates and open releases.`);
-	assert(rendererSource.includes(`showHachiGenUpdateWizard`) && rendererSource.includes(`hachigenUpdateWizardProgressBar`), `Renderer should show a HachiGen self-update wizard with progress.`);
-	assert(rendererSource.includes(`handleHachiGenUpdateWizardEvent(event)`), `Renderer should consume HachiGen self-update progress events.`);
-	assert(stylesSource.includes(`.update-wizard-progress`) && stylesSource.includes(`.update-wizard-step.active`), `HachiGen update wizard styles are missing.`);
-	assert(
-		managerSource.includes(`HACHIGEN_RELEASE_TAG_PREFIX = "hachigen-v"`) && !managerSource.includes(`releases/latest`),
-		`HachiGen update checks should use hachigen-v* releases instead of the repo-wide latest release.`,
-	);
-	assert(managerSource.includes(`Latest HachiGen release is`), `HachiGen update text should describe HachiGen releases after release tracks are split.`);
-	assert(rendererSource.includes(`Installed release`) && rendererSource.includes(`Latest HachiGen release`), `HachiGen update metadata should label HachiGen release tags clearly.`);
-	assert(typeof HachiManager.prototype.checkHachiGenUpdates === `function`, `HachiManager is missing checkHachiGenUpdates().`);
-	assert(typeof HachiManager.prototype.downloadHachiGenUpdate === `function`, `HachiManager is missing downloadHachiGenUpdate().`);
-}
-
-async function validateHachiGenSelfUpdateUnavailableState() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-update-unavailable-`));
-
-	try {
-		const manager = new HachiManager({
-			defaultInstallPath: tempDir,
-			managerRoot: resolveProject(`manager`),
-			userDataPath: path.join(tempDir, `userData`),
-		});
-
-		manager.fetchLatestHachiGenRelease = async () => ({
-			assetName: `HachiGen.exe`,
-			assetSize: 0,
-			assetUrl: null,
-			latestTag: `hachigen-v9.9.9`,
-			publishedAt: `2026-07-14T12:00:00.000Z`,
-			releaseName: `HachiGen v9.9.9`,
-			releaseUrl: `https://example.invalid/hachigen-v9.9.9`,
-			unavailableReason: `Latest HachiGen release hachigen-v9.9.9 does not include HachiGen.exe.`,
-		});
-
-		const update = await manager.checkHachiGenUpdates();
-
-		assert(update.status === `unavailable`, `Missing HachiGen release assets should return an unavailable update state.`);
-		assert(update.canInstall === false, `Missing HachiGen release assets should not enable installation.`);
-		assert(update.updateAvailable === false, `Missing HachiGen release assets should not be treated as installable updates.`);
-		assert(update.message.includes(`does not include HachiGen.exe`), `Unavailable HachiGen update state should explain the missing asset.`);
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-async function validateHachiGenShellWrapperHardening() {
-	const shellSource = fs.readFileSync(resolveProject(`manager`, `src`, `shell.js`), `utf8`);
-	const { commandExists, run } = requireFresh(`manager`, `src`, `shell.js`);
-	let unsupportedCommandRejected = false;
-
-	assert(shellSource.includes(`ALLOWED_COMMANDS`), `HachiGen shell wrapper should constrain executable names.`);
-	assert(shellSource.includes(`resolveCommandPath(command`), `HachiGen shell wrapper should resolve executables before spawning.`);
-	assert(!shellSource.includes(`env: { ...process.env`), `HachiGen shell wrapper should not spread process.env into spawn options.`);
-	assert(await commandExists(`node`), `HachiGen shell wrapper should resolve the current Node command.`);
-
-	try {
-		await run(`not-a-hachigen-tool`, [], { allowFailure: true, timeoutMs: 1000 });
-	} catch (error) {
-		unsupportedCommandRejected = error.message.includes(`Unsupported command`);
-	}
-
-	assert(unsupportedCommandRejected, `HachiGen shell wrapper should reject unsupported executable names before spawning.`);
 }
 
 function validateBlankConfig() {
@@ -810,63 +660,6 @@ function validateConfigCheckIfConfigured() {
 	assert(result.status === 0, `configCheck failed:\n${result.stdout}${result.stderr}`);
 }
 
-function duplicateValues(values) {
-	const seen = new Set();
-	const duplicates = new Set();
-
-	for (const value of values) {
-		if (seen.has(value)) {
-			duplicates.add(value);
-			continue;
-		}
-
-		seen.add(value);
-	}
-
-	return [...duplicates];
-}
-
-function validateHachiGenIpcSurface() {
-	const preloadSource = fs.readFileSync(resolveProject(`manager`, `preload.js`), `utf8`);
-	const mainSource = fs.readFileSync(resolveProject(`manager`, `main.js`), `utf8`);
-	const rendererSource = fs.readFileSync(resolveProject(`manager`, `renderer`, `app.js`), `utf8`);
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const apiEntries = [...preloadSource.matchAll(/^\s*([A-Za-z]\w*)\s*:\s*(?:\([^)]*\)|[A-Za-z]\w*)\s*=>\s*invoke\("([^"]+)"/gmu)]
-		.map(match => ({ channel: match[2], name: match[1] }));
-	const methodEntries = [...preloadSource.matchAll(/^\s*([A-Za-z]\w*)\s*\([^)]*\)\s*\{/gmu)]
-		.map(match => match[1]);
-	const exposedApiNames = new Set([
-		...apiEntries.map(entry => entry.name),
-		...methodEntries,
-	]);
-	const preloadChannels = apiEntries.map(entry => entry.channel);
-	const handlerChannels = [...mainSource.matchAll(/^\s*ipcMain\.handle\("([^"]+)"/gmu)].map(match => match[1]);
-	const handlerChannelSet = new Set(handlerChannels);
-	const rendererCalls = [...rendererSource.matchAll(/\bapi\.([A-Za-z]\w*)\s*\(/gu)].map(match => match[1]);
-	const managerMethods = [...mainSource.matchAll(/\bmanager\.([A-Za-z]\w*)\s*\(/gu)].map(match => match[1]);
-
-	assert(apiEntries.length >= 30, `HachiGen preload exposes too few IPC actions.`);
-	assert(duplicateValues(apiEntries.map(entry => entry.name)).length === 0, `HachiGen preload has duplicate API names.`);
-	assert(duplicateValues(preloadChannels).length === 0, `HachiGen preload has duplicate IPC channels.`);
-	assert(duplicateValues(handlerChannels).length === 0, `HachiGen main has duplicate IPC handlers.`);
-
-	for (const channel of preloadChannels) {
-		assert(handlerChannelSet.has(channel), `HachiGen preload exposes ${channel}, but main.js does not handle it.`);
-		assert(channel.startsWith(`manager:`), `HachiGen IPC channel ${channel} should use the manager: prefix.`);
-	}
-
-	for (const apiName of rendererCalls) {
-		assert(exposedApiNames.has(apiName), `HachiGen renderer calls api.${apiName}(), but preload.js does not expose it.`);
-	}
-
-	for (const methodName of managerMethods) {
-		assert(typeof HachiManager.prototype[methodName] === `function`, `main.js calls manager.${methodName}(), but HachiManager does not define it.`);
-	}
-
-	assert(exposedApiNames.has(`onEvent`), `HachiGen preload must expose the live event subscription helper.`);
-	assert(mainSource.includes(`manager:event`), `HachiGen main process must forward manager:event updates.`);
-}
-
 function validateSecretEncryptionHelpers() {
 	const secrets = requireFresh(`config`, `secretEncryption.js`);
 	const key = secrets.generateSecretKey();
@@ -884,360 +677,6 @@ function validateSecretEncryptionHelpers() {
 	assert(env.TOKEN === `smoke-token-value`, `decryptEnvSecrets did not replace encrypted process env value.`);
 	assert(metadata.decryptedFields.includes(`TOKEN`), `decryptEnvSecrets did not report TOKEN as decrypted.`);
 	assert(secrets.redactSecretText(`TOKEN="smoke-token-value"`).includes(`[redacted]`), `Secret redaction did not redact TOKEN assignment.`);
-}
-
-async function validateHachiGenSecretConfigurationRoundTrip() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const secrets = requireFresh(`config`, `secretEncryption.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-secrets-`));
-	const keyPath = path.join(tempDir, `keys`, `secrets.key`);
-	const envPath = path.join(tempDir, `.env`);
-	const envFields = [
-		`TOKEN`,
-		`clientId`,
-		`twitchClientId`,
-		`twitchSecret`,
-		`kickClientId`,
-		`kickSecret`,
-	];
-	const rawValues = {
-		TOKEN: `smoke-discord-token`,
-		clientId: `smoke-discord-client`,
-		twitchClientId: `smoke-twitch-client`,
-		twitchSecret: `smoke-twitch-secret`,
-		kickClientId: `smoke-kick-client`,
-		kickSecret: `smoke-kick-secret`,
-	};
-	let manager = null;
-
-	try {
-		fs.mkdirSync(path.join(tempDir, `config`), { recursive: true });
-		fs.mkdirSync(path.dirname(keyPath), { recursive: true });
-		fs.writeFileSync(keyPath, `${secrets.generateSecretKey()}\n`, `utf8`);
-		fs.copyFileSync(resolveProject(`blank.env`), path.join(tempDir, `blank.env`));
-		fs.copyFileSync(resolveProject(`config`, `blank.json`), path.join(tempDir, `config`, `blank.json`));
-		fs.writeFileSync(envPath, `HACHI_SECRETS_KEY_FILE=${JSON.stringify(keyPath)}\n`, `utf8`);
-
-		manager = new HachiManager({
-			defaultInstallPath: tempDir,
-			managerRoot: resolveProject(`manager`),
-			userDataPath: path.join(tempDir, `userData`),
-		});
-
-		await manager.writeConfiguration({
-			...rawValues,
-			botOwners: `smoke-owner smoke-owner-two`,
-			guildIds: `smoke-guild,smoke-guild-two`,
-		});
-
-		const envText = fs.readFileSync(envPath, `utf8`);
-
-		for (const value of Object.values(rawValues)) {
-			assert(!envText.includes(value), `.env contains raw HachiGen setup value ${value}.`);
-		}
-
-		const savedEnv = secrets.parseDotEnvFile(envPath);
-
-		assert(savedEnv.HACHI_SECRETS_ENCRYPTION === `encrypted`, `HachiGen did not enable .env secret encryption.`);
-		assert(savedEnv.HACHI_SECRETS_KEY_FILE === keyPath, `HachiGen changed the configured temp secrets key path.`);
-
-		for (const field of envFields) {
-			assert(secrets.isEncryptedValue(savedEnv[field]), `${field} was not saved as an encrypted value.`);
-		}
-
-		const tokenCiphertext = savedEnv.TOKEN;
-		const savedConfig = JSON.parse(fs.readFileSync(path.join(tempDir, `config`, `config.json`), `utf8`));
-		const readBack = manager.readLocalConfiguration();
-
-		assert(Array.isArray(savedConfig.botOwners), `HachiGen did not save botOwners as an array.`);
-		assert(Array.isArray(savedConfig.guildIds), `HachiGen did not save guildIds as an array.`);
-		assert(savedConfig.botOwners.includes(`smoke-owner-two`), `HachiGen did not split bot owner IDs.`);
-		assert(savedConfig.guildIds.includes(`smoke-guild-two`), `HachiGen did not split guild IDs.`);
-
-		for (const field of envFields) {
-			assert(readBack.values[field] === ``, `HachiGen exposed ${field} while reading protected config.`);
-			assert(readBack.envProtection.fields[field].copyable, `${field} was not marked copyable after encryption.`);
-		}
-
-		const copied = await manager.readEnvSecretForCopy(`TOKEN`);
-		assert(copied.value === rawValues.TOKEN, `HachiGen copy path did not decrypt TOKEN.`);
-
-		await manager.writeConfiguration(Object.fromEntries(envFields.map(field => [field, ``])));
-
-		const preservedEnv = secrets.parseDotEnvFile(envPath);
-		assert(preservedEnv.TOKEN === tokenCiphertext, `Blank HachiGen save did not preserve encrypted TOKEN.`);
-	} finally {
-		if (manager?.databaseCipherTest) {
-			manager.databaseCipherTest = null;
-		}
-
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-async function validateHachiGenRendererEventLogging() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const { dateFolderName } = requireFresh(`manager`, `src`, `hachigenLogger.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-events-`));
-	const liveEvents = [];
-
-	try {
-		const userDataPath = path.join(tempDir, `userData`);
-		const manager = new HachiManager({
-			defaultInstallPath: tempDir,
-			managerRoot: resolveProject(`manager`),
-			userDataPath,
-			sendEvent: event => liveEvents.push(event),
-		});
-		const result = manager.recordRendererEvent({
-			type: `error`,
-			message: `TOKEN="smoke-secret-token" failed in renderer`,
-			details: {
-				label: `TOKEN="smoke-secret-token"`,
-			},
-		});
-		const logged = manager.operationLog[0];
-
-		assert(result.ok, `Renderer event logger did not report success.`);
-		assert(manager.operationLog.length === 1, `Renderer event was not written to HachiGen operationLog.`);
-		assert(liveEvents.length === 1, `Renderer event was not echoed as a live manager event.`);
-		assert(logged.type === `error`, `Renderer error event was not logged as an error.`);
-		assert(logged.details.source === `renderer`, `Renderer event source detail was not preserved.`);
-		assert(!logged.message.includes(`smoke-secret-token`), `Renderer event message leaked a secret.`);
-		assert(logged.message.includes(`[redacted]`), `Renderer event message was not redacted.`);
-		assert(!logged.details.label.includes(`smoke-secret-token`), `Renderer event details leaked a secret.`);
-
-		const logFolder = path.join(userDataPath, `logs`, dateFolderName());
-		const rawLog = fs.readFileSync(path.join(logFolder, `raw.log`), `utf8`);
-		const structuredLog = fs.readFileSync(path.join(logFolder, `structured.log`), `utf8`);
-		const prettyLog = fs.readFileSync(path.join(logFolder, `structured.pretty.log`), `utf8`);
-
-		assert(fs.existsSync(path.join(logFolder, `crash.log`)), `HachiGen crash log was not initialized.`);
-		assert(rawLog.includes(`[redacted]`), `HachiGen raw log did not persist redacted renderer event.`);
-		assert(!rawLog.includes(`smoke-secret-token`), `HachiGen raw log leaked a secret.`);
-		assert(structuredLog.includes(`"level":"ERROR"`), `HachiGen structured log did not include an error level.`);
-		assert(prettyLog.includes(`"source": "renderer"`), `HachiGen pretty structured log did not include renderer details.`);
-
-		const persistedLogs = await manager.getLogs();
-
-		assert(persistedLogs.events.some(event => event.details?.source === `renderer`), `HachiGen Logs tab payload did not read persisted renderer events.`);
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-async function validateHachiGenUpdateCheckDeduplication() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-update-dedupe-`));
-	const manager = new HachiManager({
-		defaultInstallPath: tempDir,
-		managerRoot: resolveProject(`manager`),
-		userDataPath: path.join(tempDir, `userData`),
-	});
-	let workerCalls = 0;
-	const releases = [];
-
-	try {
-		manager.performUpdateCheck = () => {
-			workerCalls += 1;
-			return new Promise(resolve => {
-				releases.push(resolve);
-			});
-		};
-
-		const firstCheck = manager.checkUpdates();
-		const secondCheck = manager.checkUpdates();
-
-		assert(workerCalls === 1, `Overlapping update checks started ${workerCalls} workers instead of 1.`);
-		releases[0]({ status: `current`, message: `smoke` });
-
-		const [firstResult, secondResult] = await Promise.all([firstCheck, secondCheck]);
-
-		assert(firstResult.status === `current`, `First deduped update check returned unexpected state.`);
-		assert(secondResult.status === `current`, `Second deduped update check returned unexpected state.`);
-		assert(manager.checkUpdatesPromise === null, `Update check lock was not cleared after completion.`);
-
-		const thirdCheck = manager.checkUpdates();
-
-		assert(workerCalls === 2, `Follow-up update check did not start a new worker after completion.`);
-		releases[1]({ status: `current`, message: `follow-up` });
-		await thirdCheck;
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-async function validateHachiGenLogMaintenance() {
-	const { HachiGenLogger, dateFolderName, getDefaultHachiGenUserDataPath } = requireFresh(`manager`, `src`, `hachigenLogger.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-hachigen-log-maintenance-`));
-
-	function daysAgo(days) {
-		return dateFolderName(new Date(Date.now() - (days * 86400000)));
-	}
-
-	try {
-		assert(getDefaultHachiGenUserDataPath().includes(`HachiGen`), `Default HachiGen user-data path should be app-data scoped.`);
-
-		const logger = new HachiGenLogger({
-			userDataPath: path.join(tempDir, `userData`),
-		});
-		const currentEvent = logger.writeEvent({
-			details: {
-				area: `smoke`,
-				nested: {
-					value: `clientSecret="smoke-secret-token"`,
-				},
-			},
-			message: `TOKEN="smoke-secret-token" persisted`,
-			type: `log`,
-		});
-
-		assert(currentEvent.message.includes(`[redacted]`), `HachiGen logger did not redact event message.`);
-
-		const todayPaths = logger.getLogPaths();
-		const rawLog = fs.readFileSync(todayPaths.raw, `utf8`);
-		const structuredLog = fs.readFileSync(todayPaths.structured, `utf8`);
-
-		assert(rawLog.includes(`[redacted]`), `HachiGen logger did not redact raw log output.`);
-		assert(!rawLog.includes(`smoke-secret-token`), `HachiGen logger leaked a secret to raw log output.`);
-		assert(JSON.parse(structuredLog.trim()).area === `smoke`, `HachiGen structured log did not preserve the event area.`);
-
-		logger.writeCrashDump(`smoke`, new Error(`TOKEN="smoke-secret-token" crashed`));
-
-		const crashLog = fs.readFileSync(todayPaths.crash, `utf8`);
-
-		assert(crashLog.includes(`[redacted]`), `HachiGen crash log did not redact secrets.`);
-		assert(!crashLog.includes(`smoke-secret-token`), `HachiGen crash log leaked a secret.`);
-
-		const archiveName = daysAgo(2);
-		const archiveFolder = path.join(logger.logsPath, archiveName);
-		fs.mkdirSync(archiveFolder, { recursive: true });
-		fs.writeFileSync(path.join(archiveFolder, `raw.log`), `old log`);
-
-		const staleArchiveName = `${daysAgo(35)}.tar.gz`;
-		const staleArchivePath = path.join(logger.logsPath, staleArchiveName);
-		fs.writeFileSync(staleArchivePath, Buffer.from([0x1f, 0x8b]));
-
-		await logger.cleanupOldLogs();
-
-		const archivePath = path.join(logger.logsPath, `${archiveName}.tar.gz`);
-
-		assert(!fs.existsSync(archiveFolder), `HachiGen cleanup did not remove archived daily log folder.`);
-		assert(fs.existsSync(archivePath), `HachiGen cleanup did not create a daily log archive.`);
-		assert(fs.readFileSync(archivePath).subarray(0, 2).equals(Buffer.from([0x1f, 0x8b])), `HachiGen archive is not gzip data.`);
-		assert(!fs.existsSync(staleArchivePath), `HachiGen cleanup did not delete stale log archives.`);
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-async function validateHachiGenQuietStateProbes() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-quiet-probes-`));
-	const liveEvents = [];
-	const calls = [];
-
-	try {
-		fs.mkdirSync(path.join(tempDir, `.git`), { recursive: true });
-
-		const manager = new HachiManager({
-			defaultInstallPath: tempDir,
-			managerRoot: resolveProject(`manager`),
-			userDataPath: path.join(tempDir, `userData`),
-			sendEvent: event => liveEvents.push(event),
-		});
-
-		manager.runGit = async (args, options = {}) => {
-			calls.push({
-				command: args.join(` `),
-				hasOnLog: typeof options.onLog === `function`,
-				log: options.log,
-			});
-
-			if (options.log !== false && options.onLog) {
-				options.onLog({
-					args,
-					command: `git`,
-					message: `> git ${args.join(` `)}`,
-					stream: `command`,
-				});
-			}
-
-			if (args[0] === `branch`) {
-				return { code: 0, stderr: ``, stdout: `main\n` };
-			}
-
-			if (args[0] === `remote`) {
-				return { code: 0, stderr: ``, stdout: `https://example.test/Hachi.git\n` };
-			}
-
-			return { code: 0, stderr: ``, stdout: `` };
-		};
-
-		await manager.getRepositoryInfo();
-		await manager.refreshActiveStash();
-
-		assert(calls.length === 3, `Quiet state probe executed ${calls.length} Git commands instead of 3.`);
-		assert(calls.every(call => call.log === false), `State probe Git commands were not marked quiet.`);
-		assert(!liveEvents.some(event => event.type === `shell`), `Quiet state probes wrote shell events.`);
-
-		calls.length = 0;
-		await manager.getRepositoryInfo({ onLog: entry => manager.logShell(entry) });
-
-		assert(calls.length === 2, `Logged repository probe executed ${calls.length} Git commands instead of 2.`);
-		assert(calls.every(call => call.log === true && call.hasOnLog), `Logged repository probe did not keep shell logging enabled.`);
-		assert(!liveEvents.some(event => event.type === `shell`), `Logged repository probe wrote Git plumbing to the live UI log.`);
-		assert(manager.logger.readRecentEvents(10, { includeHidden: true }).some(event => event.type === `shell`), `Logged repository probe was not persisted to the raw HachiGen event log.`);
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
-function validateHachiGenShellLogVisibility() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-shell-visibility-`));
-	const liveEvents = [];
-
-	try {
-		const manager = new HachiManager({
-			defaultInstallPath: tempDir,
-			managerRoot: resolveProject(`manager`),
-			userDataPath: path.join(tempDir, `userData`),
-			sendEvent: event => liveEvents.push(event),
-		});
-
-		manager.logShell({
-			args: [`rev-parse`, `HEAD`],
-			command: `git`,
-			message: `> git rev-parse HEAD`,
-			stream: `command`,
-		});
-		manager.logShell({
-			args: [`rev-parse`, `HEAD`],
-			command: `git`,
-			message: `abc123`,
-			stream: `stdout`,
-		});
-		manager.logShell({
-			args: [`install`],
-			command: `npm`,
-			message: `up to date, audited 190 packages in 2s`,
-			stream: `stdout`,
-		});
-
-		const visibleEvents = manager.logger.readRecentEvents(10);
-		const allEvents = manager.logger.readRecentEvents(10, { includeHidden: true });
-
-		assert(liveEvents.length === 1, `Shell visibility wrote ${liveEvents.length} live UI events instead of 1.`);
-		assert(liveEvents[0].message.includes(`up to date`), `Visible shell output was not sent to the live UI log.`);
-		assert(!visibleEvents.some(event => event.message.includes(`git rev-parse`)), `Visible HachiGen log included a raw Git command.`);
-		assert(!visibleEvents.some(event => event.message === `abc123`), `Visible HachiGen log included Git plumbing output.`);
-		assert(allEvents.some(event => event.message.includes(`git rev-parse`) && event.uiVisible === false), `Hidden Git command was not persisted with uiVisible=false.`);
-		assert(allEvents.some(event => event.message === `abc123` && event.uiVisible === false), `Hidden Git output was not persisted with uiVisible=false.`);
-		assert(allEvents.some(event => event.message.includes(`up to date`) && event.uiVisible !== false), `Visible npm output was not persisted as UI-visible.`);
-	} finally {
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
 }
 
 function validateRuntimeDependencies() {
@@ -1268,84 +707,6 @@ function restoreEnvValue(key, value) {
 	}
 
 	process.env[key] = value;
-}
-
-function smokeQuoteIdentifier(value) {
-	return `"${String(value).replace(/"/gu, `""`)}"`;
-}
-
-function smokeColumnSql(spec) {
-	const parts = [smokeQuoteIdentifier(spec.name), spec.type];
-
-	if (spec.primaryKey) {
-		parts.push(`PRIMARY KEY`);
-	}
-
-	if (spec.autoIncrement) {
-		parts.push(`AUTOINCREMENT`);
-	}
-
-	if (!spec.primaryKey && !spec.nullable) {
-		parts.push(`NOT NULL`);
-	}
-
-	if (spec.defaultValue !== null) {
-		parts.push(`DEFAULT ${spec.defaultValue}`);
-	}
-
-	if (spec.references) {
-		parts.push(`REFERENCES ${spec.references}`);
-	}
-
-	return parts.join(` `);
-}
-
-function smokeCreateTableSql(tableSpec) {
-	return `CREATE TABLE ${smokeQuoteIdentifier(tableSpec.name)} (${tableSpec.columns.map(smokeColumnSql).join(`, `)})`;
-}
-
-function smokeCreateIndexSql(tableName, indexSpec) {
-	const unique = indexSpec.unique ? `UNIQUE ` : ``;
-	const columns = indexSpec.columns.map(smokeQuoteIdentifier).join(`, `);
-
-	return `CREATE ${unique}INDEX IF NOT EXISTS ${smokeQuoteIdentifier(indexSpec.name)} ON ${smokeQuoteIdentifier(tableName)} (${columns})`;
-}
-
-function createSmokeSchema(db, expectedSchema) {
-	for (const tableSpec of expectedSchema) {
-		db.exec(smokeCreateTableSql(tableSpec));
-
-		for (const indexSpec of tableSpec.indexes || []) {
-			db.exec(smokeCreateIndexSql(tableSpec.name, indexSpec));
-		}
-	}
-}
-
-function runDatabaseWorkerSmoke(action, options = {}) {
-	const { key, ...requestOptions } = options;
-	const result = spawnNode([
-		`manager/src/database-worker.js`,
-		JSON.stringify({
-			action,
-			root: projectRoot,
-			...requestOptions,
-		}),
-	], {
-		env: key ? { HACHI_DB_KEY: key } : {},
-	});
-	const output = (result.stdout || ``).trim();
-	let parsed = null;
-
-	try {
-		parsed = JSON.parse(output);
-	} catch {
-		throw new Error(`Database worker returned invalid JSON:\nstdout: ${result.stdout}\nstderr: ${result.stderr}`);
-	}
-
-	assert(result.status === 0, `Database worker exited with ${result.status}: ${result.stderr || result.stdout}`);
-	assert(parsed.ok, `Database worker ${action} failed: ${parsed.error || parsed.message || result.stderr}`);
-
-	return parsed;
 }
 
 function adapterRun(database, sql, params = []) {
@@ -1716,90 +1077,7 @@ async function validateToolDatabaseConnectionPromises() {
 	}
 }
 
-async function validateDatabaseWorkerEncryptedMaintenance() {
-	const {
-		EXPECTED_SCHEMA,
-	} = requireFresh(`database`, `dbAudit.js`);
-	const {
-		openSqlCipherDatabase,
-	} = requireFresh(`database`, `dbEncryption.js`);
-	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-worker-db-`));
-	const dbPath = path.join(tempDir, `database.sqlite`);
-	const key = `smoke-worker-${Date.now()}`;
-	let setupDb = null;
-
-	try {
-		setupDb = openSqlCipherDatabase({
-			dbPath,
-			fileMustExist: false,
-			key,
-			root: projectRoot,
-		});
-		setupDb.exec(`PRAGMA foreign_keys = OFF`);
-		createSmokeSchema(setupDb, EXPECTED_SCHEMA);
-		setupDb.exec(`
-			INSERT INTO servers (guildId) VALUES ('valid-guild');
-			INSERT INTO channels (id, channelName, twitchNotif, kickNotif, guildId)
-				VALUES (5, 'valid-streamer', 1, 0, 'valid-guild');
-			INSERT INTO channels (id, channelName, twitchNotif, kickNotif, guildId)
-				VALUES (9, 'orphan-streamer', 1, 0, 'missing-guild');
-		`);
-		setupDb.close();
-		setupDb = null;
-
-		const review = runDatabaseWorkerSmoke(`review`, { dbPath, key });
-		const findingIds = review.findings.map(finding => finding.id);
-
-		assert(findingIds.includes(`channels-orphan-guild`), `Database worker review did not find orphan channel rows.`);
-		assert(findingIds.includes(`channels-compact-ids`), `Database worker review did not find channel ID gaps.`);
-		assert(review.summary.cleanableCount >= 2, `Database worker review did not report cleanable findings.`);
-
-		const view = runDatabaseWorkerSmoke(`view`, {
-			dbPath,
-			key,
-			sort: { column: `channelName`, direction: `asc` },
-			table: `channels`,
-		});
-
-		assert(view.selectedTable === `channels`, `Database worker viewer did not load the requested channels table.`);
-		assert(view.totalRows === 2, `Database worker viewer reported ${view.totalRows} channel rows instead of 2.`);
-		assert(view.rows[0]?.channelName === `orphan-streamer`, `Database worker viewer did not sort channel rows.`);
-
-		const applied = runDatabaseWorkerSmoke(`apply`, {
-			actionIds: [`channels-orphan-guild`, `channels-compact-ids`],
-			dbPath,
-			key,
-		});
-		const appliedById = new Map(applied.applied.map(action => [action.id, action]));
-
-		assert(appliedById.get(`channels-orphan-guild`)?.changed === 1, `Database worker did not clean one orphan channel row.`);
-		assert(appliedById.has(`channels-compact-ids`), `Database worker did not apply channel ID compaction.`);
-		assert(!applied.findings.some(finding => finding.id === `channels-orphan-guild`), `Database worker still reports orphan channel rows after cleanup.`);
-		assert(!applied.findings.some(finding => finding.id === `channels-compact-ids`), `Database worker still reports channel ID gaps after cleanup.`);
-
-		const verifyDb = openSqlCipherDatabase({
-			dbPath,
-			key,
-			readonly: true,
-			root: projectRoot,
-		});
-		const remainingRows = verifyDb.prepare(`SELECT id, channelName, guildId FROM channels ORDER BY id`).all();
-		verifyDb.close();
-
-		assert(remainingRows.length === 1, `Database worker left ${remainingRows.length} channel rows instead of 1.`);
-		assert(remainingRows[0]?.id === 1, `Database worker did not compact the remaining channel ID to 1.`);
-		assert(remainingRows[0]?.channelName === `valid-streamer`, `Database worker removed the wrong channel row.`);
-	} finally {
-		if (setupDb) {
-			setupDb.close();
-		}
-
-		fs.rmSync(tempDir, { force: true, recursive: true });
-	}
-}
-
 function validatePureHelpers() {
-	const { HachiManager } = requireFresh(`manager`, `src`, `manager.js`);
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
@@ -1815,7 +1093,6 @@ function validatePureHelpers() {
 		getTimezoneRegionId,
 	} = requireFresh(`utils`, `timezones.js`);
 
-	assert(typeof HachiManager.prototype.updateStateMatchesRepository === `function`, `HachiManager update-state repository guard is missing.`);
 	assert(typeof serverLifecycle.reconcileServerRows === `function`, `server lifecycle reconciliation helper is missing.`);
 	assert(typeof serverLifecycle.markServerLeft === `function`, `server lifecycle leave tracker is missing.`);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
@@ -1907,14 +1184,8 @@ async function main() {
 
 	await test(`package metadata and lockfile are consistent`, validatePackageMetadata);
 	await test(`required project files exist`, validateProjectFiles);
-	await test(`HachiGen database actions refresh viewer cache`, validateDatabaseViewerRefreshWiring);
-	await test(`HachiGen application menu is wired`, validateHachiGenMenuWiring);
-	await test(`HachiGen self-update controls are wired`, validateHachiGenSelfUpdateWiring);
-	await test(`HachiGen self-update reports missing assets without IPC failure`, validateHachiGenSelfUpdateUnavailableState);
-	await test(`HachiGen shell wrapper resolves allowed commands safely`, validateHachiGenShellWrapperHardening);
 	await test(`blank config cron fields are valid`, validateBlankConfig);
 	await test(`runtime dependencies can be required`, validateRuntimeDependencies);
-	await test(`HachiGen IPC surface is fully wired`, validateHachiGenIpcSurface);
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
 	await test(`/twitch panel includes privacy subtext`, validateTwitchVerificationPanelPrivacyCopy);
@@ -1930,15 +1201,8 @@ async function main() {
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
-	await test(`database worker reviews, views, and sanitizes encrypted databases`, validateDatabaseWorkerEncryptedMaintenance);
 	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
-	await test(`HachiGen saves setup env values encrypted`, validateHachiGenSecretConfigurationRoundTrip);
-	await test(`HachiGen records renderer errors in event log`, validateHachiGenRendererEventLogging);
-	await test(`HachiGen persists and maintains AppData logs`, validateHachiGenLogMaintenance);
-	await test(`HachiGen deduplicates overlapping update checks`, validateHachiGenUpdateCheckDeduplication);
-	await test(`HachiGen keeps state refresh Git probes quiet`, validateHachiGenQuietStateProbes);
-	await test(`HachiGen hides shell plumbing from visible logs`, validateHachiGenShellLogVisibility);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`git hygiene checks pass`, validateGitHygiene);

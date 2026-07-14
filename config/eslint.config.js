@@ -93,21 +93,4 @@ module.exports = [
 		},
 	},
 
-	{
-		files: [`manager/**/*.js`],
-
-		languageOptions: {
-			globals: {
-				document: `readonly`,
-				window: `readonly`,
-			},
-		},
-
-		rules: {
-			// HachiGen is an Electron app. Keep it linted, but let the manager
-			// source use normal double-quoted UI strings instead of the bot's
-			// backtick-only style.
-			'quotes': [`error`, `double`, { avoidEscape: true, allowTemplateLiterals: true }],
-		},
-	},
 ];

@@ -2,7 +2,7 @@
 
 Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
 
-Hachi is managed through `HachiGen.exe`, a windowed setup and runtime manager available from GitHub Releases or built from the `manager/` source.
+Hachi is managed through `HachiGen.exe`, a separate windowed setup and runtime manager available from the [HachiGen releases](https://github.com/FearlessKenji/HachiGen/releases).
 
 Release history is available in the [Changelog](CHANGELOG.md). User-facing release notes are available in [Patch Notes](docs/patch-notes.md).
 Developer architecture notes are available in the [Developer Guide](docs/developer-guide.md).
@@ -27,7 +27,7 @@ Hachi uses [The Official Twitch API](https://dev.twitch.tv/docs/api/) and [The O
 
 ## Getting Started
 
-1. Download `HachiGen.exe` from the latest GitHub Release, or clone this repository and build it locally.
+1. Download `HachiGen.exe` from the latest [HachiGen release](https://github.com/FearlessKenji/HachiGen/releases).
 2. Open `HachiGen.exe`.
 3. Confirm or choose the Hachi install path.
 4. Open the Setup page and fill in Configuration.
@@ -46,7 +46,7 @@ HachiGen handles setup, install validation, dependency checks, command deploymen
 
 ## HachiGen
 
-HachiGen is the desktop manager for Hachi. It is intentionally separate from the bot runtime so it can manage the install path, configuration, updates, command deployment, PM2 status, and logs without changing the bot's core process.
+HachiGen is the desktop manager for Hachi. Its source and release workflow live in the separate [HachiGen repository](https://github.com/FearlessKenji/HachiGen) so manager updates can ship independently from bot releases.
 
 HachiGen can:
 
@@ -432,24 +432,7 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 
 ## Developer Notes
 
-### HachiGen Packaging
-
-HachiGen is packaged with Electron Builder. The portable executable is created at `manager/dist/HachiGen.exe`, then copied to the repository root as `HachiGen.exe`.
-
-`HachiGen.exe` is generated output and is not committed to the repository. Hachi bot releases use `hachi-vX.X.X` tags from the root `package.json`, while HachiGen releases use `hachigen-vX.X.X` tags from `manager/package.json`. When a `hachigen-v*` tag is pushed, `.github/workflows/release-hachigen.yml` builds HachiGen on a Windows runner and attaches `HachiGen.exe` to the matching GitHub Release. The workflow can also be run manually from the GitHub Actions tab.
-
-To rebuild HachiGen locally, run:
-
-```console
-npm run build:hachigen
-```
-
-Icon inputs:
-
-- Generated icon consumed by Electron Builder: `manager/icon.ico`
-- Build configuration: `manager/package.json`
-
-When changing the icon, generate a fresh `manager/icon.ico` from the desired source image, then package HachiGen again. The source image is not packaged with the repo. `manager/icon.ico` is tracked so future builds use the same icon; `HachiGen.exe` and `manager/dist*/` are generated output and are ignored by Git.
+Hachi bot releases use `hachi-vX.X.X` tags from this repository's root `package.json`. HachiGen releases use `hachigen-vX.X.X` tags in the separate [HachiGen repository](https://github.com/FearlessKenji/HachiGen).
 
 ### File Map
 
@@ -463,60 +446,6 @@ When changing the icon, generate a fresh `manager/icon.ico` from the desired sou
 		</tr>
 	</thead>
 	<tbody>
-		<tr>
-			<td rowspan="3">Electron app shell</td>
-			<td><code>manager/main.js</code></td>
-			<td>Creates the desktop window, registers backend actions, opens folders, and opens external links.</td>
-			<td>Edit when adding a new backend button action or changing window behavior.</td>
-		</tr>
-		<tr>
-			<td><code>manager/preload.js</code></td>
-			<td>Safely exposes backend actions to the renderer as <code>window.hachiGen</code>.</td>
-			<td>Edit when the UI needs to call a new backend function.</td>
-		</tr>
-		<tr>
-			<td><code>manager/package.json</code></td>
-			<td>Defines app metadata, script entries, Electron Builder settings, output file name, and icon path.</td>
-			<td>Edit when packaging, dependencies, app metadata, or build outputs change.</td>
-		</tr>
-		<tr>
-			<td rowspan="2">Backend logic</td>
-			<td><code>manager/src/manager.js</code></td>
-			<td>Install validation, configuration saving, Git updates, stashes, PM2 control, command deployment, and logs.</td>
-			<td>Edit when changing what HachiGen does after a button is clicked.</td>
-		</tr>
-		<tr>
-			<td><code>manager/src/shell.js</code></td>
-			<td>Runs system commands, captures output, handles timeouts, and smooths over Windows command launching behavior.</td>
-			<td>Edit when command execution, logging, quoting, timeout, or Windows command handling needs adjustment.</td>
-		</tr>
-		<tr>
-			<td rowspan="4">Renderer UI</td>
-			<td><code>manager/renderer/index.html</code></td>
-			<td>The visible structure: sidebar, dashboard, setup form, update panels, and log panels.</td>
-			<td>Edit when adding, removing, or rearranging visible UI elements.</td>
-		</tr>
-		<tr>
-			<td><code>manager/renderer/app.js</code></td>
-			<td>Button click handling, view switching, status rendering, update lists, configuration form loading, and log polling.</td>
-			<td>Edit when changing UI behavior or how backend state is displayed.</td>
-		</tr>
-		<tr>
-			<td><code>manager/renderer/styles.css</code></td>
-			<td>Theme colors, layout, panels, buttons, status dots, forms, update labels, and responsive behavior.</td>
-			<td>Edit when changing appearance or spacing.</td>
-		</tr>
-		<tr>
-			<td><code>manager/renderer/assets/KenjiBotProfile.svg</code></td>
-			<td>The profile image shown next to HachiGen in the sidebar.</td>
-			<td>Edit or replace when changing the in-app brand image.</td>
-		</tr>
-		<tr>
-			<td>Icon</td>
-			<td><code>manager/icon.ico</code></td>
-			<td>Generated Windows icon consumed by Electron Builder.</td>
-			<td>Regenerate from the desired source image before packaging.</td>
-		</tr>
 		<tr>
 			<td rowspan="7">Bot runtime</td>
 			<td><code>index.js</code></td>

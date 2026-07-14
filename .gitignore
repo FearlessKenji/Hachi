@@ -8,12 +8,10 @@ node_modules/
 # Generated launcher binaries
 *.exe
 
-# Manager generated/local files
-manager/dist*/
+# HachiGen generated/local files inside a selected Hachi install
+.hachigen/
 manager/backups/
 manager/data/
-manager/design/
-manager/HachiGen.png
 
 # Local launcher build inputs
 run-bot.ps1

@@ -8,11 +8,12 @@ crosses process boundaries.
 
 ## Project Shape
 
-Hachi has two main parts:
+Hachi is the Discord bot runtime:
 
 - `index.js` starts the Discord bot runtime.
-- `manager/` contains HachiGen, the Electron desktop manager that installs,
-  configures, validates, updates, starts, stops, and inspects Hachi.
+- HachiGen is the separate Electron desktop manager that installs, configures,
+  validates, updates, starts, stops, and inspects Hachi. Its source now lives in
+  the [HachiGen repository](https://github.com/FearlessKenji/HachiGen).
 
 Supporting folders:
 
@@ -28,9 +29,8 @@ Supporting folders:
 - `scripts/` contains local test and maintenance scripts.
 - `docs/` contains user-facing docs and this developer guide.
 
-Generated/vendor folders such as `node_modules/`, `manager/dist/`, packaged
-artifacts, local databases, logs, backups, and secret key files should not be
-treated as source.
+Generated/vendor folders such as `node_modules/`, packaged artifacts, local
+databases, logs, backups, and secret key files should not be treated as source.
 
 ## Runtime Entry Point
 
@@ -215,68 +215,24 @@ expectations. It also powers migration/sanitation flows in HachiGen.
 
 `database/dbInit.js` initializes and synchronizes the database at runtime.
 
-## HachiGen
+## HachiGen Integration
 
-HachiGen is an Electron app.
+HachiGen is maintained in the separate
+[HachiGen repository](https://github.com/FearlessKenji/HachiGen). Hachi still
+keeps the runtime modules HachiGen needs to operate safely:
 
-Main process files:
+- `blank.env` and `config/blank.json` define the first-run Setup shape.
+- `config/secretEncryption.js` encrypts individual `.env` values and decrypts
+  them in memory during startup.
+- `database/dbAudit.js`, `database/dbEncryption.js`, and
+  `database/dbToolConnection.js` provide schema, SQLCipher, backup, and tool
+  access logic that HachiGen calls against the selected Hachi install.
+- `config/configCheck.js` is the shared startup gate HachiGen runs after saving
+  or validating configuration.
 
-- `manager/main.js` creates the window, owns native dialogs, owns clipboard
-  access, and registers IPC handlers.
-- `manager/preload.js` exposes a small `window.hachiGen` API to renderer code.
-- `manager/src/manager.js` is the backend coordinator. It performs filesystem,
-  Git, SSH, PM2, validation, update, database, backup, encryption, and config
-  actions.
-- `manager/src/hachigenLogger.js` writes HachiGen's AppData-backed daily logs,
-  structured event files, crash dumps, and archive cleanup.
-- `manager/src/shell.js` wraps child-process execution and streams normalized
-  command/stdout/stderr events.
-- `manager/src/database-worker.js` is copied out of packaged app storage when
-  needed so external Node can execute database work reliably.
-
-Renderer files:
-
-- `manager/renderer/index.html` is the app shell and controls.
-- `manager/renderer/app.js` renders state, routes button clicks, calls
-  `window.hachiGen`, and shows modals/toasts/logs.
-- `manager/renderer/styles.css` defines the HachiGen UI.
-
-Important `HachiManager` concepts:
-
-- `settings` is HachiGen's saved app state. It stores the selected install path,
-  remote connection settings, runtime target, and active HachiGen stash.
-- `runtimeTarget` is `local` or `remote`. Many methods branch on it to decide
-  whether to read local files or run SSH commands.
-- `getPaths()` centralizes local Hachi path resolution.
-- `quickScan()` and `remoteQuickScan()` produce dashboard/setup status.
-- `readLocalConfiguration()` and `readRemoteConfiguration()` return Setup values
-  for the UI without exposing decrypted env secrets.
-- `writeConfiguration()` and `writeRemoteConfiguration()` split Setup form values
-  between encrypted `.env` entries and `config/config.json`.
-- `prepareSecretProtection()` creates or reuses the `.env` secrets key and
-  converts existing plaintext env values to encrypted envelopes.
-- `readEnvSecretForCopy(field)` decrypts a single saved value for the main
-  process clipboard handler. The renderer never receives plaintext secrets.
-- `prepareDatabaseProtection()` creates or reuses the database key and writes
-  required database env flags.
-- `convertDatabaseEncryption()`, `rotateDatabaseKey()`, and
-  `rotateDatabaseBackups()` manage encrypted database lifecycle.
-- `validateInstall()` and `validateRemoteInstall()` are repair-capable checks
-  that can install dependencies, prepare encryption, convert plaintext databases,
-  and run config validation.
-
-Remote support uses OpenSSH through `runRemoteCommand()` and
-`runRemoteHachiCommand()`. Remote commands intentionally hide raw SSH command text
-from HachiGen logs because those commands can contain quoted scripts and paths.
-
-Clipboard copy is handled in `manager/main.js`, not the renderer. The main
-process writes the secret to the system clipboard and clears it after 60 seconds
-if the clipboard still contains that same value.
-
-HachiGen logs are stored under Electron `userData`, including development runs.
-On Windows this resolves to `%APPDATA%\HachiGen\logs\YYYY-MM-DD\`. The visible
-Logs panel reads recent structured HachiGen events from that persisted location,
-while live events are still pushed to the renderer as actions run.
+HachiGen creates local runtime artifacts inside a selected Hachi install, such
+as `manager/backups/` and `.hachigen/`. Those folders are ignored because they
+belong to an individual installation, not to source control.
 
 ## Commands
 
@@ -412,7 +368,6 @@ Each script loads `.env`, decrypts protected env values, then uses
 - plaintext-to-encrypted database conversion
 - database audit status
 - secret encryption helper round-trip
-- HachiGen encrypted Setup save/read/copy behavior
 - config validation
 - pure utility helpers
 - Git hygiene for generated artifacts
@@ -420,8 +375,9 @@ Each script loads `.env`, decrypts protected env values, then uses
 Run:
 
 ```bash
+npm run check
 npm run lint
-node scripts/smokeTest.js
+npm run smoke
 ```
 
 ## Commenting Style
