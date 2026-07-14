@@ -25,6 +25,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node .",
+    "check": "node scripts/syntaxCheck.js",
     "db:audit": "node database/dbAudit.js",
     "db:migrate": "node database/dbAudit.js --migrate",
     "db:migrate:force": "node database/dbAudit.js --force",

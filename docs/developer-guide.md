@@ -375,8 +375,9 @@ Each script loads `.env`, decrypts protected env values, then uses
 Run:
 
 ```bash
+npm run check
 npm run lint
-node scripts/smokeTest.js
+npm run smoke
 ```
 
 ## Commenting Style

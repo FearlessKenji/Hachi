@@ -527,6 +527,7 @@ function validatePackageMetadata() {
 	assert(rootPackage?.version === pkg.version, `package-lock root package version does not match package.json.`);
 	assert(pkg.type === `commonjs`, `package type should be commonjs.`);
 	assert(fs.existsSync(resolveProject(pkg.main)), `package main file does not exist: ${pkg.main}.`);
+	assert(pkg.scripts?.check === `node scripts/syntaxCheck.js`, `package.json is missing the check script.`);
 	assert(pkg.scripts?.smoke === `node scripts/smokeTest.js`, `package.json is missing the smoke script.`);
 	assert(versionAtLeast(process.version, pkg.engines.node), `Node ${process.version} does not satisfy ${pkg.engines.node}.`);
 
@@ -565,6 +566,7 @@ function validateProjectFiles() {
 		`events/guildDelete.js`,
 		`events/ready.js`,
 		`index.js`,
+		`scripts/syntaxCheck.js`,
 	];
 
 	for (const file of requiredFiles) {
@@ -580,6 +582,7 @@ function validateProjectFiles() {
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
+	const ciWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `ci.yml`), `utf8`);
 	const hachiReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachi.yml`), `utf8`);
 	const currentTag = `v${readJson(`package.json`).version}`;
 
@@ -590,6 +593,7 @@ function validateProjectFiles() {
 	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(hachiReleaseWorkflow.includes(`branches:`) && hachiReleaseWorkflow.includes(`main`), `Hachi release workflow should run when main changes.`);
+	assert(ciWorkflow.includes(`name: check`) && ciWorkflow.includes(`npm run check`), `Hachi CI should run the syntax check job.`);
 	assert(hachiReleaseWorkflow.includes(`"hachi-v*"`) && hachiReleaseWorkflow.includes(`$tagPrefix = "hachi-v"`), `Hachi release workflow should use hachi-v* tags.`);
 	assert(hachiReleaseWorkflow.includes(`release_title=Hachi v$version`), `Hachi release workflow should title releases as Hachi vX.X.X.`);
 	assert(!hachiReleaseWorkflow.includes(`HachiGen.exe`), `Hachi release workflow should not upload HachiGen.exe.`);
