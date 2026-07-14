@@ -964,7 +964,7 @@ async function requestJson(url) {
 	return parsed;
 }
 
-function downloadUrlToFile(url, targetPath, { maxRedirects = 5, timeoutMs = 300000 } = {}) {
+function downloadUrlToFile(url, targetPath, { maxRedirects = 5, onProgress = noop, timeoutMs = 300000 } = {}) {
 	return new Promise((resolve, reject) => {
 		ensureDir(path.dirname(targetPath));
 
@@ -981,6 +981,7 @@ function downloadUrlToFile(url, targetPath, { maxRedirects = 5, timeoutMs = 3000
 				response.resume();
 				resolve(downloadUrlToFile(resolveRedirectUrl(location, url), targetPath, {
 					maxRedirects: maxRedirects - 1,
+					onProgress,
 					timeoutMs,
 				}));
 				return;
@@ -997,6 +998,17 @@ function downloadUrlToFile(url, targetPath, { maxRedirects = 5, timeoutMs = 3000
 			}
 
 			const file = fs.createWriteStream(targetPath);
+			const totalBytes = Number(response.headers["content-length"]) || 0;
+			let downloadedBytes = 0;
+
+			response.on("data", chunk => {
+				downloadedBytes += chunk.length;
+				onProgress({
+					bytes: downloadedBytes,
+					percent: totalBytes ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : null,
+					totalBytes,
+				});
+			});
 			response.pipe(file);
 			file.on("finish", () => {
 				file.close(error => {
@@ -5505,13 +5517,33 @@ process.stdout.write(JSON.stringify({
 		const release = candidates.sort((left, right) => compareHachiGenReleases(right, left))[0];
 
 		if (!release) {
-			throw new Error("No HachiGen releases were found. Publish a hachigen-v* release that includes HachiGen.exe.");
+			return {
+				assetName: null,
+				assetSize: 0,
+				assetUrl: null,
+				latestTag: "",
+				publishedAt: null,
+				releaseName: "No HachiGen release",
+				releaseUrl: HACHIGEN_RELEASES_URL,
+				unavailableReason: "No HachiGen releases were found. Publish a hachigen-v* release that includes HachiGen.exe.",
+			};
 		}
 
 		const asset = (release.assets || []).find(item => item.name === HACHIGEN_ASSET_NAME);
 
 		if (!asset?.browser_download_url) {
-			throw new Error(`Latest HachiGen release does not include ${HACHIGEN_ASSET_NAME}.`);
+			const latestTag = release.tag_name || "";
+
+			return {
+				assetName: HACHIGEN_ASSET_NAME,
+				assetSize: 0,
+				assetUrl: null,
+				latestTag,
+				publishedAt: release.published_at || null,
+				releaseName: release.name || latestTag || "Latest HachiGen release",
+				releaseUrl: release.html_url || HACHIGEN_RELEASES_URL,
+				unavailableReason: `Latest HachiGen release${latestTag ? ` ${latestTag}` : ""} does not include ${HACHIGEN_ASSET_NAME}.`,
+			};
 		}
 
 		return {
@@ -5533,6 +5565,24 @@ process.stdout.write(JSON.stringify({
 			const savedTag = this.settings.hachiGenReleaseTag || null;
 			const currentTag = String(savedTag || "").startsWith(HACHIGEN_RELEASE_TAG_PREFIX) ? savedTag : null;
 			const currentVersion = this.getHachiGenVersion();
+
+			if (!latest.assetUrl) {
+				const message = latest.unavailableReason || `No ${HACHIGEN_ASSET_NAME} asset is available from the latest HachiGen release.`;
+
+				this.hachiGenUpdateState = {
+					...latest,
+					canInstall: false,
+					checkedAt,
+					currentTag,
+					currentVersion,
+					message,
+					status: "unavailable",
+					updateAvailable: false,
+				};
+				this.log(`HachiGen update check complete. ${message}`);
+				return this.hachiGenUpdateState;
+			}
+
 			const updateAvailable = currentTag ? currentTag !== latest.latestTag : true;
 			const versionLabel = currentVersion ? `HachiGen ${currentVersion}` : "HachiGen";
 			const latestTagLabel = latest.latestTag || "the latest HachiGen release";
@@ -5566,7 +5616,7 @@ process.stdout.write(JSON.stringify({
 		}
 	}
 
-	async downloadHachiGenUpdate(targetPath, updateState = null) {
+	async downloadHachiGenUpdate(targetPath, updateState = null, options = {}) {
 		// Download only the release asset the checker selected. The main process
 		// decides whether to install it, open it, or hand the path to the user.
 		const update = updateState?.assetUrl ? updateState : await this.checkHachiGenUpdates();
@@ -5575,7 +5625,9 @@ process.stdout.write(JSON.stringify({
 			throw new Error("No HachiGen release asset is available to download.");
 		}
 
-		const result = await downloadUrlToFile(update.assetUrl, targetPath);
+		const result = await downloadUrlToFile(update.assetUrl, targetPath, {
+			onProgress: options.onProgress,
+		});
 		this.log(`Downloaded ${HACHIGEN_ASSET_NAME} update to ${displayPath(targetPath)}.`);
 
 		return {

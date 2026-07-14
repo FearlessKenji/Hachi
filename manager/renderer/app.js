@@ -57,6 +57,7 @@ const envConfigFields = [
 // forceMigrationUnlocked: one-session flag for the dangerous migration button.
 // confirmationResolve: current modal promise resolver.
 // lastConfig: latest Setup config metadata, used to restore copy-button state.
+// hachiGenUpdateWizard: active self-update wizard state while the modal is open.
 let state = null;
 let activeView = "dashboard";
 let busy = false;
@@ -71,6 +72,7 @@ let databaseSort = { column: "", direction: "" };
 let forceMigrationUnlocked = false;
 let confirmationResolve = null;
 let lastConfig = null;
+let hachiGenUpdateWizard = null;
 
 function setDatabaseView(nextView) {
 	// Keep database viewer state assignment outside async loader internals.
@@ -1548,6 +1550,236 @@ function showConfirmModal({ checkbox = null, confirmText = "Confirm", details = 
 	});
 }
 
+const hachiGenUpdateWizardSteps = [
+	{ id: "check", label: "Check release" },
+	{ id: "download", label: "Download HachiGen.exe" },
+	{ id: "prepare", label: "Prepare installer" },
+	{ id: "install", label: "Stage replacement" },
+	{ id: "restart", label: "Restart HachiGen" },
+	{ id: "open", label: "Open release download" },
+];
+
+function hachiGenUpdateWizardStepIndex(stage) {
+	return Math.max(0, hachiGenUpdateWizardSteps.findIndex(step => step.id === stage));
+}
+
+function hachiGenUpdateWizardVisibleSteps(stage) {
+	return stage === "open" ?
+		hachiGenUpdateWizardSteps.filter(step => ["check", "open"].includes(step.id)) :
+		hachiGenUpdateWizardSteps.filter(step => step.id !== "open");
+}
+
+function hachiGenUpdateWizardStepClass(step, wizard) {
+	const activeIndex = hachiGenUpdateWizardStepIndex(wizard.stage);
+	const stepIndex = hachiGenUpdateWizardStepIndex(step.id);
+
+	if (wizard.status === "error" && step.id === wizard.stage) {
+		return "update-wizard-step error";
+	}
+
+	if (wizard.status === "complete" || stepIndex < activeIndex) {
+		return "update-wizard-step done";
+	}
+
+	if (step.id === wizard.stage) {
+		return "update-wizard-step active";
+	}
+
+	return "update-wizard-step";
+}
+
+function renderHachiGenUpdateWizardFooter() {
+	const footer = $("#sharedModalActions");
+
+	if (!footer || !hachiGenUpdateWizard) {
+		return;
+	}
+
+	if (hachiGenUpdateWizard.running) {
+		footer.replaceChildren(createModalButton({
+			disabled: true,
+			label: "Updating...",
+			variant: "primary",
+		}));
+		return;
+	}
+
+	if (hachiGenUpdateWizard.status === "error" || hachiGenUpdateWizard.status === "complete") {
+		footer.replaceChildren(createModalButton({
+			action: "hachigen-update-close",
+			label: "Close",
+			variant: "primary",
+		}));
+		return;
+	}
+
+	footer.replaceChildren(
+		createModalButton({ action: "hachigen-update-close", label: "Cancel", variant: "secondary" }),
+		createModalButton({ action: "hachigen-update-start", label: "Install Latest", variant: "primary" }),
+	);
+}
+
+function renderHachiGenUpdateWizard() {
+	if (!hachiGenUpdateWizard) {
+		return;
+	}
+
+	const progress = Math.max(0, Math.min(100, Number(hachiGenUpdateWizard.progress) || 0));
+	const progressBar = $("#hachigenUpdateWizardProgressBar");
+	const progressText = $("#hachigenUpdateWizardProgressText");
+	const message = $("#hachigenUpdateWizardMessage");
+	const steps = $("#hachigenUpdateWizardSteps");
+
+	setText("#sharedModalMeta", hachiGenUpdateWizard.status === "error" ? "Update needs attention" : "HachiGen self-update");
+
+	if (progressBar) {
+		progressBar.style.width = `${progress}%`;
+	}
+
+	if (progressText) {
+		progressText.textContent = `${progress}%`;
+	}
+
+	if (message) {
+		message.textContent = hachiGenUpdateWizard.message;
+	}
+
+	if (steps) {
+		steps.replaceChildren(...hachiGenUpdateWizardVisibleSteps(hachiGenUpdateWizard.stage).map(step => {
+			const item = document.createElement("li");
+			item.className = hachiGenUpdateWizardStepClass(step, hachiGenUpdateWizard);
+
+			const marker = document.createElement("span");
+			marker.className = "update-wizard-marker";
+			item.append(marker);
+
+			const label = document.createElement("span");
+			label.textContent = step.label;
+			item.append(label);
+			return item;
+		}));
+	}
+
+	renderHachiGenUpdateWizardFooter();
+}
+
+function showHachiGenUpdateWizard() {
+	const update = state?.hachiGenUpdate || {};
+	const version = update.currentVersion || state?.hachiGenVersion || "Unknown";
+	const latest = update.latestTag || "the latest HachiGen release";
+	const assetSize = update.assetSize ? ` Asset size: ${formatFileSize(update.assetSize)}.` : "";
+	const summary = createModalSummary(`HachiGen ${version} will update from ${latest}.${assetSize}`);
+	const wizard = document.createElement("div");
+	const progress = document.createElement("div");
+	const progressBar = document.createElement("div");
+	const progressText = document.createElement("div");
+	const message = document.createElement("div");
+	const steps = document.createElement("ol");
+	const note = document.createElement("div");
+
+	hachiGenUpdateWizard = {
+		message: "Ready to check, download, and install the latest HachiGen release.",
+		progress: 0,
+		running: false,
+		stage: "check",
+		status: "ready",
+	};
+
+	wizard.className = "update-wizard";
+	progress.className = "update-wizard-progress";
+	progressBar.className = "update-wizard-progress-bar";
+	progressBar.id = "hachigenUpdateWizardProgressBar";
+	progressText.className = "update-wizard-progress-text";
+	progressText.id = "hachigenUpdateWizardProgressText";
+	progress.append(progressBar, progressText);
+
+	message.className = "update-wizard-message";
+	message.id = "hachigenUpdateWizardMessage";
+	steps.className = "update-wizard-steps";
+	steps.id = "hachigenUpdateWizardSteps";
+	note.className = "update-wizard-note";
+	note.textContent = "Packaged Windows builds close, replace HachiGen.exe, and relaunch. Development builds open the release download instead.";
+
+	wizard.append(summary, progress, message, steps, note);
+	showSharedModal({
+		actions: [],
+		content: [wizard],
+		meta: "HachiGen self-update",
+		title: "HachiGen Update",
+	});
+	renderHachiGenUpdateWizard();
+}
+
+function closeHachiGenUpdateWizard() {
+	if (hachiGenUpdateWizard?.running) {
+		return;
+	}
+
+	hachiGenUpdateWizard = null;
+	closeSharedModal();
+}
+
+async function startHachiGenUpdateWizard() {
+	if (!hachiGenUpdateWizard || hachiGenUpdateWizard.running) {
+		return;
+	}
+
+	hachiGenUpdateWizard = {
+		...hachiGenUpdateWizard,
+		message: "Starting HachiGen update...",
+		progress: 4,
+		running: true,
+		stage: "check",
+		status: "running",
+	};
+	renderHachiGenUpdateWizard();
+	setBusy(true);
+
+	try {
+		const result = await api.installHachiGenUpdate();
+		hachiGenUpdateWizard = {
+			...hachiGenUpdateWizard,
+			message: result?.message || "HachiGen update started.",
+			progress: 100,
+			running: false,
+			stage: result?.message?.includes("Opened") ? "open" : "restart",
+			status: "complete",
+		};
+		await refreshState();
+		toast(result?.message || "HachiGen update started.");
+	} catch (error) {
+		hachiGenUpdateWizard = {
+			...hachiGenUpdateWizard,
+			message: error.message || "HachiGen update failed.",
+			running: false,
+			status: "error",
+		};
+		toast(error.message || "HachiGen update failed.", "error", { label: "HachiGen update" });
+	} finally {
+		setBusy(false);
+		renderHachiGenUpdateWizard();
+		renderHachiGenUpdate(state?.hachiGenUpdate);
+	}
+}
+
+function handleHachiGenUpdateWizardEvent(event) {
+	if (!hachiGenUpdateWizard || event.area !== "hachigen-update") {
+		return;
+	}
+
+	const details = event.details || {};
+	const progress = details.progress === undefined ? hachiGenUpdateWizard.progress : details.progress;
+
+	hachiGenUpdateWizard = {
+		...hachiGenUpdateWizard,
+		message: event.message || hachiGenUpdateWizard.message,
+		progress,
+		stage: details.stage || hachiGenUpdateWizard.stage,
+		status: details.status || hachiGenUpdateWizard.status,
+	};
+	renderHachiGenUpdateWizard();
+}
+
 async function loadDatabaseViewer(tableName = "", sort = databaseSort) {
 	// Load one table preview for the read-only Database viewer. This avoids the
 	// shared runAction() wrapper so table changes feel quiet and immediate.
@@ -2013,25 +2245,17 @@ function handleAction(event) {
 	}
 
 	if (action === "install-hachigen-update") {
-		showConfirmModal({
-			confirmText: "Install Latest",
-			details: [
-				"HachiGen will download HachiGen.exe from the latest HachiGen release.",
-				"Packaged Windows builds close, replace the running executable, and relaunch.",
-				"Development builds open the release download instead of replacing Electron.",
-			],
-			meta: "HachiGen self-update",
-			summary: "Install the latest HachiGen release?",
-			title: "Install HachiGen update?",
-			variant: "primary",
-		}).then(confirmed => {
-			if (!confirmed) {
-				toast("HachiGen update canceled.");
-				return;
-			}
+		showHachiGenUpdateWizard();
+		return;
+	}
 
-			runAction("Install HachiGen update", () => api.installHachiGenUpdate());
-		});
+	if (action === "hachigen-update-start") {
+		startHachiGenUpdateWizard();
+		return;
+	}
+
+	if (action === "hachigen-update-close") {
+		closeHachiGenUpdateWizard();
 		return;
 	}
 
@@ -2405,6 +2629,7 @@ async function init() {
 
 	api.onEvent(event => {
 		// Live backend events arrive here while commands are running.
+		handleHachiGenUpdateWizardEvent(event);
 		appendEvent(event);
 	});
 

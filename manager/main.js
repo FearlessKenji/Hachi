@@ -162,18 +162,72 @@ async function showAboutDialog() {
 	});
 }
 
-function escapeBatchValue(value) {
-	return String(value || "").replace(/%/gu, "%%");
+function formatFileSize(bytes) {
+	const size = Number(bytes) || 0;
+
+	if (size < 1024) {
+		return `${size} B`;
+	}
+
+	if (size < 1024 * 1024) {
+		return `${(size / 1024).toFixed(1)} KB`;
+	}
+
+	return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function windowsPowerShellPath() {
+	const systemRoot = process.env.SystemRoot || "C:\\Windows";
+	const bundledPowerShell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+
+	return fs.existsSync(bundledPowerShell) ? bundledPowerShell : "powershell.exe";
+}
+
+function quitForHachiGenUpdate() {
+	if (manager) {
+		manager.stopLogCleanup();
+	}
+
+	app.quit();
+
+	const forceExitTimer = setTimeout(() => {
+		app.exit(0);
+	}, 3000);
+
+	if (typeof forceExitTimer.unref === "function") {
+		forceExitTimer.unref();
+	}
+}
+
+function emitHachiGenUpdateProgress(step, message, details = {}) {
+	manager?.event("log", message, {
+		area: "hachigen-update",
+		hachiGenUpdateWizard: true,
+		stage: step,
+		status: details.status || "running",
+		...details,
+	});
 }
 
 async function installHachiGenUpdate() {
+	emitHachiGenUpdateProgress("check", "Checking latest HachiGen release...", {
+		progress: 8,
+	});
 	const update = await manager.checkHachiGenUpdates();
 
 	if (!update.canInstall) {
+		emitHachiGenUpdateProgress("check", update.message || "No HachiGen release asset is available.", {
+			progress: 100,
+			status: "error",
+		});
 		throw new Error(update.message || "No HachiGen release asset is available.");
 	}
 
 	if (!app.isPackaged || process.platform !== "win32") {
+		emitHachiGenUpdateProgress("open", "Opened the latest HachiGen release download.", {
+			progress: 100,
+			status: "complete",
+		});
 		openExternal(update.assetUrl || update.releaseUrl || HELP_LINKS.releases);
 		return {
 			...update,
@@ -184,42 +238,116 @@ async function installHachiGenUpdate() {
 
 	const tempDir = path.join(os.tmpdir(), `hachigen-update-${Date.now()}`);
 	const updatePath = path.join(tempDir, "HachiGen.exe");
-	const scriptPath = path.join(tempDir, "install-hachigen-update.cmd");
-	const installed = await manager.downloadHachiGenUpdate(updatePath, update);
+	const scriptPath = path.join(tempDir, "install-hachigen-update.ps1");
+	const logPath = path.join(tempDir, "install-hachigen-update.log");
+	let lastProgressBucket = -1;
+
+	emitHachiGenUpdateProgress("download", `Downloading ${update.latestTag || "HachiGen update"}...`, {
+		assetName: update.assetName,
+		progress: 15,
+	});
+	const installed = await manager.downloadHachiGenUpdate(updatePath, update, {
+		onProgress: progress => {
+			const percent = progress.percent === null ? null : Math.max(0, Math.min(100, progress.percent));
+			const bucket = percent === null ? -1 : Math.floor(percent / 5);
+
+			if (bucket === lastProgressBucket && percent !== 100) {
+				return;
+			}
+
+			lastProgressBucket = bucket;
+			emitHachiGenUpdateProgress("download", percent === null ?
+				`Downloading ${update.assetName || "HachiGen.exe"}... ${formatFileSize(progress.bytes)} received.` :
+				`Downloading ${update.assetName || "HachiGen.exe"}... ${percent}%`,
+			{
+				bytes: progress.bytes,
+				progress: percent === null ? 35 : 15 + Math.round(percent * 0.55),
+				totalBytes: progress.totalBytes,
+			});
+		},
+	});
 	const targetPath = process.execPath;
+	emitHachiGenUpdateProgress("prepare", "Preparing HachiGen installer...", {
+		progress: 74,
+	});
 	const script = [
-		"@echo off",
-		"setlocal",
-		`set "TARGET=${escapeBatchValue(targetPath)}"`,
-		`set "UPDATE=${escapeBatchValue(updatePath)}"`,
-		`set "PID=${process.pid}"`,
-		":wait",
-		"tasklist /FI \"PID eq %PID%\" | findstr /R /C:\"%PID%\" >nul",
-		"if not errorlevel 1 (",
-		"	timeout /t 1 /nobreak >nul",
-		"	goto wait",
+		"param(",
+		"	[Parameter(Mandatory=$true)][int]$ParentPid,",
+		"	[Parameter(Mandatory=$true)][string]$Target,",
+		"	[Parameter(Mandatory=$true)][string]$Update,",
+		"	[Parameter(Mandatory=$true)][string]$LogPath",
 		")",
-		"copy /Y \"%UPDATE%\" \"%TARGET%\" >nul",
-		"if errorlevel 1 exit /b 1",
-		"start \"\" \"%TARGET%\"",
-		"del \"%UPDATE%\" >nul 2>nul",
-		"del \"%~f0\" >nul 2>nul",
+		"$ErrorActionPreference = 'Stop'",
+		"function Write-UpdateLog([string]$Message) {",
+		"	$stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'",
+		"	Add-Content -LiteralPath $LogPath -Value \"[$stamp] $Message\" -Encoding UTF8",
+		"}",
+		"try {",
+		"	Write-UpdateLog \"Waiting for HachiGen process $ParentPid to exit.\"",
+		"	Wait-Process -Id $ParentPid -Timeout 30 -ErrorAction SilentlyContinue",
+		"	$deadline = (Get-Date).AddSeconds(60)",
+		"	$copied = $false",
+		"	do {",
+		"		try {",
+		"			Copy-Item -LiteralPath $Update -Destination $Target -Force -ErrorAction Stop",
+		"			$copied = $true",
+		"		} catch {",
+		"			Write-UpdateLog \"Waiting for target file lock: $($_.Exception.Message)\"",
+		"			Start-Sleep -Milliseconds 750",
+		"		}",
+		"	} until ($copied -or (Get-Date) -gt $deadline)",
+		"	if (-not $copied) {",
+		"		throw \"Timed out replacing HachiGen.exe.\"",
+		"	}",
+		"	Write-UpdateLog \"HachiGen.exe replaced successfully.\"",
+		"	Start-Process -FilePath $Target -WorkingDirectory (Split-Path -Parent $Target)",
+		"	Write-UpdateLog \"Relaunched HachiGen.\"",
+		"	Remove-Item -LiteralPath $Update -Force -ErrorAction SilentlyContinue",
+		"	Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue",
+		"} catch {",
+		"	Write-UpdateLog \"Update failed: $($_.Exception.Message)\"",
+		"	exit 1",
+		"}",
 		"",
 	].join("\r\n");
 
 	fs.writeFileSync(scriptPath, script, "utf8");
 	manager.markHachiGenReleaseInstalled(update.latestTag);
-	manager.log(`HachiGen ${update.latestTag || "update"} downloaded. HachiGen will close, replace itself, and relaunch.`);
+	manager.log(`HachiGen ${update.latestTag || "update"} downloaded. HachiGen will close, replace itself, and relaunch. Installer log: ${logPath}`);
+	emitHachiGenUpdateProgress("install", "Ready to replace HachiGen. The app will close and relaunch.", {
+		installerLog: logPath,
+		progress: 90,
+	});
 
-	const child = childProcess.spawn(scriptPath, [], {
+	const child = childProcess.spawn(windowsPowerShellPath(), [
+		"-NoProfile",
+		"-ExecutionPolicy",
+		"Bypass",
+		"-WindowStyle",
+		"Hidden",
+		"-File",
+		scriptPath,
+		"-ParentPid",
+		String(process.pid),
+		"-Target",
+		targetPath,
+		"-Update",
+		updatePath,
+		"-LogPath",
+		logPath,
+	], {
 		detached: true,
-		shell: true,
+		shell: false,
 		stdio: "ignore",
 		windowsHide: true,
 	});
 	child.unref();
 
-	setTimeout(() => app.quit(), 500);
+	emitHachiGenUpdateProgress("restart", "Closing HachiGen so the updater can replace and relaunch it.", {
+		progress: 100,
+		status: "complete",
+	});
+	setTimeout(() => quitForHachiGenUpdate(), 500);
 
 	return {
 		...installed,
