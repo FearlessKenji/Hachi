@@ -4,13 +4,24 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.3.3 - 2026-07-16
+
+### Added
+
+- Added smoke coverage to confirm Hachi patch-note documents and Discord announcements stay Hachi-only.
+
 ### Changed
 
+- Updated the project version to `3.3.3`.
 - Moved HachiGen source, CI, smoke tests, and release automation into the separate HachiGen repository.
 
 ### Fixed
 
 - Hardened Twitch role EventSub reconnect handling by validating WebSocket reconnect URLs against Twitch's expected EventSub endpoint before opening sockets.
+- Fixed `/raid audit` explicit-allow warnings so Hachi's own overwrites and ordinary voice Connect access are not reported as quarantine risks.
+- Fixed `/raid audit` and `/raid sync` readiness checks to distinguish basic overwrite edit access from Discord's stricter requirements for applying full quarantine channel denies, including explicit Administrator or category/channel Manage Permissions remediation guidance.
+- Kept `/announce patch-notes` focused on Hachi release notes instead of including HachiGen manager updates in Discord posts.
+- Simplified `/announce patch-notes` formatting to use a single `## Hachi v...` heading without a redundant nested Hachi section.
 
 ## v3.3.2 - 2026-07-14
 

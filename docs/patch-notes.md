@@ -6,16 +6,24 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
-## Hachi
+No unreleased changes yet.
+
+# v3.3.3 - 2026-07-16
 
 ### Reliability
 
 - Twitch role EventSub reconnects now validate Twitch WebSocket URLs before
   opening a replacement connection.
+- `/raid audit` now avoids noisy explicit-allow warnings for Hachi's own role
+  and normal voice Connect access.
+- `/raid audit` and `/raid sync` now better explain when full quarantine sync
+  needs either Administrator or category/channel Manage Permissions exceptions.
+- `/announce patch-notes` stays focused on Hachi's server-facing patch notes,
+  without adding HachiGen manager release notes to Discord update posts.
+- Patch-note announcement posts now use one `## Hachi v...` heading instead of
+  repeating a separate Hachi section heading.
 
 # v3.3.2 - 2026-07-14
-
-## Hachi
 
 ### Reliability
 
@@ -29,37 +37,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - Twitch verification now includes a privacy note clarifying that Hachi never
   sees Twitch passwords or stores OAuth tokens from member verification.
 
-## HachiGen
-
-### Database
-
-- Encrypted database sanitation can now clean selected findings without failing
-  after creating the safety backup.
-
-### Updates
-
-- HachiGen now uses `1.0.1` for its packaged app metadata.
-- Hachi and HachiGen now use separate release tracks, so small HachiGen updates
-  can ship without changing the Hachi bot version.
-
-### Navigation
-
-- Sidebar navigation stays available while HachiGen is running manager actions.
-
-### Logging
-
-- Routine state refreshes no longer crowd the HachiGen log with repeated Git
-  branch, remote, and stash checks.
-- HachiGen keeps daily manager logs in the app data folder, including crash logs
-  and automatic cleanup of older log archives.
-- The visible Logs panel now focuses on readable manager activity instead of
-  raw shell commands, while the app data logs retain the full sanitized details.
-- Command output that tools send through stderr is now shown as a notice instead
-  of looking like a manager error when the action succeeded.
-
 # v3.3.1 - 2026-07-12
-
-## Hachi
 
 ### Setup
 
@@ -75,19 +53,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - If a Kick notification already has a valid VoD link, Hachi now clears the
   stale live state without making another blocked lookup.
 
-## HachiGen
-
-### Updates
-
-- HachiGen now uses `1.0.0` for its packaged app metadata.
-
-### Logging
-
-- HachiGen errors now appear in its log as well as popup notifications.
-
 # v3.3.0 - 2026-07-12
-
-## Hachi
 
 ### Security and Setup
 

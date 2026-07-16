@@ -1,3 +1,7 @@
+# Local Codex/agent instructions
+AGENTS.md
+.agents/
+
 # Logs
 logs/
 *.log
