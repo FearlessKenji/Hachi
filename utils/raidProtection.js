@@ -72,10 +72,54 @@ const MODERATED_CHANNEL_TYPES = new Set([
 	ChannelType.GuildVoice,
 	ChannelType.GuildStageVoice,
 ]);
-const ALL_PERMISSION_NAMES = Object.keys(PermissionFlagsBits);
-const QUARANTINE_OVERWRITE_DENIES = Object.fromEntries(
-	ALL_PERMISSION_NAMES.map(permission => [permission, false]),
-);
+const CHANNEL_PERMISSION_KIND_ALL = [`text`, `voice`, `stage`];
+const QUARANTINE_CHANNEL_DENY_PERMISSIONS = [
+	[`CreateInstantInvite`, `Create Instant Invite`, CHANNEL_PERMISSION_KIND_ALL],
+	[`ManageChannels`, `Manage Channels`, CHANNEL_PERMISSION_KIND_ALL],
+	[`AddReactions`, `Add Reactions`, CHANNEL_PERMISSION_KIND_ALL],
+	[`PrioritySpeaker`, `Priority Speaker`, [`voice`, `stage`]],
+	[`Stream`, `Video`, [`voice`, `stage`]],
+	[`ViewChannel`, `View Channel`, CHANNEL_PERMISSION_KIND_ALL],
+	[`SendMessages`, `Send Messages`, CHANNEL_PERMISSION_KIND_ALL],
+	[`SendTTSMessages`, `Send TTS Messages`, CHANNEL_PERMISSION_KIND_ALL],
+	[`ManageMessages`, `Manage Messages`, CHANNEL_PERMISSION_KIND_ALL],
+	[`EmbedLinks`, `Embed Links`, CHANNEL_PERMISSION_KIND_ALL],
+	[`AttachFiles`, `Attach Files`, CHANNEL_PERMISSION_KIND_ALL],
+	[`ReadMessageHistory`, `Read Message History`, CHANNEL_PERMISSION_KIND_ALL],
+	[`MentionEveryone`, `Mention Everyone`, CHANNEL_PERMISSION_KIND_ALL],
+	[`UseExternalEmojis`, `Use External Emojis`, CHANNEL_PERMISSION_KIND_ALL],
+	[`Connect`, `Connect`, [`voice`, `stage`]],
+	[`Speak`, `Speak`, [`voice`]],
+	[`MuteMembers`, `Mute Members`, [`voice`, `stage`]],
+	[`DeafenMembers`, `Deafen Members`, [`voice`]],
+	[`MoveMembers`, `Move Members`, [`voice`, `stage`]],
+	[`UseVAD`, `Use Voice Activity`, [`voice`]],
+	[`ManageRoles`, `Manage Permissions`, CHANNEL_PERMISSION_KIND_ALL],
+	[`ManageWebhooks`, `Manage Webhooks`, CHANNEL_PERMISSION_KIND_ALL],
+	[`UseApplicationCommands`, `Use Application Commands`, CHANNEL_PERMISSION_KIND_ALL],
+	[`RequestToSpeak`, `Request to Speak`, [`stage`]],
+	[`ManageEvents`, `Manage Events`, [`voice`, `stage`]],
+	[`ManageThreads`, `Manage Threads`, [`text`]],
+	[`CreatePublicThreads`, `Create Public Threads`, [`text`]],
+	[`CreatePrivateThreads`, `Create Private Threads`, [`text`]],
+	[`UseExternalStickers`, `Use External Stickers`, CHANNEL_PERMISSION_KIND_ALL],
+	[`SendMessagesInThreads`, `Send Messages in Threads`, [`text`]],
+	[`UseEmbeddedActivities`, `Use Activities`, [`text`, `voice`]],
+	[`UseSoundboard`, `Use Soundboard`, [`voice`]],
+	[`CreateEvents`, `Create Events`, [`voice`, `stage`]],
+	[`UseExternalSounds`, `Use External Sounds`, [`voice`]],
+	[`SendVoiceMessages`, `Send Voice Messages`, CHANNEL_PERMISSION_KIND_ALL],
+	[`SetVoiceChannelStatus`, `Set Voice Channel Status`, [`voice`]],
+	[`SendPolls`, `Send Polls`, CHANNEL_PERMISSION_KIND_ALL],
+	[`UseExternalApps`, `Use External Apps`, CHANNEL_PERMISSION_KIND_ALL],
+	[`PinMessages`, `Pin Messages`, [`text`]],
+	[`BypassSlowmode`, `Bypass Slowmode`, CHANNEL_PERMISSION_KIND_ALL],
+].map(([name, label, kinds]) => ({
+	flag: PermissionFlagsBits[name],
+	kinds: new Set(kinds),
+	label,
+	name,
+})).filter(permission => permission.flag !== undefined);
 const ELEVATED_ROLE_PERMISSIONS = [
 	{ flag: PermissionFlagsBits.Administrator, label: `Administrator` },
 	{ flag: PermissionFlagsBits.ManageGuild, label: `Manage Server` },
@@ -110,7 +154,6 @@ const QUARANTINE_CONFLICT_ALLOW_PERMISSIONS = [
 	[`PinMessages`, `Pin Messages`],
 	[`MentionEveryone`, `Mention Everyone`],
 	[`AttachFiles`, `Attach Files`],
-	[`Connect`, `Connect`],
 	[`Speak`, `Speak`],
 	[`Stream`, `Video`],
 	[`RequestToSpeak`, `Request to Speak`],
@@ -771,14 +814,16 @@ function addSampledLocation(locations, channel) {
 }
 
 function buildOverwritePermissionWarningDetail(locations) {
-	return `Needed: Manage Permissions in Discord's channel UI, which maps to Hachi's Manage Roles permission. Sample: ${formatSampledLocations(locations)}.`;
+	return `Hachi needs resolved Manage Roles permission in the affected channel/category to edit overwrites.` +
+		` Grant server-level Manage Roles or remove explicit channel/category denies.` +
+		` Sample: ${formatSampledLocations(locations)}.`;
 }
 
 function buildConflictingAllowDetail(permissionText, roleText, locations, hasMemberSpecificAllows) {
 	const parts = [];
 
 	if (permissionText !== `None`) {
-		parts.push(`Explicit allow permissions: ${permissionText}.`);
+		parts.push(`Explicit channel/category allow permissions: ${permissionText}.`);
 	}
 
 	if (roleText !== `None`) {
@@ -790,6 +835,14 @@ function buildConflictingAllowDetail(permissionText, roleText, locations, hasMem
 	parts.push(`Sample locations: ${formatSampledLocations(locations)}.`);
 
 	return trimForDiscord(parts.join(` `));
+}
+
+function buildFullQuarantineSyncWarningDetail(locations) {
+	return `Discord only lets Hachi deny permissions it already has unless Hachi has Administrator` +
+		` or an explicit Manage Permissions allow on the affected category/channel.` +
+		` Fix options: grant Hachi Administrator for easiest setup,` +
+		` or add explicit Manage Permissions allows for Hachi on affected categories/channels.` +
+		` Sample: ${formatSampledLocations(locations)}.`;
 }
 
 function createChannelTypeStats() {
@@ -833,8 +886,38 @@ function addAuditIssue(collection, message, detail = null) {
 	collection.push({ message, detail });
 }
 
-function denyBitsHaveAllPermissions(denyBits) {
-	return ALL_PERMISSION_NAMES.every(permission => denyBits.has(PermissionFlagsBits[permission]));
+function getChannelPermissionKind(channel) {
+	if (channel.type === ChannelType.GuildVoice) {
+		return `voice`;
+	}
+
+	if (channel.type === ChannelType.GuildStageVoice) {
+		return `stage`;
+	}
+
+	return `text`;
+}
+
+function getQuarantineDenyPermissions(channel) {
+	if (channel.type === ChannelType.GuildCategory) {
+		return QUARANTINE_CHANNEL_DENY_PERMISSIONS;
+	}
+
+	const channelKind = getChannelPermissionKind(channel);
+
+	return QUARANTINE_CHANNEL_DENY_PERMISSIONS
+		.filter(permission => permission.kinds.has(channelKind));
+}
+
+function getQuarantineOverwriteDenies(channel) {
+	return Object.fromEntries(
+		getQuarantineDenyPermissions(channel).map(permission => [permission.name, false]),
+	);
+}
+
+function denyBitsHaveQuarantinePermissions(denyBits, channel) {
+	return getQuarantineDenyPermissions(channel)
+		.every(permission => denyBits.has(permission.flag));
 }
 
 function channelNeedsQuarantineOverwrite(channel, quarantineRoleId) {
@@ -845,7 +928,7 @@ function channelNeedsQuarantineOverwrite(channel, quarantineRoleId) {
 	const overwrite = channel.permissionOverwrites.cache.get(quarantineRoleId);
 	const denyBits = overwrite?.deny || new PermissionsBitField();
 
-	return !denyBitsHaveAllPermissions(denyBits);
+	return !denyBitsHaveQuarantinePermissions(denyBits, channel);
 }
 
 function getOverwriteConflictAllowLabels(overwrite) {
@@ -854,7 +937,68 @@ function getOverwriteConflictAllowLabels(overwrite) {
 		.map(permission => permission.label);
 }
 
-function getConflictingAllowDetails(channel, quarantineRoleId) {
+function getMemberOverwriteIds(member) {
+	const ids = new Set();
+
+	if (member?.id) {
+		ids.add(member.id);
+	}
+
+	for (const roleId of member?.roles?.cache?.keys?.() || []) {
+		ids.add(roleId);
+	}
+
+	return ids;
+}
+
+function hasExplicitManageRolesAllow(channel, member) {
+	if (!channel?.permissionOverwrites?.cache || !member) {
+		return false;
+	}
+
+	for (const overwriteId of getMemberOverwriteIds(member)) {
+		const overwrite = channel.permissionOverwrites.cache.get(overwriteId);
+
+		if (overwrite?.allow?.has(PermissionFlagsBits.ManageRoles)) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+function getOverwriteAuthorityPermissions(guild, channel, member) {
+	const parent = channel.parent || guild.channels.cache.get(channel.parentId);
+
+	if (parent?.permissionsFor) {
+		return parent.permissionsFor(member);
+	}
+
+	return member?.permissions || null;
+}
+
+function canApplyFullQuarantineOverwrite(guild, channel) {
+	const member = guild.members.me;
+
+	if (!member || !canEditPermissionOverwrites(guild, channel)) {
+		return false;
+	}
+
+	if (member.permissions.has(PermissionFlagsBits.Administrator)) {
+		return true;
+	}
+
+	if (hasExplicitManageRolesAllow(channel, member)) {
+		return true;
+	}
+
+	const permissions = getOverwriteAuthorityPermissions(guild, channel, member);
+
+	return getQuarantineDenyPermissions(channel)
+		.every(permission => permissions?.has(permission.flag));
+}
+
+function getConflictingAllowDetails(channel, quarantineRoleId, ignoredOverwriteIds = new Set()) {
 	const details = {
 		hasMemberSpecificAllows: false,
 		permissionLabels: [],
@@ -863,6 +1007,10 @@ function getConflictingAllowDetails(channel, quarantineRoleId) {
 
 	for (const overwrite of channel.permissionOverwrites.cache.values()) {
 		if (overwrite.id === quarantineRoleId) {
+			continue;
+		}
+
+		if (ignoredOverwriteIds.has(overwrite.id)) {
 			continue;
 		}
 
@@ -901,6 +1049,8 @@ async function auditRaidConfiguration(guild, config = null) {
 			conflictingAllowRoles: new Map(),
 			conflictingAllowHasMemberSpecific: false,
 			conflictingAllowLocations: [],
+			limitedFullQuarantineSync: createChannelTypeStats(),
+			limitedFullQuarantineSyncLocations: [],
 			missingQuarantineOverwrites: createChannelTypeStats(),
 			missingOverwriteEditPermission: createChannelTypeStats(),
 			missingOverwriteEditPermissionLocations: [],
@@ -1055,6 +1205,8 @@ async function auditRaidConfiguration(guild, config = null) {
 	}
 
 	if (quarantineRole) {
+		const ignoredConflictOverwriteIds = getMemberOverwriteIds(botMember);
+
 		for (const channel of guild.channels.cache.values()) {
 			if (!MODERATED_CHANNEL_TYPES.has(channel.type)) {
 				continue;
@@ -1064,16 +1216,25 @@ async function auditRaidConfiguration(guild, config = null) {
 				issues.stats.unsyncedChildren += 1;
 			}
 
-			if (channelNeedsQuarantineOverwrite(channel, quarantineRole.id)) {
+			const needsQuarantineOverwrite = channelNeedsQuarantineOverwrite(channel, quarantineRole.id);
+
+			if (needsQuarantineOverwrite) {
 				incrementChannelTypeStats(issues.stats.missingQuarantineOverwrites, channel);
 			}
 
 			if (!canEditPermissionOverwrites(guild, channel)) {
 				incrementChannelTypeStats(issues.stats.missingOverwriteEditPermission, channel);
 				addSampledLocation(issues.stats.missingOverwriteEditPermissionLocations, channel);
+			} else if (needsQuarantineOverwrite && !canApplyFullQuarantineOverwrite(guild, channel)) {
+				incrementChannelTypeStats(issues.stats.limitedFullQuarantineSync, channel);
+				addSampledLocation(issues.stats.limitedFullQuarantineSyncLocations, channel);
 			}
 
-			const conflictingAllowDetails = getConflictingAllowDetails(channel, quarantineRole.id);
+			const conflictingAllowDetails = getConflictingAllowDetails(
+				channel,
+				quarantineRole.id,
+				ignoredConflictOverwriteIds,
+			);
 
 			if (conflictingAllowDetails.roleIds.length || conflictingAllowDetails.hasMemberSpecificAllows) {
 				incrementChannelTypeStats(issues.stats.conflictingAllows, channel);
@@ -1093,15 +1254,16 @@ async function auditRaidConfiguration(guild, config = null) {
 
 		const missingOverwriteText = formatChannelTypeStats(issues.stats.missingQuarantineOverwrites);
 		const conflictingAllowsText = formatChannelTypeStats(issues.stats.conflictingAllows);
+		const limitedFullQuarantineSyncText = formatChannelTypeStats(issues.stats.limitedFullQuarantineSync);
 		const missingOverwriteEditPermissionText = formatChannelTypeStats(issues.stats.missingOverwriteEditPermission);
 
 		if (hasChannelTypeStats(issues.stats.missingQuarantineOverwrites)) {
 			addAuditIssue(
 				issues.warnings,
-				`${missingOverwriteText} ${channelTypeStatsVerb(issues.stats.missingQuarantineOverwrites, `does`, `do`)} not directly deny all permissions for the quarantine role.`,
+				`${missingOverwriteText} ${channelTypeStatsVerb(issues.stats.missingQuarantineOverwrites, `does`, `do`)} not directly deny all channel permissions for the quarantine role.`,
 			);
 		} else {
-			addAuditIssue(issues.ok, `Quarantine role has full direct denies on checked channels/categories.`);
+			addAuditIssue(issues.ok, `Quarantine role has full direct channel denies on checked channels/categories.`);
 		}
 
 		if (hasChannelTypeStats(issues.stats.missingOverwriteEditPermission)) {
@@ -1112,6 +1274,16 @@ async function auditRaidConfiguration(guild, config = null) {
 			);
 		} else {
 			addAuditIssue(issues.ok, `Overwrite sync permission is available on checked channels/categories.`);
+		}
+
+		if (hasChannelTypeStats(issues.stats.limitedFullQuarantineSync)) {
+			addAuditIssue(
+				issues.warnings,
+				`Hachi can edit overwrites in ${limitedFullQuarantineSyncText}, but cannot apply full quarantine denies there.`,
+				buildFullQuarantineSyncWarningDetail(issues.stats.limitedFullQuarantineSyncLocations),
+			);
+		} else if (!hasChannelTypeStats(issues.stats.missingOverwriteEditPermission)) {
+			addAuditIssue(issues.ok, `Full quarantine overwrite sync is available on checked channels/categories.`);
 		}
 
 		if (hasChannelTypeStats(issues.stats.conflictingAllows)) {
@@ -1184,8 +1356,17 @@ async function syncQuarantineOverwrites(guild, config = null) {
 			continue;
 		}
 
+		if (!canApplyFullQuarantineOverwrite(guild, channel)) {
+			skipped += 1;
+			errors.push(
+				`${channelAuditLabel(channel)}: full quarantine sync needs Administrator` +
+				` or an explicit Manage Permissions allow for Hachi on this category/channel.`,
+			);
+			continue;
+		}
+
 		try {
-			await channel.permissionOverwrites.edit(role.id, QUARANTINE_OVERWRITE_DENIES, {
+			await channel.permissionOverwrites.edit(role.id, getQuarantineOverwriteDenies(channel), {
 				reason: `Raid protection quarantine overwrite sync`,
 			});
 			applied += 1;

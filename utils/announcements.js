@@ -150,7 +150,8 @@ function formatPatchNotesMessages(note) {
 		return [];
 	}
 
-	const text = `# Hachi ${note.heading}\n\n${note.body}`;
+	const body = normalizeNewlines(note.body);
+	const text = `## Hachi ${note.heading}${body ? `\n\n${body}` : ``}`;
 	const chunks = splitAnnouncementText(text);
 
 	if (chunks.length <= 1) {

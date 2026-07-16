@@ -360,6 +360,168 @@ async function validateAnnouncementChannelIdNormalization() {
 	}
 }
 
+async function validateRaidAuditExplicitAllowFiltering() {
+	const { ChannelType, PermissionFlagsBits, PermissionsBitField } = require(`discord.js`);
+	const raidProtection = requireFresh(`utils`, `raidProtection.js`);
+	const allPermissions = Object.values(PermissionFlagsBits);
+	const usableChannelPermissions = new PermissionsBitField([
+		PermissionFlagsBits.ViewChannel,
+		PermissionFlagsBits.SendMessages,
+		PermissionFlagsBits.EmbedLinks,
+		PermissionFlagsBits.ManageRoles,
+	]);
+
+	function makeRole({ id, managed = false, name, permissions = [], position = 1, tags = {} }) {
+		return {
+			id,
+			managed,
+			name,
+			permissions: new PermissionsBitField(permissions),
+			position,
+			tags,
+			comparePositionTo(otherRole) {
+				return this.position - (otherRole?.position || 0);
+			},
+		};
+	}
+
+	function makeOverwrite(id, allow = [], deny = []) {
+		return {
+			allow: new PermissionsBitField(allow),
+			deny: new PermissionsBitField(deny),
+			id,
+		};
+	}
+
+	const roles = new Map();
+	const guild = {
+		id: `smoke-guild`,
+		members: {
+			cache: new Map(),
+			fetchMe: () => Promise.resolve(guild.members.me),
+			me: null,
+		},
+		roles: {
+			cache: roles,
+			fetch: () => Promise.resolve(roles),
+		},
+		channels: {
+			cache: new Map(),
+			fetch: channelId => Promise.resolve(channelId ? guild.channels.cache.get(channelId) : guild.channels.cache),
+		},
+	};
+	const everyoneRole = makeRole({ id: guild.id, name: `@everyone`, position: 0 });
+	const quarantineRole = makeRole({ id: `quarantine`, name: `Quarantine`, position: 1 });
+	const memberRole = makeRole({
+		id: `member`,
+		name: `Member`,
+		permissions: [PermissionFlagsBits.Connect],
+		position: 2,
+	});
+	const officerRole = makeRole({ id: `officers`, name: `Officers`, position: 3 });
+	const hachiRole = makeRole({
+		id: `hachi`,
+		managed: true,
+		name: `Hachi`,
+		permissions: [PermissionFlagsBits.ManageRoles],
+		position: 10,
+		tags: { botId: `hachi-bot` },
+	});
+
+	for (const role of [everyoneRole, quarantineRole, memberRole, officerRole, hachiRole]) {
+		roles.set(role.id, role);
+	}
+
+	guild.members.me = {
+		id: `hachi-bot`,
+		permissions: new PermissionsBitField([
+			PermissionFlagsBits.ManageRoles,
+			PermissionFlagsBits.ManageMessages,
+			PermissionFlagsBits.ModerateMembers,
+		]),
+		roles: {
+			cache: new Map([[hachiRole.id, hachiRole]]),
+			highest: hachiRole,
+		},
+	};
+
+	function makeChannel({ id, name, overwrites, type = ChannelType.GuildText }) {
+		return {
+			guild,
+			id,
+			name,
+			parentId: null,
+			permissionOverwrites: { cache: new Map(overwrites.map(overwrite => [overwrite.id, overwrite])) },
+			permissionsFor: () => usableChannelPermissions,
+			permissionsLocked: true,
+			send: () => Promise.resolve(),
+			type,
+		};
+	}
+
+	const quarantineDeny = makeOverwrite(quarantineRole.id, [], allPermissions);
+	const partialQuarantineDeny = makeOverwrite(quarantineRole.id, [], [PermissionFlagsBits.ViewChannel]);
+	const channels = [
+		makeChannel({
+			id: `alert`,
+			name: `raid-alerts`,
+			overwrites: [quarantineDeny],
+		}),
+		makeChannel({
+			id: `report`,
+			name: `raid-reports`,
+			overwrites: [quarantineDeny],
+		}),
+		makeChannel({
+			id: `voice`,
+			name: `voice-lobby`,
+			overwrites: [
+				quarantineDeny,
+				makeOverwrite(hachiRole.id, [PermissionFlagsBits.ManageRoles]),
+				makeOverwrite(memberRole.id, [PermissionFlagsBits.Connect]),
+			],
+			type: ChannelType.GuildVoice,
+		}),
+		makeChannel({
+			id: `staff`,
+			name: `staff-chat`,
+			overwrites: [
+				quarantineDeny,
+				makeOverwrite(officerRole.id, [PermissionFlagsBits.SendMessages]),
+			],
+		}),
+		makeChannel({
+			id: `limited`,
+			name: `limited-chat`,
+			overwrites: [partialQuarantineDeny],
+		}),
+	];
+
+	for (const channel of channels) {
+		guild.channels.cache.set(channel.id, channel);
+	}
+
+	const audit = await raidProtection.auditRaidConfiguration(guild, {
+		...raidProtection.getDefaultRaidConfig(guild.id),
+		alertChannelId: `alert`,
+		enabled: true,
+		quarantineRoleId: quarantineRole.id,
+		reportChannelId: `report`,
+	});
+	const warningText = audit.warnings
+		.map(issue => `${issue.message} ${issue.detail || ``}`)
+		.join(`\n`);
+
+	assert(warningText.includes(`Explicit channel/category allow permissions: Send Messages (1).`), `Raid audit should report risky channel overwrite allows.`);
+	assert(warningText.includes(`\`Officers\` (1)`), `Raid audit should report the role with the risky overwrite.`);
+	assert(warningText.includes(`cannot apply full quarantine denies`), `Raid audit should report broad Manage Roles without explicit Manage Permissions as limited for full-deny sync.`);
+	assert(warningText.includes(`grant Hachi Administrator`), `Raid audit should mention Administrator as the easiest full-deny sync option.`);
+	assert(warningText.includes(`Manage Permissions allows for Hachi on affected categories/channels`), `Raid audit should mention category/channel Manage Permissions exceptions.`);
+	assert(warningText.includes(`limited-chat`), `Raid audit should include a sample location for full-deny sync limits.`);
+	assert(!warningText.includes(`\`Hachi\``), `Raid audit should not warn against Hachi's own role overwrites.`);
+	assert(!warningText.includes(`Connect`), `Raid audit should not report ordinary voice Connect access as a risky explicit allow.`);
+}
+
 function assertComponentHandlersAreRoutable() {
 	assert(loadedCommands, `Commands must be loaded before component handler checks run.`);
 
@@ -588,7 +750,9 @@ function validateProjectFiles() {
 
 	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
 	assert(patchNotes.includes(`# ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
-	assert(patchNotes.includes(`## Hachi`), `docs/patch-notes.md should include Hachi notes with Discord heading levels.`);
+	assert(patchNotes.includes(`### Reliability`), `docs/patch-notes.md should include release category headings.`);
+	assert(!/^## Hachi$/mu.test(patchNotes), `docs/patch-notes.md should not embed redundant Hachi product sections.`);
+	assert(!/^## HachiGen$/mu.test(patchNotes), `docs/patch-notes.md should not embed HachiGen release sections.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
 	assert(docsIndex.includes(`patch-notes.html`), `docs/index.md should link to user-facing patch notes.`);
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
@@ -1139,8 +1303,6 @@ function validatePureHelpers() {
 
 # v3.3.1 - 2026-07-12
 
-## Hachi
-
 ### Reliability
 
 - Released note.
@@ -1148,8 +1310,9 @@ function validatePureHelpers() {
 	assert(latestPatchNotes?.id === `v3.3.1`, `Patch-note parser should skip Unreleased sections.`);
 	assert(!latestPatchNotes.body.includes(`Draft manager note`), `Patch-note parser included Unreleased content.`);
 	const patchNoteMessage = formatPatchNotesMessages(latestPatchNotes)[0] || ``;
-	assert(patchNoteMessage.startsWith(`# Hachi v3.3.1 - 2026-07-12`), `Patch-note announcement should use a Discord level-one release heading.`);
-	assert(patchNoteMessage.includes(`## Hachi`) && patchNoteMessage.includes(`### Reliability`), `Patch-note announcement should preserve Discord product and area headings.`);
+	assert(patchNoteMessage.startsWith(`## Hachi v3.3.1 - 2026-07-12`), `Patch-note announcement should use a single Discord product release heading.`);
+	assert(patchNoteMessage.includes(`### Reliability`), `Patch-note announcement should preserve release category headings.`);
+	assert(!patchNoteMessage.includes(`## HachiGen`), `Hachi patch-note formatter should not invent HachiGen sections.`);
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 
@@ -1190,6 +1353,7 @@ async function main() {
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
 	await test(`/twitch panel includes privacy subtext`, validateTwitchVerificationPanelPrivacyCopy);
 	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
+	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);
