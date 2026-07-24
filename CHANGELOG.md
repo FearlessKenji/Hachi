@@ -12,6 +12,7 @@ Notable changes to Hachi are documented here.
 - Added a birthday board panel with member buttons for setting, viewing, removing, and signing upcoming birthday cards.
 - Added staff-managed `/birthday card set/remove/list` commands for storing RecoCards board links for each member's next birthday.
 - Added birthday card signing-link and derived delivery-link storage plus birthday board refresh metadata to the database schema.
+- Updated vulnerable transitive/runtime packages by raising `tar`, `js-yaml`, `@eslint/eslintrc`, and `brace-expansion` resolutions.
 
 ### Changed
 

@@ -41,6 +41,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ### Reliability
 
+- Dependency security updates cleared the current `npm audit --audit-level=moderate`
+  report.
 - Twitch EventSub reconnect warnings now include a safe reason when Hachi rejects
   an unexpected reconnect URL.
 - `/raid sync` now summarizes long channel error lists instead of failing with a
