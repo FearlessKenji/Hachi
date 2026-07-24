@@ -6,6 +6,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.4.0 - 2026-07-24
+
 ### Smart Links
 
 - A new profile-installable `Shorten Amazon Links` message context menu turns

@@ -4,6 +4,8 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.4.0 - 2026-07-24
+
 ### Added
 
 - Added a profile-installable `Shorten Amazon Links` message context menu for canonical, tracking-free regional product links.
@@ -13,6 +15,7 @@ Notable changes to Hachi are documented here.
 - Added staff-managed `/birthday card set/remove/list` commands for storing RecoCards board links for each member's next birthday.
 - Added birthday card signing-link and derived delivery-link storage plus birthday board refresh metadata to the database schema.
 - Updated vulnerable transitive/runtime packages by raising `tar`, `js-yaml`, `@eslint/eslintrc`, and `brace-expansion` resolutions.
+- Updated the project version to `3.4.0`.
 
 ### Changed
 
