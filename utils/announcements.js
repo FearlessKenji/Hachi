@@ -59,31 +59,66 @@ function readPatchNotesDocument(filePath = PATCH_NOTES_PATH) {
 }
 
 function parseLatestPatchNotes(documentText) {
+	const releases = parsePatchNoteReleases(documentText);
+
+	return releases[0] || null;
+}
+
+function parsePatchNoteReleases(documentText) {
 	const text = normalizeNewlines(documentText);
 	const lines = text.split(`\n`);
-	const firstReleaseIndex = lines.findIndex(line => RELEASE_HEADING_PATTERN.test(line));
+	const releaseIndexes = lines
+		.map((line, index) => RELEASE_HEADING_PATTERN.test(line) ? index : -1)
+		.filter(index => index !== -1);
 
-	if (firstReleaseIndex === -1) {
-		return null;
-	}
+	return releaseIndexes.map((releaseIndex, index) => {
+		const nextReleaseIndex = releaseIndexes[index + 1];
+		const releaseMatch = lines[releaseIndex].match(RELEASE_HEADING_PATTERN);
+		const heading = lines[releaseIndex].replace(/^#\s+/u, ``).trim();
+		const bodyLines = lines.slice(releaseIndex + 1, nextReleaseIndex === undefined ? undefined : nextReleaseIndex);
+		const body = normalizeNewlines(bodyLines.join(`\n`));
+		const version = releaseMatch?.[1] || ``;
 
-	const nextReleaseIndex = lines.findIndex((line, index) => index > firstReleaseIndex && /^#\s+/u.test(line));
-	const releaseMatch = lines[firstReleaseIndex].match(RELEASE_HEADING_PATTERN);
-	const heading = lines[firstReleaseIndex].replace(/^#\s+/u, ``).trim();
-	const bodyLines = lines.slice(firstReleaseIndex + 1, nextReleaseIndex === -1 ? undefined : nextReleaseIndex);
-	const body = normalizeNewlines(bodyLines.join(`\n`));
-	const version = releaseMatch?.[1] || ``;
-
-	return {
-		body,
-		heading,
-		id: version.startsWith(`v`) ? version : `v${version}`,
-		version,
-	};
+		return {
+			body,
+			heading,
+			id: version.startsWith(`v`) ? version : `v${version}`,
+			version,
+		};
+	});
 }
 
 function getLatestPatchNotes() {
 	return parseLatestPatchNotes(readPatchNotesDocument());
+}
+
+function selectPatchNotesForAnnouncement(releases, lastSentId, { force = false } = {}) {
+	const normalizedReleases = Array.isArray(releases) ? releases.filter(note => note?.id) : [];
+	const latest = normalizedReleases[0];
+
+	if (!latest) {
+		return [];
+	}
+
+	if (force || !lastSentId) {
+		return [latest];
+	}
+
+	if (lastSentId === latest.id) {
+		return [];
+	}
+
+	const lastSentIndex = normalizedReleases.findIndex(note => note.id === lastSentId);
+
+	if (lastSentIndex === -1) {
+		return [latest];
+	}
+
+	return normalizedReleases.slice(0, lastSentIndex).reverse();
+}
+
+function getPatchNotesForAnnouncement(lastSentId, options = {}) {
+	return selectPatchNotesForAnnouncement(parsePatchNoteReleases(readPatchNotesDocument()), lastSentId, options);
 }
 
 function splitLongLine(line, limit) {
@@ -230,45 +265,49 @@ async function fetchAnnouncementChannel(guild, channelId) {
 
 async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = {}) {
 	const settings = await getAnnouncementSettings(guildId);
-	const note = getLatestPatchNotes();
+	const notes = getPatchNotesForAnnouncement(settings.hachiAnnouncementLastId, { force });
+	const latestNote = getLatestPatchNotes();
 
-	if (!note) {
+	if (!latestNote) {
 		return { guildId, ok: false, sent: 0, skipped: true, message: `No patch notes were found.` };
 	}
 
-	if (!force && settings.hachiAnnouncementLastId === note.id) {
-		return { guildId, ok: true, patchNoteId: note.id, sent: 0, skipped: true, message: `Latest patch notes were already sent.` };
+	if (!notes.length) {
+		return { guildId, ok: true, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Latest patch notes were already sent.` };
 	}
 
 	const guild = await fetchGuild(client, guildId);
 
 	if (!guild) {
-		return { guildId, ok: false, patchNoteId: note.id, sent: 0, skipped: true, message: `Guild is unavailable.` };
+		return { guildId, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Guild is unavailable.` };
 	}
 
 	const channelResult = await fetchAnnouncementChannel(guild, settings.hachiAnnouncementChannelId);
 
 	if (!channelResult.ok) {
-		return { guildId, ok: false, patchNoteId: note.id, sent: 0, skipped: true, message: channelResult.message };
+		return { guildId, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: channelResult.message };
 	}
 
-	const messages = formatPatchNotesMessages(note);
+	const messages = notes.flatMap(note => formatPatchNotesMessages(note));
+	const latestSentNote = notes.at(-1);
 
 	for (const content of messages) {
 		await channelResult.channel.send({ content });
 	}
 
 	await updateAnnouncementSettings(guildId, {
-		hachiAnnouncementLastId: note.id,
+		hachiAnnouncementLastId: latestSentNote.id,
 	});
 
 	return {
 		guildId,
 		ok: true,
-		patchNoteId: note.id,
+		patchNoteId: latestSentNote.id,
+		patchNoteIds: notes.map(note => note.id),
+		releaseCount: notes.length,
 		sent: messages.length,
 		skipped: false,
-		message: `Sent ${messages.length} patch-note message(s).`,
+		message: `Sent ${messages.length} patch-note message(s) for ${notes.length} release(s).`,
 	};
 }
 
@@ -311,9 +350,12 @@ module.exports = {
 	formatPatchNotesMessages,
 	getAnnouncementSettings,
 	getLatestPatchNotes,
+	getPatchNotesForAnnouncement,
 	normalizeAnnouncementId,
 	parseLatestPatchNotes,
+	parsePatchNoteReleases,
 	saveAnnouncementChannel,
 	sendLatestPatchNotesToGuild,
+	selectPatchNotesForAnnouncement,
 	splitAnnouncementText,
 };

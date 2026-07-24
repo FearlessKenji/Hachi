@@ -26,6 +26,7 @@ Notable changes to Hachi are documented here.
 - Added saved RecoCards delivery links directly to birthday-day announcement messages.
 - Derived birthday-card delivery links automatically from saved RecoCards board links.
 - Restricted week-before birthday reminders so they ping only the configured reminder role, not the birthday members being listed.
+- Updated patch-note announcements to send every unsent release newer than the stored last-sent version, oldest-to-newest, before recording the newest sent ID.
 - Added sanitized Twitch EventSub WebSocket URL rejection reasons so reconnect warnings explain the failed trust check without logging sensitive query strings.
 
 ### Fixed

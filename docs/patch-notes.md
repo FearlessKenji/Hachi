@@ -45,6 +45,9 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 - Dependency security updates cleared the current `npm audit --audit-level=moderate`
   report.
+- `/announce patch-notes` now catches up on every unsent release newer than the
+  server's last sent patch-note version, sending older missed releases before
+  the newest one.
 - Twitch EventSub reconnect warnings now include a safe reason when Hachi rejects
   an unexpected reconnect URL.
 - `/raid sync` now summarizes long channel error lists instead of failing with a

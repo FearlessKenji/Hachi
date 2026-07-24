@@ -1259,7 +1259,12 @@ function validatePureHelpers() {
 	} = requireFresh(`utils`, `birthdays.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
-	const { formatPatchNotesMessages, parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
+	const {
+		formatPatchNotesMessages,
+		parseLatestPatchNotes,
+		parsePatchNoteReleases,
+		selectPatchNotesForAnnouncement,
+	} = requireFresh(`utils`, `announcements.js`);
 	const {
 		buildShortAmazonLinks,
 		shortenAmazonUrl,
@@ -1414,6 +1419,38 @@ function validatePureHelpers() {
 	assert(patchNoteMessage.startsWith(`## Hachi v3.3.1 - 2026-07-12`), `Patch-note announcement should use a single Discord product release heading.`);
 	assert(patchNoteMessage.includes(`### Reliability`), `Patch-note announcement should preserve release category headings.`);
 	assert(!patchNoteMessage.includes(`## HachiGen`), `Hachi patch-note formatter should not invent HachiGen sections.`);
+	const multiReleasePatchNotes = parsePatchNoteReleases(`# Unreleased
+
+# v3.5.0 - 2026-07-24
+
+- Newest release.
+
+# v3.4.0 - 2026-07-23
+
+- Middle release.
+
+# v3.3.3 - 2026-07-16
+
+- Last sent release.
+`);
+	const pendingPatchNotes = selectPatchNotesForAnnouncement(multiReleasePatchNotes, `v3.3.3`);
+
+	assert(
+		pendingPatchNotes.map(note => note.id).join(`,`) === `v3.4.0,v3.5.0`,
+		`Patch-note catch-up should send unsent releases oldest-to-newest.`,
+	);
+	assert(
+		selectPatchNotesForAnnouncement(multiReleasePatchNotes, `v3.5.0`).length === 0,
+		`Patch-note catch-up should skip when the latest release was already sent.`,
+	);
+	assert(
+		selectPatchNotesForAnnouncement(multiReleasePatchNotes, `unknown`).map(note => note.id).join(`,`) === `v3.5.0`,
+		`Patch-note catch-up should send only the latest release when the stored ID is unknown.`,
+	);
+	assert(
+		selectPatchNotesForAnnouncement(multiReleasePatchNotes, `v3.3.3`, { force: true }).map(note => note.id).join(`,`) === `v3.5.0`,
+		`Forced patch-note sends should resend only the latest release.`,
+	);
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 
