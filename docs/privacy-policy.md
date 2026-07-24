@@ -92,7 +92,9 @@ Hachi uses this data to run commands, update configuration, respond to interacti
 
 ### Message Content
 
-Hachi has the Discord Message Content intent enabled. Message content is used only for features that require it, such as converting an administrator-selected message into a reaction-role panel.
+Hachi has the Discord Message Content intent enabled. Message content is used only for features that require it, such as converting an administrator-selected message into a reaction-role panel and detecting supported social-media URLs when automatic link fixing is enabled. The profile-installed Fix Social Links context menu processes the selected message on demand.
+
+Hachi removes tracking data according to the supported platform and posts a replacement link through a third-party embed provider. Hachi does not fetch the social post while transforming the URL, but Discord and the selected embed provider may process the replacement URL to generate its preview.
 
 Hachi does not use message content to build user profiles, run advertising, sell data, or train machine learning or AI models.
 

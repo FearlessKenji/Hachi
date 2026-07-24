@@ -51,6 +51,10 @@ const BirthdayConfigs = require(`./models/birthdayConfigs.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
+const BirthdayCards = require(`./models/birthdayCards.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
 const CommandMonitorWhitelists = require(`./models/commandMonitorWhitelists.js`)(
 	sequelize,
 	Sequelize.DataTypes,
@@ -178,6 +182,20 @@ Servers.hasOne(BirthdayConfigs, {
 });
 
 BirthdayConfigs.belongsTo(Servers, {
+	foreignKey: `guildId`,
+	targetKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+Servers.hasMany(BirthdayCards, {
+	foreignKey: `guildId`,
+	sourceKey: `guildId`,
+	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+BirthdayCards.belongsTo(Servers, {
 	foreignKey: `guildId`,
 	targetKey: `guildId`,
 	onDelete: `RESTRICT`,
@@ -313,6 +331,7 @@ module.exports = {
 	RulesVerificationMessages,
 	BirthdayUsers,
 	BirthdayConfigs,
+	BirthdayCards,
 	CommandMonitorWhitelists,
 	TwitchRoleConfigs,
 	TwitchRoleLinks,

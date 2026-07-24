@@ -28,6 +28,12 @@ function eventDetails(subscriptionType) {
 	return SUBSCRIPTION_TYPES.find(details => details.type === subscriptionType) || null;
 }
 
+function sanitizeUrlReasonValue(value, fallback = `unknown`) {
+	const normalized = String(value || fallback).replace(/[^\w.:/-]/gu, `_`);
+
+	return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
+}
+
 function normalizeEventSubWebSocketUrl(rawUrl) {
 	let parsedUrl;
 
@@ -41,6 +47,7 @@ function normalizeEventSubWebSocketUrl(rawUrl) {
 		parsedUrl.protocol !== `wss:` ||
 		parsedUrl.hostname !== EVENTSUB_WEBSOCKET_HOST ||
 		!EVENTSUB_WEBSOCKET_PATHS.has(parsedUrl.pathname) ||
+		parsedUrl.port ||
 		parsedUrl.username ||
 		parsedUrl.password ||
 		parsedUrl.hash
@@ -53,6 +60,42 @@ function normalizeEventSubWebSocketUrl(rawUrl) {
 	trustedUrl.pathname = parsedUrl.pathname;
 	trustedUrl.search = parsedUrl.search;
 	return trustedUrl.href;
+}
+
+function getEventSubWebSocketUrlRejectionReason(rawUrl) {
+	let parsedUrl;
+
+	try {
+		parsedUrl = new URL(String(rawUrl));
+	} catch {
+		return `invalid URL`;
+	}
+
+	if (parsedUrl.protocol !== `wss:`) {
+		return `protocol ${sanitizeUrlReasonValue(parsedUrl.protocol)} is not wss:`;
+	}
+
+	if (parsedUrl.hostname !== EVENTSUB_WEBSOCKET_HOST) {
+		return `host ${sanitizeUrlReasonValue(parsedUrl.hostname)} is not ${EVENTSUB_WEBSOCKET_HOST}`;
+	}
+
+	if (!EVENTSUB_WEBSOCKET_PATHS.has(parsedUrl.pathname)) {
+		return `path ${sanitizeUrlReasonValue(parsedUrl.pathname, `/`)} is not / or /ws`;
+	}
+
+	if (parsedUrl.port) {
+		return `non-default port ${sanitizeUrlReasonValue(parsedUrl.port)} is not trusted`;
+	}
+
+	if (parsedUrl.username || parsedUrl.password) {
+		return `URL includes credentials`;
+	}
+
+	if (parsedUrl.hash) {
+		return `URL includes a fragment`;
+	}
+
+	return `URL failed trust validation`;
 }
 
 function createService(client) {
@@ -232,7 +275,9 @@ function createService(client) {
 		const trustedUrl = normalizeEventSubWebSocketUrl(url);
 
 		if (!trustedUrl) {
-			warn(`Rejected untrusted Twitch EventSub WebSocket URL.`);
+			// Reconnect URLs can include sensitive query strings, so log only the
+			// validation failure category instead of the raw URL Twitch provided.
+			warn(`Rejected untrusted Twitch EventSub WebSocket URL: ${getEventSubWebSocketUrlRejectionReason(url)}.`);
 			scheduleReconnect();
 			return;
 		}
@@ -345,6 +390,7 @@ function stopTwitchRoleEventSub() {
 }
 
 module.exports = {
+	getEventSubWebSocketUrlRejectionReason,
 	normalizeEventSubWebSocketUrl,
 	startTwitchRoleEventSub,
 	stopTwitchRoleEventSub,

@@ -606,6 +606,15 @@ function validateHachiCommandSurfaces() {
 			`${relative(filePath)} is not represented in the help catalog.`,
 		);
 	}
+
+	const raidCommand = commandMap.get(`raid`);
+	const longSyncErrors = Array.from({ length: 40 }, (_, index) =>
+		`category raid-sync-${index}: full quarantine sync needs Administrator or an explicit Manage Permissions allow.`,
+	);
+	const syncErrorField = raidCommand.formatSyncErrorField(longSyncErrors);
+
+	assert(syncErrorField.length <= 1024, `Raid sync error embed field should stay within Discord's field limit.`);
+	assert(syncErrorField.includes(`...and`), `Raid sync error embed field should summarize omitted errors.`);
 }
 
 function validateEventFiles() {
@@ -1243,12 +1252,28 @@ async function validateToolDatabaseConnectionPromises() {
 
 function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
+	const {
+		deriveBirthdayDeliveryUrl,
+		normalizeBirthdayCardUrl,
+		UPCOMING_BIRTHDAY_DAYS,
+	} = requireFresh(`utils`, `birthdays.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
 	const { dateToString } = requireFresh(`utils`, `dateToString.js`);
 	const { formatPatchNotesMessages, parseLatestPatchNotes } = requireFresh(`utils`, `announcements.js`);
+	const {
+		buildShortAmazonLinks,
+		shortenAmazonUrl,
+	} = requireFresh(`utils`, `amazonLinks.js`);
+	const {
+		buildFixedSocialLinks,
+		fixSocialUrl,
+	} = requireFresh(`utils`, `socialLinks.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
-	const { normalizeEventSubWebSocketUrl } = requireFresh(`modules`, `twitchRoleEventSub.js`);
+	const {
+		getEventSubWebSocketUrlRejectionReason,
+		normalizeEventSubWebSocketUrl,
+	} = requireFresh(`modules`, `twitchRoleEventSub.js`);
 	const { offlineEmbed } = requireFresh(`modules`, `streamUtils.js`);
 	const getKickSource = fs.readFileSync(resolveProject(`modules`, `getKick.js`), `utf8`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
@@ -1259,7 +1284,69 @@ function validatePureHelpers() {
 
 	assert(typeof serverLifecycle.reconcileServerRows === `function`, `server lifecycle reconciliation helper is missing.`);
 	assert(typeof serverLifecycle.markServerLeft === `function`, `server lifecycle leave tracker is missing.`);
+	assert(
+		shortenAmazonUrl(
+			`https://www.amazon.com/Thermalright-Cooling/dp/B0CDT59VGP/?tag=tracking&th=1`,
+		)?.url === `https://www.amazon.com/dp/B0CDT59VGP`,
+		`Amazon link shortening did not produce the canonical product URL.`,
+	);
+	assert(
+		shortenAmazonUrl(`https://smile.amazon.co.uk/gp/product/b000ib9qxi/ref=something`)?.url ===
+		`https://www.amazon.co.uk/dp/B000IB9QXI`,
+		`Amazon link shortening did not preserve the regional storefront.`,
+	);
+	assert(shortenAmazonUrl(`https://www.amazon.com/s?k=computer+fans`) === null, `Amazon search URL was treated as a product.`);
+	assert(shortenAmazonUrl(`https://amzn.to/example`) === null, `Amazon redirect URL was treated as a resolved product.`);
+	const shortAmazonLinks = buildShortAmazonLinks([
+		`https://www.amazon.com/example/dp/B0CDT59VGP?tag=first`,
+		`https://www.amazon.com/dp/B0CDT59VGP?tag=duplicate`,
+		`https://www.amazon.ca/gp/aw/d/B000IB9QXI?ref_=tracking`,
+	].join(`\n`));
+
+	assert(shortAmazonLinks.links.length === 2, `Amazon link shortening did not remove a canonical duplicate.`);
+	assert(
+		shortAmazonLinks.content.includes(`[Short Amazon link 1](https://www.amazon.com/dp/B0CDT59VGP)`) &&
+		shortAmazonLinks.content.includes(`[Short Amazon link 2](https://www.amazon.ca/dp/B000IB9QXI)`),
+		`Multiple Amazon links were not formatted in source order.`,
+	);
+	assert(
+		fixSocialUrl(`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=tracking`)?.url ===
+		`https://www.kkinstagram.com/reel/DbAO3edgEWh/`,
+		`Instagram link fixing did not remove tracking data.`,
+	);
+	assert(
+		fixSocialUrl(`https://www.twitch.tv/videos/123456?t=1h2m&utm_source=tracking`)?.url ===
+		`https://fxtwitch.seria.moe/videos/123456?t=1h2m`,
+		`Twitch link fixing did not preserve the functional timestamp.`,
+	);
+	const fixedSocialLinks = buildFixedSocialLinks([
+		`https://www.twitch.tv/example/clip/ClipOne?utm_source=tracking`,
+		`https://www.twitch.tv/example/clip/ClipTwo`,
+		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=one`,
+		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=duplicate`,
+	].join(`\n`));
+
+	assert(fixedSocialLinks.links.length === 3, `Social-link fixing did not remove a canonical duplicate.`);
+	assert(
+		fixedSocialLinks.content.includes(`[Embed-friendly Twitch link 1]`) &&
+		fixedSocialLinks.content.includes(`[Embed-friendly Twitch link 2]`) &&
+		fixedSocialLinks.content.includes(`[Embed-friendly Instagram link]`),
+		`Multiple fixed social links were not labeled by platform and order.`,
+	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
+	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
+	assert(
+		normalizeBirthdayCardUrl(`https://recocards.com/board/happy-birthday-smoke-123`) ===
+		`https://recocards.com/board/happy-birthday-smoke-123`,
+		`Birthday card URL validation rejected a RecoCards board link.`,
+	);
+	assert(
+		deriveBirthdayDeliveryUrl(`https://recocards.com/board/happy-birthday-smoke-123`) ===
+		`https://recocards.com/view/b/happy-birthday-smoke-123`,
+		`Birthday delivery URL derivation did not convert a RecoCards board link.`,
+	);
+	assert(normalizeBirthdayCardUrl(`https://example.com/board/nope`) === null, `Birthday card URL validation accepted an untrusted host.`);
+	assert(deriveBirthdayDeliveryUrl(`https://example.com/board/nope`) === null, `Birthday delivery URL derivation accepted an untrusted host.`);
 	assert(timezoneAutocompletes(`new_york`).some(choice => choice.value === `America/New_York`), `Timezone autocomplete did not find America/New_York.`);
 	assert(normalizeColorInput(`#abc`)?.color === 0xaabbcc, `Short hex color normalization failed.`);
 	assert(getTimezoneRegionId(`America/New_York`) === `us`, `Timezone region detection failed.`);
@@ -1281,6 +1368,20 @@ function validatePureHelpers() {
 		normalizeEventSubWebSocketUrl(`https://eventsub.wss.twitch.tv/ws?session_id=smoke`) === null,
 		`Twitch EventSub WebSocket URL validation accepted a non-WebSocket scheme.`,
 	);
+	assert(
+		getEventSubWebSocketUrlRejectionReason(`https://eventsub.wss.twitch.tv/ws?session_id=smoke`).includes(`protocol https:`),
+		`Twitch EventSub WebSocket rejection reason should explain rejected protocols.`,
+	);
+	assert(
+		getEventSubWebSocketUrlRejectionReason(`wss://127.0.0.1/ws?session_id=smoke`).includes(`host 127.0.0.1`),
+		`Twitch EventSub WebSocket rejection reason should explain rejected hosts.`,
+	);
+	const fragmentRejectionReason = getEventSubWebSocketUrlRejectionReason(
+		`wss://eventsub.wss.twitch.tv/ws?session_id=sensitive_smoke#fragment`,
+	);
+
+	assert(fragmentRejectionReason === `URL includes a fragment`, `Twitch EventSub WebSocket rejection reason should explain fragments.`);
+	assert(!fragmentRejectionReason.includes(`sensitive_smoke`), `Twitch EventSub WebSocket rejection reason should not include query values.`);
 	let missingVodRejected = false;
 
 	try {

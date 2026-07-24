@@ -1,6 +1,6 @@
 # Hachi
 
-Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
+Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, fix supported social-media links, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
 
 Hachi is managed through `HachiGen.exe`, a separate windowed setup and runtime manager available from the [HachiGen releases](https://github.com/FearlessKenji/HachiGen/releases).
 
@@ -14,12 +14,13 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 - VoD/end-of-stream updates when a previous live message can be matched
 - Twitch VIP and Moderator role sync through Twitch device-code authorization
 - Per-server notification setup for self streams and affiliate streams
-- Birthday storage, birthday month lists, one-week reminders, birthday-day posts, and RecoCards card buttons
+- Birthday storage, birthday month lists, one-week reminders, birthday-day posts, a birthday board, and staff-managed RecoCards links
 - Reaction-role panel creation, editing, message conversion, and cleanup when messages or channels are deleted
 - Per-server profile customization with avatar, banner, bio, and nickname fields
 - Rules embeds with optional reaction verification
 - Optional application command monitoring with app/channel whitelists
 - Configurable raid protection with quarantine, join-spike alerts, spam evidence, and incident reports
+- Optional non-pinging replies with clean, embed-friendly social-media links
 - Permission-aware `/help` generated from command metadata
 - Timestamp and dice rolling utility commands
 
@@ -175,9 +176,12 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Birthdays | `/birthday list` | List birthdays for a month, grouped by day. |
 | Birthdays | `/birthday remove` | Remove your stored birthday from the current server. |
 | Birthdays | `/birthday setup` | Open the birthday setup panel for channels, roles, posting hour, and timezone. |
+| Birthdays | `/birthday card set/remove/list` | Manage RecoCards board links for upcoming birthday cards. |
 | Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
 | Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
+| Utilities | `Fix Social Links` | Profile-installable message context menu for clean, embed-friendly social links. |
+| Utilities | `Shorten Amazon Links` | Profile-installable message context menu for canonical, tracking-free Amazon product links. |
 | Profiles | `/profile set` | Set a per-server profile avatar, banner, bio, or nickname. |
 | Profiles | `/profile clear` | Clear one or all per-server profile fields. |
 | Rules | `/rules` | Post a custom rules embed with optional reaction verification. |
@@ -218,8 +222,27 @@ Use `/setup` to open the setup hub. The hub routes to:
 - Security Reporting
 - Raid Protection
 - Hachi Updates
+- Social Link Fixing
 
 Buttons do not literally invoke slash commands in Discord, but they route to the same panels used by `/stream setup`, `/security setup`, and `/raid setup`.
+
+### Social Link Fixing
+
+Server administrators can enable automatic social-link fixing from `/setup`.
+When a message contains supported Instagram, TikTok, X/Twitter, Reddit,
+Bluesky, Threads, Tumblr, Pixiv, Pinterest, or Twitch links, Hachi posts one
+non-pinging reply with up to five cleaned, embed-friendly masked links. Duplicate
+destinations are removed after cleaning, and platform-required URL data such as a
+Twitch VoD timestamp is preserved.
+
+The profile-installable `Fix Social Links` message context menu uses the same
+rules on demand, even when automatic replies are disabled.
+
+The separate profile-installable `Shorten Amazon Links` message context menu
+turns recognized Amazon product URLs into canonical `/dp/ASIN` links, removes
+affiliate and recommendation parameters, preserves regional storefronts, and
+combines up to five unique products. It does not resolve shortened `a.co` or
+`amzn.to` redirects.
 
 ### Stream Notifications
 
@@ -340,13 +363,27 @@ Administrators can configure automatic birthday posts:
 
 The setup panel configures:
 
-- Posting channel for birthday reminders and birthday-day posts.
+- Birthday board channel.
+- Optional separate channel for week-before pings.
+- Optional separate channel for birthday-day pings.
 - Optional role to ping one week before birthdays.
 - Optional role to ping on birthday days.
 - Whole-hour local posting time.
 - IANA timezone used for the server's birthday schedule.
 
-Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. February 29 birthdays are celebrated on February 28 during non-leap years.
+Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set, view, or remove their birthday and open signable cards.
+
+Administrators can attach RecoCards board links to upcoming birthdays. Use the
+`/board/...` link that members sign; Hachi derives the `/view/b/...` delivery
+link automatically:
+
+```console
+/birthday card set user: @member url: https://recocards.com/board/example
+/birthday card list
+/birthday card remove user: @member
+```
+
+Upcoming card links are shown through an ephemeral selector. A birthday person's own card stays hidden from them until their birthday, and the birthday-day announcement includes their delivery link when one is saved. Adding or removing a card refreshes the birthday board immediately when a board channel is configured. February 29 birthdays are celebrated on February 28 during non-leap years.
 
 ### Profiles
 

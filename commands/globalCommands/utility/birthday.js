@@ -10,23 +10,35 @@ const {
 	ChannelType,
 	InteractionContextType,
 	MessageFlags,
+	ModalBuilder,
 	PermissionFlagsBits,
 	RoleSelectMenuBuilder,
 	SlashCommandBuilder,
 	StringSelectMenuBuilder,
 	StringSelectMenuOptionBuilder,
+	TextInputBuilder,
+	TextInputStyle,
 } = require(`discord.js`);
+const { DateTime } = require(`luxon`);
 const {
+	BirthdayCards,
 	BirthdayConfigs,
 	BirthdayUsers,
 	Servers,
 } = require(`../../../database/dbObjects.js`);
 const {
 	formatBirthday,
+	formatDaysAway,
 	getMonthName,
+	getNextBirthdayDate,
+	getUpcomingBirthdayEntries,
 	isValidTimezone,
+	deriveBirthdayDeliveryUrl,
+	normalizeBirthdayCardUrl,
 	parseBirthdayDate,
 	parseMonth,
+	refreshBirthdayBoard,
+	UPCOMING_BIRTHDAY_DAYS,
 } = require(`../../../utils/birthdays.js`);
 const {
 	DEFAULT_TIMEZONE_REGION_ID,
@@ -42,6 +54,32 @@ const textChannelTypes = [
 	ChannelType.GuildAnnouncement,
 ];
 
+function canManageBirthdays(interaction) {
+	return interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+}
+
+async function requireBirthdayManager(interaction) {
+	if (canManageBirthdays(interaction)) {
+		return true;
+	}
+
+	await interaction.reply({
+		content: `You need Manage Server to manage birthday setup or cards.`,
+		flags: MessageFlags.Ephemeral,
+	});
+	return false;
+}
+
+async function saveUserBirthday(guildId, userId, parsed) {
+	await Servers.upsert({ guildId });
+	await BirthdayUsers.upsert({
+		day: parsed.day,
+		guildId,
+		month: parsed.month,
+		userId,
+	});
+}
+
 async function setBirthday(interaction) {
 	const parsed = parseBirthdayDate(interaction.options.getString(`date`, true));
 
@@ -53,13 +91,7 @@ async function setBirthday(interaction) {
 		return;
 	}
 
-	await Servers.upsert({ guildId: interaction.guild.id });
-	await BirthdayUsers.upsert({
-		day: parsed.day,
-		guildId: interaction.guild.id,
-		month: parsed.month,
-		userId: interaction.user.id,
-	});
+	await saveUserBirthday(interaction.guild.id, interaction.user.id, parsed);
 
 	await interaction.reply({
 		content: `Your birthday is set to ${formatBirthday(parsed.month, parsed.day)}.`,
@@ -167,6 +199,325 @@ async function removeBirthday(interaction) {
 	});
 }
 
+async function getBirthdayConfigOrDefault(guildId) {
+	const config = await BirthdayConfigs.findOne({
+		raw: true,
+		where: { guildId },
+	});
+
+	return {
+		...(config || {}),
+		guildId,
+		timezone: config?.timezone || `UTC`,
+	};
+}
+
+async function getStoredBirthday(guildId, userId) {
+	return BirthdayUsers.findOne({
+		raw: true,
+		where: {
+			guildId,
+			userId,
+		},
+	});
+}
+
+function resolveBirthdayCardYear(birthday, timezone) {
+	const now = DateTime.now().setZone(timezone || `UTC`);
+
+	return getNextBirthdayDate(now, birthday).year;
+}
+
+async function refreshBirthdayBoardForInteraction(interaction) {
+	const config = await BirthdayConfigs.findOne({
+		where: { guildId: interaction.guild.id },
+	});
+
+	if (!config?.timezone || !(config.boardChannelId || config.channelId)) {
+		return false;
+	}
+
+	const now = DateTime.now().setZone(config.timezone);
+
+	if (!now.isValid) {
+		return false;
+	}
+
+	return refreshBirthdayBoard(interaction.client, config, now).catch(err => {
+		logError(`Failed to refresh birthday board after card update:`, err);
+		return false;
+	});
+}
+
+async function setBirthdayCard(interaction) {
+	if (!await requireBirthdayManager(interaction)) {
+		return;
+	}
+
+	const user = interaction.options.getUser(`user`, true);
+	const normalizedUrl = normalizeBirthdayCardUrl(interaction.options.getString(`url`, true));
+
+	if (!normalizedUrl) {
+		await interaction.reply({
+			content: `Use a valid HTTPS RecoCards board link, such as \`https://recocards.com/board/...\`.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	const derivedDeliveryUrl = deriveBirthdayDeliveryUrl(normalizedUrl);
+	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
+	const birthday = await getStoredBirthday(interaction.guild.id, user.id);
+
+	if (!birthday) {
+		await interaction.reply({
+			content: `${user}'s birthday is not stored. They need to set a birthday before a card can be attached.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+	const year = resolveBirthdayCardYear(birthday, config.timezone);
+	const existing = await BirthdayCards.findOne({
+		where: {
+			guildId: interaction.guild.id,
+			userId: user.id,
+			year,
+		},
+	});
+
+	if (existing) {
+		await existing.update({
+			deliveryUrl: derivedDeliveryUrl,
+			updatedAt: new Date(),
+			url: normalizedUrl,
+		});
+	} else {
+		await BirthdayCards.create({
+			createdAt: new Date(),
+			createdBy: interaction.user.id,
+			deliveryUrl: derivedDeliveryUrl,
+			guildId: interaction.guild.id,
+			updatedAt: null,
+			url: normalizedUrl,
+			userId: user.id,
+			year,
+		});
+	}
+
+	const refreshed = await refreshBirthdayBoardForInteraction(interaction);
+
+	await interaction.editReply({
+		content: `Birthday card saved for ${user}'s next birthday.${refreshed ? ` The birthday board was refreshed.` : ``}`,
+	});
+}
+
+async function removeBirthdayCard(interaction) {
+	if (!await requireBirthdayManager(interaction)) {
+		return;
+	}
+
+	const user = interaction.options.getUser(`user`, true);
+	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
+	const birthday = await getStoredBirthday(interaction.guild.id, user.id);
+
+	if (!birthday) {
+		await interaction.reply({
+			content: `${user}'s birthday is not stored. Hachi cannot determine which birthday card to remove.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+	const year = resolveBirthdayCardYear(birthday, config.timezone);
+	const count = await BirthdayCards.destroy({
+		where: {
+			guildId: interaction.guild.id,
+			userId: user.id,
+			year,
+		},
+	});
+	const refreshed = count ? await refreshBirthdayBoardForInteraction(interaction) : false;
+
+	await interaction.editReply({
+		content: count ?
+			`Birthday card removed for ${user}'s next birthday.${refreshed ? ` The birthday board was refreshed.` : ``}` :
+			`No birthday card was saved for ${user}'s next birthday.`,
+	});
+}
+
+function formatCardListLine(entry) {
+	return `- ${entry.displayName} - ${formatBirthday(entry.month, entry.day)} (${formatDaysAway(entry.daysAway)}) - signing: ${entry.card.url} - delivery: ${entry.card.deliveryUrl || `not set`}`;
+}
+
+async function listBirthdayCards(interaction) {
+	if (!await requireBirthdayManager(interaction)) {
+		return;
+	}
+
+	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
+	const entries = (await getUpcomingBirthdayEntries(interaction.guild, config, {
+		days: UPCOMING_BIRTHDAY_DAYS,
+	}))
+		.filter(entry => entry.card);
+
+	if (!entries.length) {
+		await interaction.reply({
+			content: `No birthday cards are configured for birthdays in the next two weeks.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	const lines = entries.map(formatCardListLine);
+
+	await interaction.reply({
+		content: `Upcoming birthday cards:\n${lines.join(`\n`)}`,
+		flags: MessageFlags.Ephemeral,
+	});
+}
+
+function buildBirthdaySetModal() {
+	return new ModalBuilder()
+		.setCustomId(`birthday:panel:setModal`)
+		.setTitle(`Set Birthday`)
+		.addComponents(
+			new ActionRowBuilder().addComponents(
+				new TextInputBuilder()
+					.setCustomId(`date`)
+					.setLabel(`Birthday`)
+					.setPlaceholder(`12/25 or December 25`)
+					.setStyle(TextInputStyle.Short)
+					.setMinLength(3)
+					.setMaxLength(32)
+					.setRequired(true),
+			),
+		);
+}
+
+async function handlePanelViewBirthday(interaction) {
+	const birthday = await BirthdayUsers.findOne({
+		raw: true,
+		where: {
+			guildId: interaction.guild.id,
+			userId: interaction.user.id,
+		},
+	});
+
+	await interaction.reply({
+		content: birthday ?
+			`Your birthday is ${formatBirthday(birthday.month, birthday.day)}.` :
+			`You do not have a birthday set.`,
+		flags: MessageFlags.Ephemeral,
+	});
+}
+
+async function handlePanelRemoveBirthday(interaction) {
+	const count = await BirthdayUsers.destroy({
+		where: {
+			guildId: interaction.guild.id,
+			userId: interaction.user.id,
+		},
+	});
+
+	await interaction.reply({
+		content: count ? `Your birthday has been removed.` : `You do not have a birthday set.`,
+		flags: MessageFlags.Ephemeral,
+	});
+}
+
+function buildBirthdayCardSelect(entries) {
+	return new ActionRowBuilder().addComponents(
+		new StringSelectMenuBuilder()
+			.setCustomId(`birthday:panel:cardSelect`)
+			.setPlaceholder(`Choose a card to sign`)
+			.addOptions(entries.slice(0, 25).map(entry =>
+				new StringSelectMenuOptionBuilder()
+					.setLabel(entry.displayName.slice(0, 100))
+					.setDescription(`${formatBirthday(entry.month, entry.day)} - ${formatDaysAway(entry.daysAway)}`.slice(0, 100))
+					.setValue(String(entry.card.id)),
+			)),
+	);
+}
+
+async function getSignableBirthdayCardEntries(interaction, config) {
+	const entries = await getUpcomingBirthdayEntries(interaction.guild, config, {
+		days: UPCOMING_BIRTHDAY_DAYS,
+	});
+
+	return entries.filter(entry =>
+		entry.card &&
+		!(entry.userId === interaction.user.id && entry.daysAway > 0),
+	);
+}
+
+async function handlePanelSignCards(interaction) {
+	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
+	const entries = await getUpcomingBirthdayEntries(interaction.guild, config, {
+		days: UPCOMING_BIRTHDAY_DAYS,
+	});
+	const signableEntries = entries.filter(entry =>
+		entry.card &&
+		!(entry.userId === interaction.user.id && entry.daysAway > 0),
+	);
+	const hiddenOwnCard = entries.some(entry =>
+		entry.card &&
+		entry.userId === interaction.user.id &&
+		entry.daysAway > 0,
+	);
+
+	if (!signableEntries.length) {
+		await interaction.reply({
+			content: hiddenOwnCard ?
+				`No birthday cards are currently available for you to sign. Your card is hidden until your birthday.` :
+				`No birthday cards are currently available for you to sign.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	await interaction.reply({
+		content: `Choose a birthday card to sign.`,
+		components: [buildBirthdayCardSelect(signableEntries)],
+		flags: MessageFlags.Ephemeral,
+	});
+}
+
+async function handleBirthdayCardSelect(interaction) {
+	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
+	const entries = await getSignableBirthdayCardEntries(interaction, config);
+	const entry = entries.find(candidate => String(candidate.card.id) === interaction.values[0]);
+
+	if (!entry) {
+		await interaction.update({
+			components: [],
+			content: `That birthday card is no longer available.`,
+		});
+		return;
+	}
+
+	const isBirthdayMember = entry.userId === interaction.user.id;
+	const cardUrl = isBirthdayMember && entry.daysAway === 0 && entry.card.deliveryUrl ?
+		entry.card.deliveryUrl :
+		entry.card.url;
+
+	await interaction.update({
+		components: [
+			new ActionRowBuilder().addComponents(
+				new ButtonBuilder()
+					.setLabel(isBirthdayMember ? `Open Birthday Card` : `Add Your Message`)
+					.setStyle(ButtonStyle.Link)
+					.setURL(cardUrl),
+			),
+		],
+		content: `${entry.displayName}'s birthday is ${formatBirthday(entry.month, entry.day)} (${formatDaysAway(entry.daysAway)}).`,
+	});
+}
+
 function formatChannel(id) {
 	return id ? `<#${id}>` : `Not set`;
 }
@@ -199,6 +550,9 @@ async function getBirthdaySettings(guildId) {
 	return {
 		guildId,
 		channelId: config?.channelId || null,
+		boardChannelId: config?.boardChannelId || config?.channelId || null,
+		weekChannelId: config?.weekChannelId || null,
+		dayChannelId: config?.dayChannelId || null,
 		weekRoleId: config?.weekRoleId || null,
 		dayRoleId: config?.dayRoleId || null,
 		hour: config?.hour === null || config?.hour === undefined ? null : Number(config.hour),
@@ -206,22 +560,38 @@ async function getBirthdaySettings(guildId) {
 	};
 }
 
+function formatOptionalChannel(id) {
+	return id ? formatChannel(id) : `Board channel`;
+}
+
 function buildBirthdaySetupContent(settings) {
 	const status = settings.statusMessage ? `\n### ${settings.statusMessage}` : ``;
 
 	return `## Birthday Setup
-- Posting Channel: ${formatChannel(settings.channelId)}
+- Birthday Board Channel: ${formatChannel(settings.boardChannelId)}
+- Week-before Ping Channel: ${formatOptionalChannel(settings.weekChannelId)}
+- Birthday-day Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
 - Posting Hour: ${formatHour(settings.hour)}
 - Timezone: ${settings.timezone ? `\`${settings.timezone}\`` : `Not set`}
 - Week-before Role: ${formatRole(settings.weekRoleId)}
 - Birthday-day Role: ${formatRole(settings.dayRoleId)}${status}`;
 }
 
+function buildChannelsContent(settings) {
+	const status = settings.statusMessage ? `\n### ${settings.statusMessage}` : ``;
+
+	return `## Birthday Channels
+- Birthday Board Channel: ${formatChannel(settings.boardChannelId)}
+- Week-before Ping Channel: ${formatOptionalChannel(settings.weekChannelId)}
+- Birthday-day Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
+
+If a ping channel is not set, Hachi posts that ping in the birthday board channel.${status}`;
+}
+
 function buildScheduleContent(settings) {
 	const status = settings.statusMessage ? `\n### ${settings.statusMessage}` : ``;
 
 	return `## Birthday Schedule
-- Posting Channel: ${formatChannel(settings.channelId)}
 - Posting Hour: ${formatHour(settings.hour)}
 - Timezone: ${settings.timezone ? `\`${settings.timezone}\`` : `Not set`}${status}`;
 }
@@ -234,11 +604,11 @@ function buildRolesContent(settings) {
 - Birthday-day Role: ${formatRole(settings.dayRoleId)}${status}`;
 }
 
-function buildChannelSelect(setupId) {
+function buildChannelSelect(setupId, action, placeholder) {
 	return new ActionRowBuilder().addComponents(
 		new ChannelSelectMenuBuilder()
-			.setCustomId(`birthday:${setupId}:setup:channel`)
-			.setPlaceholder(`Birthday post channel`)
+			.setCustomId(`birthday:${setupId}:setup:${action}`)
+			.setPlaceholder(placeholder)
 			.setChannelTypes(textChannelTypes)
 			.setMaxValues(1),
 	);
@@ -316,9 +686,13 @@ function buildBackToSetupButton(parentSetupId) {
 function buildHomeComponents(setupId, parentSetupId = null) {
 	const buttons = [
 		new ButtonBuilder()
+			.setCustomId(`birthday:${setupId}:setup:page:channels`)
+			.setLabel(`Channels`)
+			.setStyle(ButtonStyle.Primary),
+		new ButtonBuilder()
 			.setCustomId(`birthday:${setupId}:setup:page:schedule`)
 			.setLabel(`Schedule`)
-			.setStyle(ButtonStyle.Primary),
+			.setStyle(ButtonStyle.Secondary),
 		new ButtonBuilder()
 			.setCustomId(`birthday:${setupId}:setup:page:roles`)
 			.setLabel(`Roles`)
@@ -342,6 +716,15 @@ function buildHomeComponents(setupId, parentSetupId = null) {
 
 function buildBackRow(setupId, parentSetupId = null, options = {}) {
 	const buttons = [];
+
+	if (options.clearChannels) {
+		buttons.push(
+			new ButtonBuilder()
+				.setCustomId(`birthday:${setupId}:setup:clearPingChannels`)
+				.setLabel(`Clear Ping Channels`)
+				.setStyle(ButtonStyle.Danger),
+		);
+	}
 
 	if (options.clearRoles) {
 		buttons.push(
@@ -372,9 +755,17 @@ function buildBackRow(setupId, parentSetupId = null, options = {}) {
 	return new ActionRowBuilder().addComponents(buttons);
 }
 
+function buildChannelComponents(setupId, settings) {
+	return [
+		buildChannelSelect(setupId, `boardChannel`, `Birthday board channel`),
+		buildChannelSelect(setupId, `weekChannel`, `Week-before ping channel`),
+		buildChannelSelect(setupId, `dayChannel`, `Birthday-day ping channel`),
+		buildBackRow(setupId, settings.parentSetupId, { clearChannels: true }),
+	];
+}
+
 function buildScheduleComponents(setupId, settings) {
 	return [
-		buildChannelSelect(setupId),
 		buildHourSelect(setupId, settings.hour),
 		buildTimezoneRegionSelect(setupId, settings.timezoneRegionId),
 		buildTimezoneSelect(setupId, settings),
@@ -391,6 +782,10 @@ function buildRolesComponents(setupId, settings) {
 }
 
 function buildBirthdaySetupComponents(setupId, settings) {
+	if (settings.currentPage === `channels`) {
+		return buildChannelComponents(setupId, settings);
+	}
+
 	if (settings.currentPage === `schedule`) {
 		return buildScheduleComponents(setupId, settings);
 	}
@@ -417,6 +812,10 @@ async function getPendingBirthdaySetup(interaction, setupId) {
 }
 
 function buildBirthdaySetupPageContent(settings) {
+	if (settings.currentPage === `channels`) {
+		return buildChannelsContent(settings);
+	}
+
 	if (settings.currentPage === `schedule`) {
 		return buildScheduleContent(settings);
 	}
@@ -436,8 +835,8 @@ async function updateBirthdaySetup(interaction, setupId, pendingSetup) {
 }
 
 function validateBirthdaySetup(pendingSetup) {
-	if (!pendingSetup.channelId) {
-		return `Select a birthday post channel before submitting.`;
+	if (!pendingSetup.boardChannelId) {
+		return `Select a birthday board channel before submitting.`;
 	}
 
 	if (pendingSetup.hour === null || pendingSetup.hour === undefined) {
@@ -452,15 +851,22 @@ function validateBirthdaySetup(pendingSetup) {
 }
 
 async function saveBirthdaySettings(guildId, settings) {
+	const boardChannelId = settings.boardChannelId || settings.channelId;
+
 	await Servers.upsert({ guildId });
 	await BirthdayConfigs.upsert({
-		channelId: settings.channelId,
+		boardChannelId,
+		boardMessageId: null,
+		channelId: boardChannelId,
+		dayChannelId: settings.dayChannelId || null,
 		dayRoleId: settings.dayRoleId || null,
 		guildId,
 		hour: settings.hour,
+		lastBoardPostDate: null,
 		lastDayPostDate: null,
 		lastWeekPostDate: null,
 		timezone: settings.timezone,
+		weekChannelId: settings.weekChannelId || null,
 		weekRoleId: settings.weekRoleId || null,
 	});
 }
@@ -470,7 +876,7 @@ async function submitBirthdaySetup(interaction, setupId, pendingSetup) {
 
 	if (validationError) {
 		pendingSetup.statusMessage = validationError;
-		pendingSetup.currentPage = `schedule`;
+		pendingSetup.currentPage = pendingSetup.boardChannelId ? `schedule` : `channels`;
 		await updateBirthdaySetup(interaction, setupId, pendingSetup);
 		return;
 	}
@@ -548,8 +954,13 @@ async function handleBirthdaySetupComponent(interaction, setupId, action, field)
 		return;
 	}
 
-	if (action === `channel`) {
-		pendingSetup.channelId = interaction.values[0] || null;
+	if (action === `boardChannel`) {
+		pendingSetup.boardChannelId = interaction.values[0] || null;
+		pendingSetup.channelId = pendingSetup.boardChannelId;
+	} else if (action === `weekChannel`) {
+		pendingSetup.weekChannelId = interaction.values[0] || null;
+	} else if (action === `dayChannel`) {
+		pendingSetup.dayChannelId = interaction.values[0] || null;
 	} else if (action === `weekRole`) {
 		pendingSetup.weekRoleId = interaction.values[0] || null;
 	} else if (action === `dayRole`) {
@@ -568,12 +979,47 @@ async function handleBirthdaySetupComponent(interaction, setupId, action, field)
 	} else if (action === `clearRoles`) {
 		pendingSetup.weekRoleId = null;
 		pendingSetup.dayRoleId = null;
+	} else if (action === `clearPingChannels`) {
+		pendingSetup.weekChannelId = null;
+		pendingSetup.dayChannelId = null;
 	} else if (action === `submit`) {
 		await submitBirthdaySetup(interaction, setupId, pendingSetup);
 		return;
 	}
 
 	await updateBirthdaySetup(interaction, setupId, pendingSetup);
+}
+
+async function handleBirthdayPanelComponent(interaction, action) {
+	if (action === `set`) {
+		await interaction.showModal(buildBirthdaySetModal());
+	} else if (action === `view`) {
+		await handlePanelViewBirthday(interaction);
+	} else if (action === `remove`) {
+		await handlePanelRemoveBirthday(interaction);
+	} else if (action === `sign`) {
+		await handlePanelSignCards(interaction);
+	} else if (action === `cardSelect`) {
+		await handleBirthdayCardSelect(interaction);
+	}
+}
+
+async function handleBirthdayPanelModalSubmit(interaction) {
+	const parsed = parseBirthdayDate(interaction.fields.getTextInputValue(`date`));
+
+	if (!parsed) {
+		await interaction.reply({
+			content: `I couldn't understand that birthday. Try something like \`12/25\`, \`12-25\`, or \`December 25\`.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	await saveUserBirthday(interaction.guild.id, interaction.user.id, parsed);
+	await interaction.reply({
+		content: `Your birthday is set to ${formatBirthday(parsed.month, parsed.day)}.`,
+		flags: MessageFlags.Ephemeral,
+	});
 }
 
 module.exports = {
@@ -620,6 +1066,44 @@ module.exports = {
 				.setName(`remove`)
 				.setDescription(`Remove your birthday.`),
 		)
+		.addSubcommandGroup(group =>
+			group
+				.setName(`card`)
+				.setDescription(`Manage birthday card links.`)
+				.addSubcommand(subcommand =>
+					subcommand
+						.setName(`set`)
+						.setDescription(`Save a birthday card link for a member.`)
+						.addUserOption(option =>
+							option
+								.setName(`user`)
+								.setDescription(`Birthday member.`)
+								.setRequired(true),
+						)
+						.addStringOption(option =>
+							option
+								.setName(`url`)
+								.setDescription(`RecoCards board link used for signing.`)
+								.setRequired(true),
+						),
+				)
+				.addSubcommand(subcommand =>
+					subcommand
+						.setName(`remove`)
+						.setDescription(`Remove a birthday card link for a member.`)
+						.addUserOption(option =>
+							option
+								.setName(`user`)
+								.setDescription(`Birthday member.`)
+								.setRequired(true),
+						),
+				)
+				.addSubcommand(subcommand =>
+					subcommand
+						.setName(`list`)
+						.setDescription(`List upcoming configured birthday cards.`),
+				),
+		)
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`setup`)
@@ -635,17 +1119,24 @@ module.exports = {
 			},
 			{
 				category: `management`,
-				command: `/birthday setup`,
-				description: `configure automatic birthday posts.`,
+				command: `/birthday setup/card`,
+				description: `configure birthday posts and card links.`,
 				permissions: [PermissionFlagsBits.ManageGuild],
 			},
 		],
 	},
 
 	async execute(interaction) {
+		const group = interaction.options.getSubcommandGroup(false);
 		const subcommand = interaction.options.getSubcommand();
 
-		if (subcommand === `set`) {
+		if (group === `card` && subcommand === `set`) {
+			await setBirthdayCard(interaction);
+		} else if (group === `card` && subcommand === `remove`) {
+			await removeBirthdayCard(interaction);
+		} else if (group === `card` && subcommand === `list`) {
+			await listBirthdayCards(interaction);
+		} else if (subcommand === `set`) {
 			await setBirthday(interaction);
 		} else if (subcommand === `view`) {
 			await viewBirthday(interaction);
@@ -661,6 +1152,21 @@ module.exports = {
 	async handleComponent(interaction) {
 		const [, setupId, scope, action, field] = interaction.customId.split(`:`);
 
+		if (setupId === `panel`) {
+			try {
+				await handleBirthdayPanelComponent(interaction, scope);
+			} catch (err) {
+				logError(`Failed to handle birthday panel interaction:`, err);
+
+				if (interaction.replied || interaction.deferred) {
+					await interaction.followUp({ content: `Failed to update birthday panel.`, flags: MessageFlags.Ephemeral });
+				} else {
+					await interaction.reply({ content: `Failed to update birthday panel.`, flags: MessageFlags.Ephemeral });
+				}
+			}
+			return;
+		}
+
 		if (scope !== `setup`) {
 			return;
 		}
@@ -674,6 +1180,26 @@ module.exports = {
 				await interaction.followUp({ content: `Failed to update birthday setup.`, flags: MessageFlags.Ephemeral });
 			} else {
 				await interaction.reply({ content: `Failed to update birthday setup.`, flags: MessageFlags.Ephemeral });
+			}
+		}
+	},
+
+	async handleModalSubmit(interaction) {
+		const [, scope, action] = interaction.customId.split(`:`);
+
+		if (scope !== `panel` || action !== `setModal`) {
+			return;
+		}
+
+		try {
+			await handleBirthdayPanelModalSubmit(interaction);
+		} catch (err) {
+			logError(`Failed to handle birthday modal:`, err);
+
+			if (interaction.replied || interaction.deferred) {
+				await interaction.followUp({ content: `Failed to save birthday.`, flags: MessageFlags.Ephemeral });
+			} else {
+				await interaction.reply({ content: `Failed to save birthday.`, flags: MessageFlags.Ephemeral });
 			}
 		}
 	},
