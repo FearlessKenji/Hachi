@@ -187,13 +187,7 @@ function formatPatchNotesMessages(note) {
 
 	const body = normalizeNewlines(note.body);
 	const text = `## Hachi ${note.heading}${body ? `\n\n${body}` : ``}`;
-	const chunks = splitAnnouncementText(text);
-
-	if (chunks.length <= 1) {
-		return chunks;
-	}
-
-	return chunks.map((chunk, index) => `${chunk}\n\n_Part ${index + 1}/${chunks.length}_`);
+	return splitAnnouncementText(text);
 }
 
 async function getAnnouncementSettings(guildId) {

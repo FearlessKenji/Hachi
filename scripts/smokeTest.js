@@ -1419,6 +1419,13 @@ function validatePureHelpers() {
 	assert(patchNoteMessage.startsWith(`## Hachi v3.3.1 - 2026-07-12`), `Patch-note announcement should use a single Discord product release heading.`);
 	assert(patchNoteMessage.includes(`### Reliability`), `Patch-note announcement should preserve release category headings.`);
 	assert(!patchNoteMessage.includes(`## HachiGen`), `Hachi patch-note formatter should not invent HachiGen sections.`);
+	const splitPatchNoteMessages = formatPatchNotesMessages({
+		heading: `v9.9.9 - 2026-07-24`,
+		body: `### Long Notes\n\n- ${`Long patch note. `.repeat(180)}`,
+	});
+
+	assert(splitPatchNoteMessages.length > 1, `Long patch-note announcements should split into multiple messages.`);
+	assert(!splitPatchNoteMessages.some(message => /_Part \d+\/\d+_/u.test(message)), `Split patch-note announcements should not add Part X/Y labels.`);
 	const multiReleasePatchNotes = parsePatchNoteReleases(`# Unreleased
 
 # v3.5.0 - 2026-07-24

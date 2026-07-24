@@ -1088,7 +1088,7 @@ function setFailureExitCode() {
 
 async function runCli() {
 	const args = cliArgs(process.argv.slice(2));
-	let result = null;
+	let result;
 
 	try {
 		result = args.migrate ?

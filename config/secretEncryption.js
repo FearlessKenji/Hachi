@@ -328,7 +328,7 @@ function decryptSecretValue(field, value, rawKey) {
 		]).toString(`utf8`);
 	} catch (error) {
 		const detail = keyId && keyId !== expectedKeyId ? ` the configured key does not match this value` : ` ${error.message}`;
-		throw new Error(`Could not decrypt ${field};${detail}.`);
+		throw new Error(`Could not decrypt ${field};${detail}.`, { cause: error });
 	}
 }
 
