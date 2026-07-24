@@ -4,6 +4,29 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.4.1 - 2026-07-24
+
+### Added
+
+- Added smoke coverage to confirm split patch-note announcements do not add page labels.
+
+### Changed
+
+- Updated the project version to `3.4.1`.
+- Updated ESLint to `10.8.0` and made `@eslint/js` explicit so the dependency tree no longer pulls the vulnerable `brace-expansion` range.
+- Limited upstream stream-provider HTTP error bodies in logs so proxy error pages no longer flood PM2 output.
+- Removed `Part X/Y` labels from split `/announce patch-notes` messages.
+- Removed the extra `View Mine` and `Remove Mine` buttons from the birthday board.
+- Removed birthday-board card-status labels from listed birthday entries.
+
+### Removed
+
+- Removed `/birthday card list` from the birthday command group.
+
+### Fixed
+
+- Preserved encryption decrypt failures as error causes and cleaned up the database audit CLI result initialization for ESLint 10 compatibility.
+
 ## v3.4.0 - 2026-07-24
 
 ### Added

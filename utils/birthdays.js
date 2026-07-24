@@ -390,11 +390,8 @@ function formatBoardEntry(entry) {
 	const dateLabel = entry.daysAway === 0 ?
 		`Today` :
 		`${entry.date.toFormat(`MMM d`)} (${formatDaysAway(entry.daysAway)})`;
-	const cardLabel = entry.card ?
-		(entry.daysAway === 0 ? `card open` : `card collecting`) :
-		`no card`;
 
-	return `**${dateLabel}** - ${entry.mention} - ${cardLabel}`;
+	return `**${dateLabel}** - ${entry.mention}`;
 }
 
 function buildBirthdayBoardEmbed(guild, now, entries) {
@@ -430,14 +427,6 @@ function buildBirthdayPanelComponents() {
 			.setCustomId(`birthday:panel:sign`)
 			.setLabel(`Sign Upcoming Card`)
 			.setStyle(ButtonStyle.Secondary),
-		new ButtonBuilder()
-			.setCustomId(`birthday:panel:view`)
-			.setLabel(`View Mine`)
-			.setStyle(ButtonStyle.Secondary),
-		new ButtonBuilder()
-			.setCustomId(`birthday:panel:remove`)
-			.setLabel(`Remove Mine`)
-			.setStyle(ButtonStyle.Danger),
 	);
 }
 

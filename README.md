@@ -176,7 +176,7 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Birthdays | `/birthday list` | List birthdays for a month, grouped by day. |
 | Birthdays | `/birthday remove` | Remove your stored birthday from the current server. |
 | Birthdays | `/birthday setup` | Open the birthday setup panel for channels, roles, posting hour, and timezone. |
-| Birthdays | `/birthday card set/remove/list` | Manage RecoCards board links for upcoming birthday cards. |
+| Birthdays | `/birthday card set/remove` | Manage RecoCards board links for upcoming birthday cards. |
 | Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
 | Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
@@ -371,7 +371,7 @@ The setup panel configures:
 - Whole-hour local posting time.
 - IANA timezone used for the server's birthday schedule.
 
-Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set, view, or remove their birthday and open signable cards.
+Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set or update their birthday and open signable cards.
 
 Administrators can attach RecoCards board links to upcoming birthdays. Use the
 `/board/...` link that members sign; Hachi derives the `/view/b/...` delivery
@@ -379,7 +379,6 @@ link automatically:
 
 ```console
 /birthday card set user: @member url: https://recocards.com/board/example
-/birthday card list
 /birthday card remove user: @member
 ```
 

@@ -8,6 +8,7 @@ const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { error } = require(`../utils/writeLog.js`);
 
 const STREAM_TIME_ZONE = `America/New_York`;
+const HTTP_ERROR_BODY_LIMIT = 240;
 
 const streamTimeFormatter = new Intl.DateTimeFormat(`en-US`, {
 	day: `numeric`,
@@ -38,6 +39,20 @@ function formatStreamTime(input) {
 
 function liveFooter(startedAt) {
 	return `Started ${formatStreamTime(startedAt)}. Last edited ${formatStreamTime(new Date())}.`;
+}
+
+// Upstream proxies can return multi-kilobyte HTML error pages. Keep enough
+// response context to diagnose the failure without flooding PM2 logs.
+function summarizeHttpErrorBody(body) {
+	const compactBody = String(body || ``).replace(/\s+/gu, ` `).trim();
+
+	if (!compactBody) {
+		return ``;
+	}
+
+	return compactBody.length > HTTP_ERROR_BODY_LIMIT ?
+		`${compactBody.slice(0, HTTP_ERROR_BODY_LIMIT)}…` :
+		compactBody;
 }
 
 function offlineFooter(existingEmbed) {
@@ -241,7 +256,8 @@ async function fetchBatch({ names, provider, urlFor, headers, pickData }) {
 
 				if (!res.ok) {
 					const text = await res.text();
-					throw new Error(`HTTP ${res.status} - ${text}`);
+					const detail = summarizeHttpErrorBody(text);
+					throw new Error(`HTTP ${res.status}${detail ? ` - ${detail}` : ``}`);
 				}
 
 				const data = await res.json();

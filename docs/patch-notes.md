@@ -6,6 +6,27 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.4.1 - 2026-07-24
+
+### Birthdays
+
+- Birthday Board now only shows the `Set / Update Birthday` and `Sign Upcoming
+  Card` buttons.
+- Birthday Board entries now show only the date and member, without card-status
+  labels.
+- `/birthday card list` has been removed. Staff can still manage card links with
+  `/birthday card set` and `/birthday card remove`.
+
+### Patch Notes
+
+- `/announce patch-notes` no longer adds `Part X/Y` labels when a release note
+  is split across multiple Discord messages.
+
+### Reliability
+
+- Stream-provider outages now produce concise log entries instead of filling
+  Hachi's logs with entire proxy error pages.
+
 # v3.4.0 - 2026-07-24
 
 ### Smart Links

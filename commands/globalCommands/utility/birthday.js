@@ -350,37 +350,6 @@ async function removeBirthdayCard(interaction) {
 	});
 }
 
-function formatCardListLine(entry) {
-	return `- ${entry.displayName} - ${formatBirthday(entry.month, entry.day)} (${formatDaysAway(entry.daysAway)}) - signing: ${entry.card.url} - delivery: ${entry.card.deliveryUrl || `not set`}`;
-}
-
-async function listBirthdayCards(interaction) {
-	if (!await requireBirthdayManager(interaction)) {
-		return;
-	}
-
-	const config = await getBirthdayConfigOrDefault(interaction.guild.id);
-	const entries = (await getUpcomingBirthdayEntries(interaction.guild, config, {
-		days: UPCOMING_BIRTHDAY_DAYS,
-	}))
-		.filter(entry => entry.card);
-
-	if (!entries.length) {
-		await interaction.reply({
-			content: `No birthday cards are configured for birthdays in the next two weeks.`,
-			flags: MessageFlags.Ephemeral,
-		});
-		return;
-	}
-
-	const lines = entries.map(formatCardListLine);
-
-	await interaction.reply({
-		content: `Upcoming birthday cards:\n${lines.join(`\n`)}`,
-		flags: MessageFlags.Ephemeral,
-	});
-}
-
 function buildBirthdaySetModal() {
 	return new ModalBuilder()
 		.setCustomId(`birthday:panel:setModal`)
@@ -397,37 +366,6 @@ function buildBirthdaySetModal() {
 					.setRequired(true),
 			),
 		);
-}
-
-async function handlePanelViewBirthday(interaction) {
-	const birthday = await BirthdayUsers.findOne({
-		raw: true,
-		where: {
-			guildId: interaction.guild.id,
-			userId: interaction.user.id,
-		},
-	});
-
-	await interaction.reply({
-		content: birthday ?
-			`Your birthday is ${formatBirthday(birthday.month, birthday.day)}.` :
-			`You do not have a birthday set.`,
-		flags: MessageFlags.Ephemeral,
-	});
-}
-
-async function handlePanelRemoveBirthday(interaction) {
-	const count = await BirthdayUsers.destroy({
-		where: {
-			guildId: interaction.guild.id,
-			userId: interaction.user.id,
-		},
-	});
-
-	await interaction.reply({
-		content: count ? `Your birthday has been removed.` : `You do not have a birthday set.`,
-		flags: MessageFlags.Ephemeral,
-	});
 }
 
 function buildBirthdayCardSelect(entries) {
@@ -993,14 +931,15 @@ async function handleBirthdaySetupComponent(interaction, setupId, action, field)
 async function handleBirthdayPanelComponent(interaction, action) {
 	if (action === `set`) {
 		await interaction.showModal(buildBirthdaySetModal());
-	} else if (action === `view`) {
-		await handlePanelViewBirthday(interaction);
-	} else if (action === `remove`) {
-		await handlePanelRemoveBirthday(interaction);
 	} else if (action === `sign`) {
 		await handlePanelSignCards(interaction);
 	} else if (action === `cardSelect`) {
 		await handleBirthdayCardSelect(interaction);
+	} else if (action === `view` || action === `remove`) {
+		await interaction.reply({
+			content: `That birthday-board button is no longer available. Use \`/birthday view\` or \`/birthday remove\` instead.`,
+			flags: MessageFlags.Ephemeral,
+		});
 	}
 }
 
@@ -1097,11 +1036,6 @@ module.exports = {
 								.setDescription(`Birthday member.`)
 								.setRequired(true),
 						),
-				)
-				.addSubcommand(subcommand =>
-					subcommand
-						.setName(`list`)
-						.setDescription(`List upcoming configured birthday cards.`),
 				),
 		)
 		.addSubcommand(subcommand =>
@@ -1134,8 +1068,6 @@ module.exports = {
 			await setBirthdayCard(interaction);
 		} else if (group === `card` && subcommand === `remove`) {
 			await removeBirthdayCard(interaction);
-		} else if (group === `card` && subcommand === `list`) {
-			await listBirthdayCards(interaction);
 		} else if (subcommand === `set`) {
 			await setBirthday(interaction);
 		} else if (subcommand === `view`) {
