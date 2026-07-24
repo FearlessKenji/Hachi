@@ -6,12 +6,20 @@ const {
 	ActionRowBuilder,
 	ButtonBuilder,
 	ButtonStyle,
+	EmbedBuilder,
 } = require(`discord.js`);
+const { URL } = require(`node:url`);
 const { DateTime } = require(`luxon`);
-const { BirthdayConfigs, BirthdayUsers } = require(`../database/dbObjects.js`);
+const { BirthdayCards, BirthdayConfigs, BirthdayUsers } = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
 
-const RECOCARDS_URL = `https://recocards.com/home`;
+const UPCOMING_BIRTHDAY_DAYS = 14;
+const BIRTHDAY_BOARD_COLOR = 0xf0b83a;
+const RECOCARDS_CREATE_URL = `https://recocards.com/home`;
+const CARD_URL_HOSTS = new Set([
+	`recocards.com`,
+	`www.recocards.com`,
+]);
 
 const MONTHS = [
 	`january`,
@@ -140,6 +148,48 @@ function parseHour(input) {
 	return null;
 }
 
+function normalizeRecoCardsUrl(input, pathPrefix) {
+	const value = input.trim();
+
+	let parsed;
+
+	try {
+		parsed = new URL(value);
+	} catch {
+		return null;
+	}
+
+	if (parsed.protocol !== `https:` || !CARD_URL_HOSTS.has(parsed.hostname.toLowerCase())) {
+		return null;
+	}
+
+	if (!parsed.pathname.startsWith(pathPrefix)) {
+		return null;
+	}
+
+	parsed.hash = ``;
+
+	return parsed.toString();
+}
+
+function normalizeBirthdayCardUrl(input) {
+	return normalizeRecoCardsUrl(input, `/board/`);
+}
+
+function deriveBirthdayDeliveryUrl(input) {
+	const normalizedUrl = normalizeBirthdayCardUrl(input);
+
+	if (!normalizedUrl) {
+		return null;
+	}
+
+	const parsed = new URL(normalizedUrl);
+
+	parsed.pathname = parsed.pathname.replace(/^\/board\//u, `/view/b/`);
+
+	return parsed.toString();
+}
+
 function isValidTimezone(timezone) {
 	return DateTime.now().setZone(timezone).isValid;
 }
@@ -168,6 +218,23 @@ function getAdjustedBirthdayDate(now, month, day) {
 	}
 
 	return DateTime.fromObject({ day, month, year: now.year }, { zone: now.zoneName });
+}
+
+function getBirthdayDateForYear(timezone, year, month, day) {
+	const anchor = DateTime.fromObject({ day: 1, month: 1, year }, { zone: timezone });
+
+	return getAdjustedBirthdayDate(anchor, month, day).startOf(`day`);
+}
+
+function getNextBirthdayDate(now, birthday) {
+	const today = now.startOf(`day`);
+	let nextBirthday = getBirthdayDateForYear(now.zoneName, now.year, birthday.month, birthday.day);
+
+	if (nextBirthday < today) {
+		nextBirthday = getBirthdayDateForYear(now.zoneName, now.year + 1, birthday.month, birthday.day);
+	}
+
+	return nextBirthday;
 }
 
 function groupBirthdaysByDay(birthdays) {
@@ -227,38 +294,279 @@ function buildWeekContent(config, groups) {
 	return `${roleMention}Upcoming birthday${groups.length === 1 ? `` : `s`} in one week:\n${lines.join(`\n`)}`;
 }
 
-function buildCardButton() {
+function buildCreateCardButton() {
 	return new ActionRowBuilder().addComponents(
 		new ButtonBuilder()
 			.setLabel(`Create a card`)
 			.setStyle(ButtonStyle.Link)
-			.setURL(RECOCARDS_URL),
+			.setURL(RECOCARDS_CREATE_URL),
 	);
 }
 
-function buildDayContent(config, birthdays) {
-	const roleMention = config.dayRoleId ? `<@&${config.dayRoleId}> ` : ``;
-	const userIds = birthdays.map(birthday => birthday.userId);
+function formatDaysAway(daysAway) {
+	if (daysAway === 0) {
+		return `today`;
+	}
 
-	return `${roleMention}Happy birthday to ${formatMemberList(userIds)}!`;
+	if (daysAway === 1) {
+		return `tomorrow`;
+	}
+
+	return `in ${daysAway} days`;
 }
 
-async function sendBirthdayMessage(client, config, payload) {
-	const guild = client.guilds.cache.get(config.guildId) || await client.guilds.fetch(config.guildId).catch(() => null);
+function truncateFieldValue(value) {
+	if (value.length <= 1000) {
+		return value;
+	}
+
+	return `${value.slice(0, 997)}...`;
+}
+
+async function fetchMemberDisplay(guild, userId) {
+	const member = guild.members.cache.get(userId) || await guild.members.fetch(userId).catch(() => null);
+
+	return {
+		displayName: member?.displayName || member?.user?.username || userId,
+		mention: `<@${userId}>`,
+	};
+}
+
+async function getUpcomingBirthdayEntries(guild, config, options = {}) {
+	const timezone = config.timezone || `UTC`;
+	const now = options.now || DateTime.now().setZone(timezone);
+	const days = options.days ?? UPCOMING_BIRTHDAY_DAYS;
+	const today = now.startOf(`day`);
+	const cutoff = today.plus({ days });
+	const birthdays = await BirthdayUsers.findAll({
+		order: [[`month`, `ASC`], [`day`, `ASC`], [`userId`, `ASC`]],
+		raw: true,
+		where: {
+			guildId: config.guildId,
+		},
+	});
+
+	const entries = birthdays
+		.map(birthday => {
+			const date = getNextBirthdayDate(now, birthday);
+			const daysAway = Math.floor(date.diff(today, `days`).days);
+
+			return {
+				...birthday,
+				date,
+				daysAway,
+				year: date.year,
+			};
+		})
+		.filter(entry => entry.date <= cutoff)
+		.sort((left, right) => left.date.toMillis() - right.date.toMillis() || left.userId.localeCompare(right.userId));
+
+	if (!entries.length) {
+		return [];
+	}
+
+	const years = [...new Set(entries.map(entry => entry.year))];
+	const cards = await BirthdayCards.findAll({
+		raw: true,
+		where: {
+			guildId: config.guildId,
+			year: years,
+		},
+	});
+	const cardByUserYear = new Map(cards.map(card => [`${card.userId}:${card.year}`, card]));
+
+	return Promise.all(entries.map(async entry => {
+		const display = await fetchMemberDisplay(guild, entry.userId);
+
+		return {
+			...entry,
+			...display,
+			card: cardByUserYear.get(`${entry.userId}:${entry.year}`) || null,
+		};
+	}));
+}
+
+function formatBoardEntry(entry) {
+	const dateLabel = entry.daysAway === 0 ?
+		`Today` :
+		`${entry.date.toFormat(`MMM d`)} (${formatDaysAway(entry.daysAway)})`;
+	const cardLabel = entry.card ?
+		(entry.daysAway === 0 ? `card open` : `card collecting`) :
+		`no card`;
+
+	return `**${dateLabel}** - ${entry.mention} - ${cardLabel}`;
+}
+
+function buildBirthdayBoardEmbed(guild, now, entries) {
+	const todayEntries = entries.filter(entry => entry.daysAway === 0);
+	const upcomingEntries = entries.filter(entry => entry.daysAway > 0);
+	const todayText = todayEntries.length ?
+		todayEntries.map(formatBoardEntry).join(`\n`) :
+		`No birthdays today.`;
+	const upcomingText = upcomingEntries.length ?
+		upcomingEntries.map(formatBoardEntry).join(`\n`) :
+		`No upcoming birthdays in the next two weeks.`;
+
+	return new EmbedBuilder()
+		.setColor(BIRTHDAY_BOARD_COLOR)
+		.setTitle(`Birthday Board`)
+		.setDescription(`Use the buttons below to add your birthday or sign an upcoming card.`)
+		.addFields(
+			{ name: `Today`, value: truncateFieldValue(todayText) },
+			{ name: `Next Two Weeks`, value: truncateFieldValue(upcomingText) },
+		)
+		.setFooter({
+			text: `${guild.name} - Updated ${now.toFormat(`MMM d, h:mm a ZZZZ`)}`,
+		});
+}
+
+function buildBirthdayPanelComponents() {
+	return new ActionRowBuilder().addComponents(
+		new ButtonBuilder()
+			.setCustomId(`birthday:panel:set`)
+			.setLabel(`Set / Update Birthday`)
+			.setStyle(ButtonStyle.Primary),
+		new ButtonBuilder()
+			.setCustomId(`birthday:panel:sign`)
+			.setLabel(`Sign Upcoming Card`)
+			.setStyle(ButtonStyle.Secondary),
+		new ButtonBuilder()
+			.setCustomId(`birthday:panel:view`)
+			.setLabel(`View Mine`)
+			.setStyle(ButtonStyle.Secondary),
+		new ButtonBuilder()
+			.setCustomId(`birthday:panel:remove`)
+			.setLabel(`Remove Mine`)
+			.setStyle(ButtonStyle.Danger),
+	);
+}
+
+async function buildBirthdayBoardPayload(guild, config, options = {}) {
+	const now = options.now || DateTime.now().setZone(config.timezone || `UTC`);
+	const entries = await getUpcomingBirthdayEntries(guild, config, {
+		days: options.days ?? UPCOMING_BIRTHDAY_DAYS,
+		now,
+	});
+
+	return {
+		allowedMentions: { parse: [] },
+		components: [buildBirthdayPanelComponents()],
+		embeds: [buildBirthdayBoardEmbed(guild, now, entries)],
+	};
+}
+
+async function fetchBirthdayCardsForUsers(guildId, year, userIds) {
+	if (!userIds.length) {
+		return new Map();
+	}
+
+	const cards = await BirthdayCards.findAll({
+		raw: true,
+		where: {
+			guildId,
+			userId: userIds,
+			year,
+		},
+	});
+
+	return new Map(cards.map(card => [card.userId, card]));
+}
+
+function buildDayContent(config, birthdays, cardsByUserId = new Map()) {
+	const roleMention = config.dayRoleId ? `<@&${config.dayRoleId}> ` : ``;
+	const userIds = birthdays.map(birthday => birthday.userId);
+	const deliveryLines = birthdays
+		.map(birthday => {
+			const card = cardsByUserId.get(birthday.userId);
+
+			return card?.deliveryUrl ? `<@${birthday.userId}>: ${card.deliveryUrl}` : null;
+		})
+		.filter(Boolean);
+	const deliveryText = deliveryLines.length ? `\n\nBirthday card${deliveryLines.length === 1 ? `` : `s`}:\n${deliveryLines.join(`\n`)}` : ``;
+
+	return `${roleMention}Happy birthday to ${formatMemberList(userIds)}!${deliveryText}`;
+}
+
+function getBirthdayChannelId(config, purpose) {
+	if (purpose === `board`) {
+		return config.boardChannelId || config.channelId;
+	}
+
+	if (purpose === `week`) {
+		return config.weekChannelId || config.boardChannelId || config.channelId;
+	}
+
+	if (purpose === `day`) {
+		return config.dayChannelId || config.boardChannelId || config.channelId;
+	}
+
+	return config.channelId;
+}
+
+async function getBirthdayGuild(client, guildId) {
+	const guild = client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
 
 	if (!guild) {
-		warn(`Skipping birthday post for unavailable guild ${config.guildId}`);
+		warn(`Skipping birthday post for unavailable guild ${guildId}`);
+		return null;
+	}
+
+	return guild;
+}
+
+async function sendBirthdayMessage(client, config, channelId, payload) {
+	const guild = await getBirthdayGuild(client, config.guildId);
+
+	if (!guild) {
 		return false;
 	}
 
-	const channel = guild.channels.cache.get(config.channelId) || await guild.channels.fetch(config.channelId).catch(() => null);
+	const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
 
 	if (!channel?.send) {
-		warn(`Skipping birthday post for guild ${config.guildId}; channel ${config.channelId} is unavailable`);
+		warn(`Skipping birthday post for guild ${config.guildId}; channel ${channelId} is unavailable`);
 		return false;
 	}
 
 	await channel.send(payload);
+	return true;
+}
+
+async function refreshBirthdayBoard(client, config, now) {
+	const channelId = getBirthdayChannelId(config, `board`);
+
+	if (!channelId) {
+		return false;
+	}
+
+	const guild = await getBirthdayGuild(client, config.guildId);
+
+	if (!guild) {
+		return false;
+	}
+
+	const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
+
+	if (!channel?.send) {
+		warn(`Skipping birthday board refresh for guild ${config.guildId}; channel ${channelId} is unavailable`);
+		return false;
+	}
+
+	if (config.boardMessageId) {
+		const oldMessage = await channel.messages.fetch(config.boardMessageId).catch(() => null);
+
+		if (oldMessage) {
+			await oldMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
+		}
+	}
+
+	const message = await channel.send(await buildBirthdayBoardPayload(guild, config, { now }));
+
+	await config.update({
+		boardMessageId: message.id,
+		lastBoardPostDate: now.toISODate(),
+	});
+
 	return true;
 }
 
@@ -285,8 +593,12 @@ async function processBirthdayConfig(client, config) {
 		});
 
 		if (weekBirthdays.length) {
-			const sent = await sendBirthdayMessage(client, config, {
-				components: [buildCardButton()],
+			const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `week`), {
+				allowedMentions: {
+					roles: config.weekRoleId ? [config.weekRoleId] : [],
+					users: [],
+				},
+				components: [buildCreateCardButton()],
 				content: buildWeekContent(config, groupBirthdaysByDay(weekBirthdays)),
 			});
 
@@ -300,14 +612,23 @@ async function processBirthdayConfig(client, config) {
 		const dayBirthdays = await fetchBirthdaysForDate(config.guildId, today);
 
 		if (dayBirthdays.length) {
-			const sent = await sendBirthdayMessage(client, config, {
-				content: buildDayContent(config, dayBirthdays),
+			const dayBirthdayCards = await fetchBirthdayCardsForUsers(
+				config.guildId,
+				today.year,
+				dayBirthdays.map(birthday => birthday.userId),
+			);
+			const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `day`), {
+				content: buildDayContent(config, dayBirthdays, dayBirthdayCards),
 			});
 
 			if (sent) {
 				await config.update({ lastDayPostDate: todayKey });
 			}
 		}
+	}
+
+	if (config.lastBoardPostDate !== todayKey) {
+		await refreshBirthdayBoard(client, config, now);
 	}
 }
 
@@ -325,10 +646,18 @@ async function checkBirthdays(client) {
 
 module.exports = {
 	checkBirthdays,
+	buildBirthdayBoardPayload,
 	formatBirthday,
+	formatDaysAway,
 	getMonthName,
+	getNextBirthdayDate,
+	getUpcomingBirthdayEntries,
 	isValidTimezone,
+	deriveBirthdayDeliveryUrl,
+	normalizeBirthdayCardUrl,
 	parseBirthdayDate,
 	parseHour,
 	parseMonth,
+	refreshBirthdayBoard,
+	UPCOMING_BIRTHDAY_DAYS,
 };

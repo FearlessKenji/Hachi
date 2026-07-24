@@ -9,6 +9,8 @@ const path = require(`node:path`);
 
 const commandsRoot = path.join(__dirname, `../commands`);
 const USER_INSTALL_COMMANDS = new Set([
+	`Fix Social Links`,
+	`Shorten Amazon Links`,
 	`roll`,
 	`timestamp`,
 ]);

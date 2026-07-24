@@ -7,9 +7,11 @@ const {
 	EmbedBuilder,
 	Events,
 	InteractionType,
+	MessageFlags,
 } = require(`discord.js`);
 const { CommandMonitorWhitelists, Servers } = require(`../database/dbObjects.js`);
 const { observeMessageForRaid } = require(`../utils/raidProtection.js`);
+const { buildFixedSocialLinks } = require(`../utils/socialLinks.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 
 const COMMAND_MONITOR_COLOR = 0xffb020;
@@ -31,6 +33,36 @@ const LEAD_MOD_JENNY_REACTIONS = [
 	`\u{1F1F8}`,
 ];
 let leadModJennyLastReactAt = 0;
+
+async function replyWithFixedSocialLinks(message) {
+	if (!message.guild || message.author?.bot || message.webhookId || !message.content) {
+		return;
+	}
+
+	const server = await Servers.findOne({
+		attributes: [`socialLinkFixingEnabled`],
+		raw: true,
+		where: { guildId: message.guild.id },
+	});
+
+	if (!server?.socialLinkFixingEnabled) {
+		return;
+	}
+
+	const result = buildFixedSocialLinks(message.content);
+
+	if (!result.links.length) {
+		return;
+	}
+
+	// A reply reference keeps the fixed links attached to their source, while
+	// explicit mention controls prevent the author or copied mentions from pinging.
+	await message.reply({
+		allowedMentions: { parse: [], repliedUser: false },
+		content: result.content,
+		flags: MessageFlags.SuppressNotifications,
+	});
+}
 
 function trimContent(content) {
 	if (!content) {
@@ -496,6 +528,19 @@ module.exports = {
 					messageId: message.id,
 				},
 				module: `chat-reactions`,
+			});
+		}
+
+		try {
+			await replyWithFixedSocialLinks(message);
+		} catch (err) {
+			error(`Failed to reply with embed-friendly social links:`, err, {
+				meta: {
+					channelId: message.channel?.id || null,
+					guildId: message.guild?.id || message.guildId || null,
+					messageId: message.id,
+				},
+				module: `social-links`,
 			});
 		}
 

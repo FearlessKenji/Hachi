@@ -8,6 +8,7 @@ const path = require(`node:path`);
 const { Op } = require(`sequelize`);
 const {
 	BirthdayConfigs,
+	BirthdayCards,
 	BirthdayUsers,
 	Channels,
 	CommandMonitorWhitelists,
@@ -237,6 +238,7 @@ async function deleteGuildScopedRows(guildIds) {
 		await TwitchRoleLinks.destroy({ transaction, where: guildWhere });
 		await TwitchRoleConfigs.destroy({ transaction, where: guildWhere });
 		await CommandMonitorWhitelists.destroy({ transaction, where: guildWhere });
+		await BirthdayCards.destroy({ transaction, where: guildWhere });
 		await BirthdayConfigs.destroy({ transaction, where: guildWhere });
 		await BirthdayUsers.destroy({ transaction, where: guildWhere });
 		await RulesVerificationMessages.destroy({ transaction, where: guildWhere });

@@ -6,7 +6,47 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
-No unreleased changes yet.
+### Smart Links
+
+- A new profile-installable `Shorten Amazon Links` message context menu turns
+  recognized product URLs into short, tracking-free regional Amazon links.
+- Server administrators can enable automatic social-link fixing from `/setup`.
+- Hachi replies without pinging and combines up to five cleaned, embed-friendly
+  links from a message into one masked-link reply.
+- The profile-installable `Fix Social Links` message context menu provides the
+  same cleanup on demand, even when automatic fixing is disabled.
+
+### Birthdays
+
+- Birthday setup now supports separate channels for the birthday board,
+  week-before pings, and birthday-day pings.
+- Birthday boards can show today's birthdays and upcoming birthdays in the next
+  two weeks.
+- Members can set, view, or remove their birthday from the birthday board
+  buttons.
+- Staff can save RecoCards board links with `/birthday card set`, remove them
+  with `/birthday card remove`, and review upcoming cards with `/birthday card
+  list`.
+- Week-before birthday reminders include a `Create a card` button for quickly
+  opening RecoCards. Staff still attach the finished card link with `/birthday
+  card set`.
+- Week-before birthday reminders ping only the configured reminder role, not the
+  birthday members being listed.
+- Birthday cards only need the RecoCards board link. Hachi automatically derives
+  the delivery link for birthday-day announcements.
+- When staff add or remove a birthday card, Hachi refreshes the birthday board
+  right away when a board channel is configured.
+- Upcoming card links are available through an ephemeral selector so a birthday
+  person's own card stays hidden until their birthday.
+
+### Reliability
+
+- Dependency security updates cleared the current `npm audit --audit-level=moderate`
+  report.
+- Twitch EventSub reconnect warnings now include a safe reason when Hachi rejects
+  an unexpected reconnect URL.
+- `/raid sync` now summarizes long channel error lists instead of failing with a
+  generic Discord embed error.
 
 # v3.3.3 - 2026-07-16
 

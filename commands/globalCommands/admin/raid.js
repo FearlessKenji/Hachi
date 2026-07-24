@@ -40,6 +40,7 @@ const {
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const RAID_COLOR = 0xed4245;
+const EMBED_FIELD_VALUE_LIMIT = 1024;
 const QUARANTINE_ROLE_NAME = `Quarantine`;
 // Setup and sync confirmations are temporary Discord component flows. The saved
 // policy lives in RaidConfigs; these maps only hold drafts until the user clicks
@@ -500,6 +501,41 @@ function buildIncidentListEmbed(incidents) {
 		.setDescription(lines.length ? lines.join(`\n`) : `No raid incidents recorded.`);
 }
 
+function formatSyncErrorField(errors) {
+	if (!errors.length) {
+		return `None`;
+	}
+
+	const lines = [];
+	let currentLength = 0;
+
+	for (let index = 0; index < errors.length; index += 1) {
+		const remaining = errors.length - index - 1;
+		const suffix = remaining > 0 ? `\n- ...and ${remaining} more error(s).` : ``;
+		const line = `- ${String(errors[index])}`;
+		const separatorLength = lines.length ? 1 : 0;
+
+		if (currentLength + separatorLength + line.length + suffix.length <= EMBED_FIELD_VALUE_LIMIT) {
+			lines.push(line);
+			currentLength += separatorLength + line.length;
+			continue;
+		}
+
+		if (!lines.length) {
+			const available = Math.max(0, EMBED_FIELD_VALUE_LIMIT - suffix.length - 3);
+			lines.push(`${line.slice(0, available)}...`);
+		}
+
+		if (suffix) {
+			lines.push(suffix.slice(1));
+		}
+
+		break;
+	}
+
+	return lines.join(`\n`);
+}
+
 function buildSyncResultEmbed(result) {
 	return new EmbedBuilder()
 		.setColor(result.errors.length ? RAID_COLOR : 0x57f287)
@@ -509,7 +545,7 @@ function buildSyncResultEmbed(result) {
 			{ name: `Skipped`, value: String(result.skipped), inline: true },
 			{
 				name: `Errors`,
-				value: result.errors.length ? result.errors.slice(0, 10).map(item => `- ${item}`).join(`\n`) : `None`,
+				value: formatSyncErrorField(result.errors),
 				inline: false,
 			},
 		)
@@ -891,5 +927,6 @@ module.exports = {
 		}
 	},
 
+	formatSyncErrorField,
 	openSetupPanel,
 };

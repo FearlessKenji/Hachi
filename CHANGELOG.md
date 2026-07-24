@@ -4,6 +4,31 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+### Added
+
+- Added a profile-installable `Shorten Amazon Links` message context menu for canonical, tracking-free regional product links.
+- Added opt-in automatic social-link fixing with non-pinging masked-link replies, canonical duplicate removal, and platform-aware tracking cleanup.
+- Added a profile-installable `Fix Social Links` message context menu backed by the same shared provider registry.
+- Added a birthday board panel with member buttons for setting, viewing, removing, and signing upcoming birthday cards.
+- Added staff-managed `/birthday card set/remove/list` commands for storing RecoCards board links for each member's next birthday.
+- Added birthday card signing-link and derived delivery-link storage plus birthday board refresh metadata to the database schema.
+- Updated vulnerable transitive/runtime packages by raising `tar`, `js-yaml`, `@eslint/eslintrc`, and `brace-expansion` resolutions.
+
+### Changed
+
+- Expanded `/birthday setup` with separate board, week-before ping, and birthday-day ping channel settings while preserving the legacy birthday channel as a fallback.
+- Updated birthday cron processing to refresh the birthday board daily and show birthdays in the next two weeks.
+- Kept the `Create a card` shortcut button on week-before birthday reminders while requiring staff to attach finished card links with `/birthday card set`.
+- Refreshed the birthday board immediately after staff add or remove a birthday card link.
+- Added saved RecoCards delivery links directly to birthday-day announcement messages.
+- Derived birthday-card delivery links automatically from saved RecoCards board links.
+- Restricted week-before birthday reminders so they ping only the configured reminder role, not the birthday members being listed.
+- Added sanitized Twitch EventSub WebSocket URL rejection reasons so reconnect warnings explain the failed trust check without logging sensitive query strings.
+
+### Fixed
+
+- Fixed `/raid sync` result embeds so large channel error lists are summarized within Discord's embed field limits instead of failing with a generic aggregate validation error.
+
 ## v3.3.3 - 2026-07-16
 
 ### Added
