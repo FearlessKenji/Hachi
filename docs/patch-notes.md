@@ -12,7 +12,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 - Social-link fixing now focuses on Instagram, TikTok, and Facebook.
 - Common Facebook posts, videos, reels, shares, photos, watch links,
-  permalinks, and group posts now receive cleaned `facebed.com` links.
+  permalinks, and group posts now receive cleaned, embed-friendly links.
 - Platforms that did not improve Discord previews are no longer rewritten.
 
 # v3.4.1 - 2026-07-24

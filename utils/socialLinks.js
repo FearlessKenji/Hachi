@@ -20,26 +20,26 @@ function hostRule(platform, sourceHosts, targetHost, options = {}) {
 const PROVIDERS = [
 	hostRule(`Instagram`, [`instagram.com`, `www.instagram.com`], `www.kkinstagram.com`),
 	hostRule(`TikTok`, [`tiktok.com`, `www.tiktok.com`, `m.tiktok.com`], `kktiktok.com`),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
 		pathPattern: /^\/(?:[^/]+\/(?:posts|videos)\/[^/]+(?:\/[^/]+)?|share\/(?:r|v)\/[^/]+|share\/[^/]+|reel\/[^/]+)\/?$/u,
 	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
 		pathPattern: /^\/photo(?:\.php)?\/?$/u,
 		preserveParameters: new Set([`fbid`]),
 	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
 		pathPattern: /^\/watch\/?$/u,
 		preserveParameters: new Set([`v`]),
 	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
 		pathPattern: /^\/permalink\.php\/?$/u,
 		preserveParameters: new Set([`story_fbid`, `id`]),
 	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
 		pathPattern: /^\/groups\/[^/]+\/(?:posts|permalink)\/[^/]+\/?$/u,
 	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
-		// A bare group URL is useful to Facebed only when multi_permalinks
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
+		// A bare group URL is useful to the embed provider only when multi_permalinks
 		// identifies the specific post shared from that group.
 		matches: url =>
 			/^\/groups\/[^/]+\/?$/u.test(url.pathname) &&

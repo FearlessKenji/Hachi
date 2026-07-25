@@ -1292,17 +1292,17 @@ function validatePureHelpers() {
 	);
 	assert(
 		fixSocialUrl(`https://www.facebook.com/watch/?v=1481060365360701&mibextid=tracking`)?.url ===
-		`https://facebed.com/watch/?v=1481060365360701`,
+		`https://facecot.com/watch/?v=1481060365360701`,
 		`Facebook link fixing did not preserve the video identifier.`,
 	);
 	assert(
 		fixSocialUrl(`https://m.facebook.com/photo.php?fbid=1220500346751179&ref=tracking`)?.url ===
-		`https://facebed.com/photo.php?fbid=1220500346751179`,
+		`https://facecot.com/photo.php?fbid=1220500346751179`,
 		`Facebook link fixing did not preserve the photo identifier.`,
 	);
 	assert(
 		fixSocialUrl(`https://www.facebook.com/groups/12345?multi_permalinks=67890&ref=tracking`)?.url ===
-		`https://facebed.com/groups/12345?multi_permalinks=67890`,
+		`https://facecot.com/groups/12345?multi_permalinks=67890`,
 		`Facebook group-post fixing did not preserve the permalink identifier.`,
 	);
 	const fixedSocialLinks = buildFixedSocialLinks([
