@@ -534,7 +534,7 @@ module.exports = {
 		try {
 			await replyWithFixedSocialLinks(message);
 		} catch (err) {
-			error(`Failed to reply with embed-friendly social links:`, err, {
+			error(`Failed to reply with fixed social links:`, err, {
 				meta: {
 					channelId: message.channel?.id || null,
 					guildId: message.guild?.id || message.guildId || null,

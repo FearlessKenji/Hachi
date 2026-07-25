@@ -8,6 +8,11 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # v3.4.1 - 2026-07-24
 
+### Smart Links
+
+- Removed the `Shorten Amazon Links` message context menu.
+- Social-link replies now use platform-only labels such as `Instagram link`.
+
 ### Birthdays
 
 - Birthday Board now only shows the `Set / Update Birthday` and `Sign Upcoming

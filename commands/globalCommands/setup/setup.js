@@ -68,7 +68,7 @@ function buildSetupEmbed() {
 			},
 			{
 				name: `Social Link Fixing`,
-				value: `Optionally reply with clean, embed-friendly social links.`,
+				value: `Optionally reply with cleaned social links.`,
 				inline: false,
 			},
 			{
