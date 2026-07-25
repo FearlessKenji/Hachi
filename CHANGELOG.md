@@ -10,7 +10,7 @@ Notable changes to Hachi are documented here.
 
 - Updated the project version to `3.4.2`.
 - Narrowed social-link fixing to Instagram, TikTok, and Facebook so Hachi only rewrites platforms with a useful Discord embed improvement.
-- Added `facebed.com` rewriting for supported Facebook posts, videos, reels, shares, photos, watch links, permalinks, and group posts while preserving required content identifiers.
+- Added embed-friendly rewriting for supported Facebook posts, videos, reels, shares, photos, watch links, permalinks, and group posts while preserving required content identifiers.
 
 ## v3.4.1 - 2026-07-24
 
