@@ -6,6 +6,15 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.4.2 - 2026-07-24
+
+### Smart Links
+
+- Social-link fixing now focuses on Instagram, TikTok, and Facebook.
+- Common Facebook posts, videos, reels, shares, photos, watch links,
+  permalinks, and group posts now receive cleaned `facebed.com` links.
+- Platforms that did not improve Discord previews are no longer rewritten.
+
 # v3.4.1 - 2026-07-24
 
 ### Smart Links
