@@ -20,26 +20,31 @@ function hostRule(platform, sourceHosts, targetHost, options = {}) {
 const PROVIDERS = [
 	hostRule(`Instagram`, [`instagram.com`, `www.instagram.com`], `www.kkinstagram.com`),
 	hostRule(`TikTok`, [`tiktok.com`, `www.tiktok.com`, `m.tiktok.com`], `kktiktok.com`),
-	hostRule(`X`, [`twitter.com`, `www.twitter.com`, `mobile.twitter.com`], `fxtwitter.com`),
-	hostRule(`X`, [`x.com`, `www.x.com`, `mobile.x.com`], `fixupx.com`),
-	hostRule(`Reddit`, [`reddit.com`, `www.reddit.com`, `old.reddit.com`], `rxddit.com`),
-	hostRule(`Bluesky`, [`bsky.app`], `embedfix.com`),
-	hostRule(`Threads`, [`threads.net`, `www.threads.net`, `threads.com`, `www.threads.com`], `embedfix.com`),
-	hostRule(`Tumblr`, [`tumblr.com`, `www.tumblr.com`], `embedfix.com`),
-	hostRule(`Pixiv`, [`pixiv.net`, `www.pixiv.net`], `embedfix.com`, {
-		pathPattern: /^\/(?:[a-z]{2}\/)?artworks\/\d+(?:\/\d+)?\/?$/u,
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		pathPattern: /^\/(?:[^/]+\/(?:posts|videos)\/[^/]+(?:\/[^/]+)?|share\/(?:r|v)\/[^/]+|share\/[^/]+|reel\/[^/]+)\/?$/u,
 	}),
-	hostRule(`Pinterest`, [`pinterest.com`, `www.pinterest.com`], `embedfix.com`, {
-		pathPattern: /^\/pin\//u,
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		pathPattern: /^\/photo(?:\.php)?\/?$/u,
+		preserveParameters: new Set([`fbid`]),
 	}),
-	hostRule(`Twitch`, [`clips.twitch.tv`], `fxtwitch.seria.moe`, {
-		pathPattern: /^\/[^/]+\/?$/u,
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		pathPattern: /^\/watch\/?$/u,
+		preserveParameters: new Set([`v`]),
 	}),
-	hostRule(`Twitch`, [`twitch.tv`, `www.twitch.tv`, `m.twitch.tv`], `fxtwitch.seria.moe`, {
-		// FxTwitch supports channel, clip, and VoD paths; timestamps on VoDs are
-		// functional navigation data rather than tracking and must survive.
-		pathPattern: /^\/(?:[^/]+\/clip\/[^/]+|[^/]+|videos\/\d+)\/?$/u,
-		preserveParameters: new Set([`t`]),
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		pathPattern: /^\/permalink\.php\/?$/u,
+		preserveParameters: new Set([`story_fbid`, `id`]),
+	}),
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		pathPattern: /^\/groups\/[^/]+\/(?:posts|permalink)\/[^/]+\/?$/u,
+	}),
+	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facebed.com`, {
+		// A bare group URL is useful to Facebed only when multi_permalinks
+		// identifies the specific post shared from that group.
+		matches: url =>
+			/^\/groups\/[^/]+\/?$/u.test(url.pathname) &&
+			url.searchParams.has(`multi_permalinks`),
+		preserveParameters: new Set([`multi_permalinks`]),
 	}),
 ];
 
@@ -65,7 +70,8 @@ function trimUrlCandidate(candidate) {
 function findProvider(url) {
 	return PROVIDERS.find(provider =>
 		provider.sourceHosts.has(url.hostname.toLowerCase()) &&
-		(!provider.pathPattern || provider.pathPattern.test(url.pathname)),
+		(!provider.pathPattern || provider.pathPattern.test(url.pathname)) &&
+		(!provider.matches || provider.matches(url)),
 	) || null;
 }
 

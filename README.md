@@ -228,14 +228,18 @@ Buttons do not literally invoke slash commands in Discord, but they route to the
 ### Social Link Fixing
 
 Server administrators can enable automatic social-link fixing from `/setup`.
-When a message contains supported Instagram, TikTok, X/Twitter, Reddit,
-Bluesky, Threads, Tumblr, Pixiv, Pinterest, or Twitch links, Hachi posts one
-non-pinging reply with up to five cleaned masked links. Duplicate
-destinations are removed after cleaning, and platform-required URL data such as a
-Twitch VoD timestamp is preserved.
+When a message contains a supported Instagram, TikTok, or Facebook link, Hachi
+posts one non-pinging reply with up to five cleaned masked links. Duplicate
+destinations are removed after cleaning. Facebook post identifiers stored in
+parameters, such as `fbid` and video `v`, are preserved while tracking data is
+removed.
 
 The profile-installable `Fix Social Links` message context menu uses the same
 rules on demand, even when automatic replies are disabled.
+
+Facebook support covers common posts, videos, reels, shares, photos, watch
+links, permalinks, and group-post links. Hachi leaves unsupported Facebook
+marketplace, event, story, `share/p`, and `fb.watch` links unchanged.
 
 ### Stream Notifications
 

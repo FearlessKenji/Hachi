@@ -1291,24 +1291,36 @@ function validatePureHelpers() {
 		`Instagram link fixing did not remove tracking data.`,
 	);
 	assert(
-		fixSocialUrl(`https://www.twitch.tv/videos/123456?t=1h2m&utm_source=tracking`)?.url ===
-		`https://fxtwitch.seria.moe/videos/123456?t=1h2m`,
-		`Twitch link fixing did not preserve the functional timestamp.`,
+		fixSocialUrl(`https://www.facebook.com/watch/?v=1481060365360701&mibextid=tracking`)?.url ===
+		`https://facebed.com/watch/?v=1481060365360701`,
+		`Facebook link fixing did not preserve the video identifier.`,
+	);
+	assert(
+		fixSocialUrl(`https://m.facebook.com/photo.php?fbid=1220500346751179&ref=tracking`)?.url ===
+		`https://facebed.com/photo.php?fbid=1220500346751179`,
+		`Facebook link fixing did not preserve the photo identifier.`,
+	);
+	assert(
+		fixSocialUrl(`https://www.facebook.com/groups/12345?multi_permalinks=67890&ref=tracking`)?.url ===
+		`https://facebed.com/groups/12345?multi_permalinks=67890`,
+		`Facebook group-post fixing did not preserve the permalink identifier.`,
 	);
 	const fixedSocialLinks = buildFixedSocialLinks([
-		`https://www.twitch.tv/example/clip/ClipOne?utm_source=tracking`,
-		`https://www.twitch.tv/example/clip/ClipTwo`,
+		`https://www.facebook.com/reel/588109690402315?tracking=one`,
+		`https://www.facebook.com/example/videos/271051965695290?tracking=two`,
 		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=one`,
 		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=duplicate`,
 	].join(`\n`));
 
 	assert(fixedSocialLinks.links.length === 3, `Social-link fixing did not remove a canonical duplicate.`);
 	assert(
-		fixedSocialLinks.content.includes(`[Twitch link 1]`) &&
-		fixedSocialLinks.content.includes(`[Twitch link 2]`) &&
+		fixedSocialLinks.content.includes(`[Facebook link 1]`) &&
+		fixedSocialLinks.content.includes(`[Facebook link 2]`) &&
 		fixedSocialLinks.content.includes(`[Instagram link]`),
 		`Multiple fixed social links were not labeled by platform and order.`,
 	);
+	assert(fixSocialUrl(`https://x.com/example/status/123`) === null, `Removed X support still produced a fixed link.`);
+	assert(fixSocialUrl(`https://fb.watch/example`) === null, `Unsupported Facebook short link was accepted.`);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
 	assert(
