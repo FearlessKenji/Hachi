@@ -1266,10 +1266,6 @@ function validatePureHelpers() {
 		selectPatchNotesForAnnouncement,
 	} = requireFresh(`utils`, `announcements.js`);
 	const {
-		buildShortAmazonLinks,
-		shortenAmazonUrl,
-	} = requireFresh(`utils`, `amazonLinks.js`);
-	const {
 		buildFixedSocialLinks,
 		fixSocialUrl,
 	} = requireFresh(`utils`, `socialLinks.js`);
@@ -1290,31 +1286,6 @@ function validatePureHelpers() {
 	assert(typeof serverLifecycle.reconcileServerRows === `function`, `server lifecycle reconciliation helper is missing.`);
 	assert(typeof serverLifecycle.markServerLeft === `function`, `server lifecycle leave tracker is missing.`);
 	assert(
-		shortenAmazonUrl(
-			`https://www.amazon.com/Thermalright-Cooling/dp/B0CDT59VGP/?tag=tracking&th=1`,
-		)?.url === `https://www.amazon.com/dp/B0CDT59VGP`,
-		`Amazon link shortening did not produce the canonical product URL.`,
-	);
-	assert(
-		shortenAmazonUrl(`https://smile.amazon.co.uk/gp/product/b000ib9qxi/ref=something`)?.url ===
-		`https://www.amazon.co.uk/dp/B000IB9QXI`,
-		`Amazon link shortening did not preserve the regional storefront.`,
-	);
-	assert(shortenAmazonUrl(`https://www.amazon.com/s?k=computer+fans`) === null, `Amazon search URL was treated as a product.`);
-	assert(shortenAmazonUrl(`https://amzn.to/example`) === null, `Amazon redirect URL was treated as a resolved product.`);
-	const shortAmazonLinks = buildShortAmazonLinks([
-		`https://www.amazon.com/example/dp/B0CDT59VGP?tag=first`,
-		`https://www.amazon.com/dp/B0CDT59VGP?tag=duplicate`,
-		`https://www.amazon.ca/gp/aw/d/B000IB9QXI?ref_=tracking`,
-	].join(`\n`));
-
-	assert(shortAmazonLinks.links.length === 2, `Amazon link shortening did not remove a canonical duplicate.`);
-	assert(
-		shortAmazonLinks.content.includes(`[Short Amazon link 1](https://www.amazon.com/dp/B0CDT59VGP)`) &&
-		shortAmazonLinks.content.includes(`[Short Amazon link 2](https://www.amazon.ca/dp/B000IB9QXI)`),
-		`Multiple Amazon links were not formatted in source order.`,
-	);
-	assert(
 		fixSocialUrl(`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=tracking`)?.url ===
 		`https://www.kkinstagram.com/reel/DbAO3edgEWh/`,
 		`Instagram link fixing did not remove tracking data.`,
@@ -1333,9 +1304,9 @@ function validatePureHelpers() {
 
 	assert(fixedSocialLinks.links.length === 3, `Social-link fixing did not remove a canonical duplicate.`);
 	assert(
-		fixedSocialLinks.content.includes(`[Embed-friendly Twitch link 1]`) &&
-		fixedSocialLinks.content.includes(`[Embed-friendly Twitch link 2]`) &&
-		fixedSocialLinks.content.includes(`[Embed-friendly Instagram link]`),
+		fixedSocialLinks.content.includes(`[Twitch link 1]`) &&
+		fixedSocialLinks.content.includes(`[Twitch link 2]`) &&
+		fixedSocialLinks.content.includes(`[Instagram link]`),
 		`Multiple fixed social links were not labeled by platform and order.`,
 	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);

@@ -20,7 +20,7 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 - Rules embeds with optional reaction verification
 - Optional application command monitoring with app/channel whitelists
 - Configurable raid protection with quarantine, join-spike alerts, spam evidence, and incident reports
-- Optional non-pinging replies with clean, embed-friendly social-media links
+- Optional non-pinging replies with cleaned social-media links
 - Permission-aware `/help` generated from command metadata
 - Timestamp and dice rolling utility commands
 
@@ -180,8 +180,7 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
 | Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
-| Utilities | `Fix Social Links` | Profile-installable message context menu for clean, embed-friendly social links. |
-| Utilities | `Shorten Amazon Links` | Profile-installable message context menu for canonical, tracking-free Amazon product links. |
+| Utilities | `Fix Social Links` | Profile-installable message context menu for cleaned social links. |
 | Profiles | `/profile set` | Set a per-server profile avatar, banner, bio, or nickname. |
 | Profiles | `/profile clear` | Clear one or all per-server profile fields. |
 | Rules | `/rules` | Post a custom rules embed with optional reaction verification. |
@@ -231,18 +230,12 @@ Buttons do not literally invoke slash commands in Discord, but they route to the
 Server administrators can enable automatic social-link fixing from `/setup`.
 When a message contains supported Instagram, TikTok, X/Twitter, Reddit,
 Bluesky, Threads, Tumblr, Pixiv, Pinterest, or Twitch links, Hachi posts one
-non-pinging reply with up to five cleaned, embed-friendly masked links. Duplicate
+non-pinging reply with up to five cleaned masked links. Duplicate
 destinations are removed after cleaning, and platform-required URL data such as a
 Twitch VoD timestamp is preserved.
 
 The profile-installable `Fix Social Links` message context menu uses the same
 rules on demand, even when automatic replies are disabled.
-
-The separate profile-installable `Shorten Amazon Links` message context menu
-turns recognized Amazon product URLs into canonical `/dp/ASIN` links, removes
-affiliate and recommendation parameters, preserves regional storefronts, and
-combines up to five unique products. It does not resolve shortened `a.co` or
-`amzn.to` redirects.
 
 ### Stream Notifications
 

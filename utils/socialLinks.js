@@ -155,7 +155,7 @@ function formatFixedSocialLinks(links) {
 	}
 
 	if (links.length === 1) {
-		return `[Embed-friendly link](${markdownDestination(links[0].url)})`;
+		return `[${links[0].platform} link](${markdownDestination(links[0].url)})`;
 	}
 
 	const platformTotals = new Map();
@@ -171,7 +171,7 @@ function formatFixedSocialLinks(links) {
 
 		platformIndexes.set(link.platform, index);
 
-		return `[Embed-friendly ${link.platform} link${suffix}](${markdownDestination(link.url)})`;
+		return `[${link.platform} link${suffix}](${markdownDestination(link.url)})`;
 	}).join(`\n`);
 }
 

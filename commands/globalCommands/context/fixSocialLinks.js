@@ -31,7 +31,7 @@ module.exports = {
 		entries: [
 			{
 				command: `Fix Social Links`,
-				description: `message context menu for posting clean, embed-friendly social links.`,
+				description: `message context menu for posting cleaned social links.`,
 			},
 		],
 	},
@@ -57,7 +57,7 @@ module.exports = {
 			error(`Failed to fix social links from context menu:`, err);
 
 			const payload = {
-				content: `Failed to create embed-friendly links.`,
+				content: `Failed to create fixed social links.`,
 				flags: MessageFlags.Ephemeral,
 			};
 

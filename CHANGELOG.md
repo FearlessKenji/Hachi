@@ -18,10 +18,12 @@ Notable changes to Hachi are documented here.
 - Removed `Part X/Y` labels from split `/announce patch-notes` messages.
 - Removed the extra `View Mine` and `Remove Mine` buttons from the birthday board.
 - Removed birthday-board card-status labels from listed birthday entries.
+- Renamed social-link reply labels to platform-only text such as `Instagram link`.
 
 ### Removed
 
 - Removed `/birthday card list` from the birthday command group.
+- Removed the `Shorten Amazon Links` message context command and Amazon-link helper.
 
 ### Fixed
 
