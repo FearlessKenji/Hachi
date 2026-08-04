@@ -9,7 +9,8 @@ const {
 const { LinkBlockRules, LinkConfigs, LinkFixRules } = require(`../../../database/dbObjects.js`);
 const {
 	expandAffiliateDomains,
-	MAX_REGEX_PATTERNS,
+	MAX_BLOCKED_DOMAIN_LENGTH,
+	MAX_BLOCKED_DOMAINS,
 	syncBlockRule,
 } = require(`../../../utils/linkBlocking.js`);
 const { normalizeDomain, RECOMMENDED_FIX_RULES } = require(`../../../utils/socialLinks.js`);
@@ -21,9 +22,8 @@ async function configFor(guildId) {
 	return config;
 }
 
-function domainOption(option, name, description) {
-	// Keep generated AutoMod regex patterns below Discord's 260-character limit.
-	return option.setName(name).setDescription(description).setRequired(true).setMaxLength(180);
+function domainOption(option, name, description, maxLength = 180) {
+	return option.setName(name).setDescription(description).setRequired(true).setMaxLength(maxLength);
 }
 
 async function setEnabled(interaction, feature, enabled) {
@@ -87,14 +87,17 @@ async function addBlock(interaction) {
 	}
 	const fixRules = await LinkFixRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
 	const affiliateDomains = expandAffiliateDomains(domain, fixRules);
+	if (affiliateDomains.some(candidate => candidate.length > MAX_BLOCKED_DOMAIN_LENGTH)) {
+		throw new Error(`Blocked domains and their affiliates must be ${MAX_BLOCKED_DOMAIN_LENGTH} characters or fewer.`);
+	}
 	const existingRules = await LinkBlockRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
 	const existingDomains = new Set(existingRules.map(rule => rule.domain));
 	const domainsToAdd = affiliateDomains.filter(candidate => !existingDomains.has(candidate));
 	if (!domainsToAdd.length) {
 		return interaction.reply({ content: `**${domain}** and its known affiliates are already blocked.`, flags: MessageFlags.Ephemeral });
 	}
-	if (existingDomains.size + domainsToAdd.length > MAX_REGEX_PATTERNS) {
-		throw new Error(`This server has reached Discord's ${MAX_REGEX_PATTERNS}-domain AutoMod limit.`);
+	if (existingDomains.size + domainsToAdd.length > MAX_BLOCKED_DOMAINS) {
+		throw new Error(`This server has reached Discord's ${MAX_BLOCKED_DOMAINS}-domain AutoMod limit.`);
 	}
 	await LinkBlockRules.bulkCreate(domainsToAdd.map(candidate => ({
 		createdAt: new Date(),
@@ -149,7 +152,7 @@ async function blockStatus(interaction) {
 			sync = `Needs repair`;
 		}
 	}
-	const domains = rules.length ? rules.map(rule => `• ${rule.domain} (includes subdomains)`).join(`\n`) : `No blocked domains.`;
+	const domains = rules.length ? rules.map(rule => `• ${rule.domain} (matched anywhere)`).join(`\n`) : `No blocked domains.`;
 	const embed = new EmbedBuilder()
 		.setColor(COLOR)
 		.setTitle(`Link Blocking`)
@@ -179,9 +182,9 @@ module.exports = {
 				.addStringOption(option => domainOption(option, `source`, `Original domain to remove.`))))
 		.addSubcommandGroup(group => addToggleCommands(group.setName(`block`).setDescription(`Configure blocked link sources.`))
 			.addSubcommand(command => command.setName(`add`).setDescription(`Add a blocked domain and its subdomains.`)
-				.addStringOption(option => domainOption(option, `domain`, `Domain to block.`)))
+				.addStringOption(option => domainOption(option, `domain`, `Domain to block.`, MAX_BLOCKED_DOMAIN_LENGTH)))
 			.addSubcommand(command => command.setName(`remove`).setDescription(`Remove a blocked domain.`)
-				.addStringOption(option => domainOption(option, `domain`, `Domain to remove.`))))
+				.addStringOption(option => domainOption(option, `domain`, `Domain to remove.`, MAX_BLOCKED_DOMAIN_LENGTH))))
 		.setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
 		.setContexts(InteractionContextType.Guild),
 	help: { category: `management`, permissions: [PermissionFlagsBits.ManageGuild], entries: [
