@@ -20,9 +20,14 @@ function escapeRegex(value) {
 }
 
 function domainPattern(domain) {
-	// Requiring a URL boundary prevents blocked.example from matching inside
-	// allowedblocked.example while still recognizing raw and masked Markdown URLs.
-	return `(?i)(?:^|[\\s(<\\[])(?:https?://)?(?:[^\\s./]+\\.)*${escapeRegex(domain)}(?:[/:?#]|$)`;
+	// Wrapper-aware boundaries catch Discord Markdown and sentence punctuation.
+	// Dots are accepted only as terminal punctuation so blocked.example.evil
+	// cannot be mistaken for the blocked hostname.
+	const wrapper = `[\\s>)\\]}"'|,*_~;!?]`;
+	const prefix = `(?:^|[\\s<({\\["'|*_~,:;!?])`;
+	const suffix = `(?:[/:?#]|$|${wrapper}|\\.(?:$|${wrapper}))`;
+
+	return `(?i)${prefix}(?:https?://)?(?:[^\\s./]+\\.)*${escapeRegex(domain)}${suffix}`;
 }
 
 function expandAffiliateDomains(domain, fixRules = []) {

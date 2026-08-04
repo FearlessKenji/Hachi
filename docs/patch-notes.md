@@ -6,6 +6,14 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.5.1 - 2026-08-04
+
+### Link Blocking
+
+- Link blocking now catches masked and pathless links surrounded by Discord
+  formatting or normal sentence punctuation while continuing to ignore longer,
+  similarly named domains.
+
 # v3.5.0 - 2026-08-03
 
 ### Security

@@ -1323,8 +1323,14 @@ function validatePureHelpers() {
 	const blockedDomainRegex = new RegExp(domainPattern(`blocked.example`).replace(/^\(\?i\)/u, ``), `iu`);
 	assert(blockedDomainRegex.test(`See https://www.blocked.example/post`), `Blocked-domain regex missed a subdomain URL.`);
 	assert(blockedDomainRegex.test(`[link](https://blocked.example/post)`), `Blocked-domain regex missed a masked link.`);
+	assert(blockedDomainRegex.test(`[link](https://blocked.example)`), `Blocked-domain regex missed a pathless masked link.`);
 	assert(blockedDomainRegex.test(`blocked.example/post`), `Blocked-domain regex missed a bare linked domain.`);
+	assert(blockedDomainRegex.test(`See blocked.example, please.`), `Blocked-domain regex missed comma punctuation.`);
+	assert(blockedDomainRegex.test(`See blocked.example.`), `Blocked-domain regex missed terminal punctuation.`);
+	assert(blockedDomainRegex.test(`<https://blocked.example>`), `Blocked-domain regex missed an angle-wrapped link.`);
+	assert(blockedDomainRegex.test(`**https://blocked.example/path**`), `Blocked-domain regex missed a formatted link.`);
 	assert(!blockedDomainRegex.test(`https://notblocked.example/post`), `Blocked-domain regex matched a hostname suffix.`);
+	assert(!blockedDomainRegex.test(`https://blocked.example.evil/post`), `Blocked-domain regex matched a longer hostname.`);
 	assert(!blockedDomainRegex.test(`the blocked example phrase`), `Blocked-domain regex matched ordinary words.`);
 	assert(!blockedDomainRegex.test(`blocked.exampleton`), `Blocked-domain regex matched a longer word.`);
 	assert(

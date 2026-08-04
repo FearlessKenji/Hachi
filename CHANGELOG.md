@@ -4,6 +4,12 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.5.1 - 2026-08-04
+
+### Fixed
+
+- Expanded blocked-link AutoMod boundaries to recognize pathless masked links, Discord formatting wrappers, angle-bracket links, and normal sentence punctuation without matching longer hostnames.
+
 ## v3.5.0 - 2026-08-03
 
 ### Added
