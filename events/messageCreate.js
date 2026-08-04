@@ -9,7 +9,7 @@ const {
 	InteractionType,
 	MessageFlags,
 } = require(`discord.js`);
-const { CommandMonitorWhitelists, Servers } = require(`../database/dbObjects.js`);
+const { CommandMonitorWhitelists, LinkConfigs, LinkFixRules, Servers } = require(`../database/dbObjects.js`);
 const { observeMessageForRaid } = require(`../utils/raidProtection.js`);
 const { buildFixedSocialLinks } = require(`../utils/socialLinks.js`);
 const { error, info } = require(`../utils/writeLog.js`);
@@ -39,17 +39,18 @@ async function replyWithFixedSocialLinks(message) {
 		return;
 	}
 
-	const server = await Servers.findOne({
-		attributes: [`socialLinkFixingEnabled`],
+	const config = await LinkConfigs.findOne({
+		attributes: [`fixingEnabled`],
 		raw: true,
 		where: { guildId: message.guild.id },
 	});
 
-	if (!server?.socialLinkFixingEnabled) {
+	if (!config?.fixingEnabled) {
 		return;
 	}
 
-	const result = buildFixedSocialLinks(message.content);
+	const rules = await LinkFixRules.findAll({ raw: true, where: { guildId: message.guild.id } });
+	const result = buildFixedSocialLinks(message.content, rules);
 
 	if (!result.links.length) {
 		return;

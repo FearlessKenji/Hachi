@@ -4,6 +4,30 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.5.0 - 2026-08-03
+
+### Added
+
+- Updated the project version to `3.5.0`.
+- Added `/links fix add/remove/enable/disable/status` for guild-configured embed-provider domain mappings, with Instagram and TikTok shown as first-time recommendations.
+- Added `/links block add/remove/enable/disable/status`, backed by a Hachi-managed Discord AutoMod rule with private rejection messaging.
+- Added guild-scoped link configuration, fix-rule, and block-rule database tables.
+- Added affiliate-aware blocking for configured link-fixing mappings plus Facebook/Facecot, Instagram/KKInstagram, and TikTok/KKTikTok domains.
+- Added smoke coverage for the allowed message context commands, IP-literal rejection, link-only domain matching, hostname spoofing, and affiliate expansion.
+
+### Changed
+
+- Updated vulnerable transitive dependencies by overriding `brace-expansion` to `5.0.9` and `undici` to `6.28.0`.
+- Moved automatic link-fixing configuration out of `/setup` and into `/links`.
+- Replaced hardcoded social providers with administrator-managed mappings that preserve paths while removing query strings and fragments.
+- Removed Facebook from built-in link fixing and added a privacy warning when an administrator explicitly maps a Facebook domain.
+- Restricted link mappings to domain names rather than IP addresses and tightened AutoMod patterns so ordinary words and phrases cannot trigger link blocking.
+
+### Removed
+
+- Removed the `Fix Social Links` message context command and its profile-install registration; automatic server link fixing remains available.
+- Removed the lingering `Shorten Amazon Links` command implementation and Amazon-link helper so the only message context commands are `Convert to Reaction Roles` and `Edit Reaction Roles`.
+
 ## v3.4.2 - 2026-07-24
 
 ### Changed

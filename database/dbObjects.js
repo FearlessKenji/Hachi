@@ -59,6 +59,9 @@ const CommandMonitorWhitelists = require(`./models/commandMonitorWhitelists.js`)
 	sequelize,
 	Sequelize.DataTypes,
 );
+const LinkConfigs = require(`./models/linkConfigs.js`)(sequelize, Sequelize.DataTypes);
+const LinkFixRules = require(`./models/linkFixRules.js`)(sequelize, Sequelize.DataTypes);
+const LinkBlockRules = require(`./models/linkBlockRules.js`)(sequelize, Sequelize.DataTypes);
 const TwitchRoleConfigs = require(`./models/twitchRoleConfigs.js`)(
 	sequelize,
 	Sequelize.DataTypes,
@@ -218,6 +221,15 @@ CommandMonitorWhitelists.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+for (const LinkModel of [LinkConfigs, LinkFixRules, LinkBlockRules]) {
+	Servers.hasMany(LinkModel, {
+		foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+	});
+	LinkModel.belongsTo(Servers, {
+		foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+	});
+}
+
 // Twitch Role Sync Associations
 // Broadcaster auth and per-member Twitch links are guild-scoped. Server deletion
 // remains restricted so role-sync credentials cannot disappear silently.
@@ -333,6 +345,9 @@ module.exports = {
 	BirthdayConfigs,
 	BirthdayCards,
 	CommandMonitorWhitelists,
+	LinkConfigs,
+	LinkFixRules,
+	LinkBlockRules,
 	TwitchRoleConfigs,
 	TwitchRoleLinks,
 	TwitchRoleEventMessages,

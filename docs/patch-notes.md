@@ -6,6 +6,37 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.5.0 - 2026-08-03
+
+### Security
+
+- Updated vulnerable networking and pattern-expansion dependencies.
+
+### Link Management
+
+- Administrators can manage automatic replacements with `/links fix add`,
+  `/links fix remove`, `/links fix enable`, `/links fix disable`, and
+  `/links fix status`.
+- Instagram and TikTok replacements are suggested when no mappings exist, but
+  servers can configure other source and replacement domains.
+- Facebook is no longer built in because Facebook share links may reveal the
+  sharer's profile identity. Hachi warns administrators who add one manually.
+- Administrators can block domains with `/links block`. Hachi creates its own
+  Discord AutoMod rule, prevents matching messages from appearing, and privately
+  tells the sender that the link is not allowed.
+- Blocking Facebook, Instagram, or TikTok also blocks its known embed-provider
+  counterpart. Removing either member of the pair removes the whole pair.
+- Custom source and replacement domains configured with `/links fix add` are
+  also treated as affiliates by link blocking.
+- Link blocking recognizes actual URL and domain tokens without matching ordinary
+  words, partial hostnames, email addresses, or similarly named domains.
+- Link-fixing mappings reject IP addresses and require plain domain names.
+
+### Commands
+
+- Removed the `Fix Social Links` and `Shorten Amazon Links` message context menus. Automatic link fixing is configured with `/links fix`.
+- Hachi's only message context menus are now `Convert to Reaction Roles` and `Edit Reaction Roles`.
+
 # v3.4.2 - 2026-07-24
 
 ### Smart Links

@@ -245,9 +245,17 @@ function collectCommands() {
 	const guildData = getCommandData(`guild`);
 	const globalCount = commands.filter(({ command }) => command.commandScope === `global`).length;
 	const guildCount = commands.filter(({ command }) => command.commandScope === `guild`).length;
+	const messageContextNames = commands
+		.filter(({ json }) => json.type === 3)
+		.map(({ json }) => json.name)
+		.sort();
 
 	assert(globalData.length === globalCount, `Global command data count does not match loaded global command count.`);
 	assert(guildData.length === guildCount, `Guild command data count does not match loaded guild command count.`);
+	assert(
+		messageContextNames.join(`|`) === `Convert to Reaction Roles|Edit Reaction Roles`,
+		`Unexpected message context command set: ${messageContextNames.join(`, `) || `none`}.`,
+	);
 
 	for (const data of globalData) {
 		assert(Array.isArray(data.integration_types), `${data.name} global command is missing integration_types.`);
@@ -1268,8 +1276,11 @@ function validatePureHelpers() {
 	const {
 		buildFixedSocialLinks,
 		fixSocialUrl,
+		normalizeDomain,
+		RECOMMENDED_FIX_RULES,
 	} = requireFresh(`utils`, `socialLinks.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
+	const { domainPattern, expandAffiliateDomains } = requireFresh(`utils`, `linkBlocking.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
 	const {
 		getEventSubWebSocketUrlRejectionReason,
@@ -1286,41 +1297,49 @@ function validatePureHelpers() {
 	assert(typeof serverLifecycle.reconcileServerRows === `function`, `server lifecycle reconciliation helper is missing.`);
 	assert(typeof serverLifecycle.markServerLeft === `function`, `server lifecycle leave tracker is missing.`);
 	assert(
-		fixSocialUrl(`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=tracking`)?.url ===
+		fixSocialUrl(`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=tracking`, RECOMMENDED_FIX_RULES)?.url ===
 		`https://www.kkinstagram.com/reel/DbAO3edgEWh/`,
 		`Instagram link fixing did not remove tracking data.`,
 	);
 	assert(
-		fixSocialUrl(`https://www.facebook.com/watch/?v=1481060365360701&mibextid=tracking`)?.url ===
-		`https://facecot.com/watch/?v=1481060365360701`,
-		`Facebook link fixing did not preserve the video identifier.`,
-	);
-	assert(
-		fixSocialUrl(`https://m.facebook.com/photo.php?fbid=1220500346751179&ref=tracking`)?.url ===
-		`https://facecot.com/photo.php?fbid=1220500346751179`,
-		`Facebook link fixing did not preserve the photo identifier.`,
-	);
-	assert(
-		fixSocialUrl(`https://www.facebook.com/groups/12345?multi_permalinks=67890&ref=tracking`)?.url ===
-		`https://facecot.com/groups/12345?multi_permalinks=67890`,
-		`Facebook group-post fixing did not preserve the permalink identifier.`,
+		fixSocialUrl(`https://www.facebook.com/watch/?v=1481060365360701`, RECOMMENDED_FIX_RULES) === null,
+		`Facebook unexpectedly remained a recommended link-fixing provider.`,
 	);
 	const fixedSocialLinks = buildFixedSocialLinks([
-		`https://www.facebook.com/reel/588109690402315?tracking=one`,
-		`https://www.facebook.com/example/videos/271051965695290?tracking=two`,
+		`https://www.tiktok.com/@example/video/123?tracking=one`,
 		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=one`,
 		`https://www.instagram.com/reel/DbAO3edgEWh/?igsh=duplicate`,
-	].join(`\n`));
+	].join(`\n`), RECOMMENDED_FIX_RULES);
 
-	assert(fixedSocialLinks.links.length === 3, `Social-link fixing did not remove a canonical duplicate.`);
+	assert(fixedSocialLinks.links.length === 2, `Social-link fixing did not remove a canonical duplicate.`);
 	assert(
-		fixedSocialLinks.content.includes(`[Facebook link 1]`) &&
-		fixedSocialLinks.content.includes(`[Facebook link 2]`) &&
-		fixedSocialLinks.content.includes(`[Instagram link]`),
-		`Multiple fixed social links were not labeled by platform and order.`,
+		fixedSocialLinks.content.includes(`[Embed-friendly link 1]`) &&
+		fixedSocialLinks.content.includes(`[Embed-friendly link 2]`),
+		`Multiple fixed social links were not labeled in order.`,
 	);
-	assert(fixSocialUrl(`https://x.com/example/status/123`) === null, `Removed X support still produced a fixed link.`);
-	assert(fixSocialUrl(`https://fb.watch/example`) === null, `Unsupported Facebook short link was accepted.`);
+	assert(normalizeDomain(`Instagram.com`) === `instagram.com`, `Domain normalization failed.`);
+	assert(normalizeDomain(`https://instagram.com`) === null, `Domain normalization accepted a URL.`);
+	assert(normalizeDomain(`127.0.0.1`) === null, `Domain normalization accepted an IPv4 address.`);
+	const blockedDomainRegex = new RegExp(domainPattern(`blocked.example`).replace(/^\(\?i\)/u, ``), `iu`);
+	assert(blockedDomainRegex.test(`See https://www.blocked.example/post`), `Blocked-domain regex missed a subdomain URL.`);
+	assert(blockedDomainRegex.test(`[link](https://blocked.example/post)`), `Blocked-domain regex missed a masked link.`);
+	assert(blockedDomainRegex.test(`blocked.example/post`), `Blocked-domain regex missed a bare linked domain.`);
+	assert(!blockedDomainRegex.test(`https://notblocked.example/post`), `Blocked-domain regex matched a hostname suffix.`);
+	assert(!blockedDomainRegex.test(`the blocked example phrase`), `Blocked-domain regex matched ordinary words.`);
+	assert(!blockedDomainRegex.test(`blocked.exampleton`), `Blocked-domain regex matched a longer word.`);
+	assert(
+		expandAffiliateDomains(`www.instagram.com`).join(`|`) === `instagram.com|kkinstagram.com`,
+		`Instagram affiliate blocking did not include its embed provider.`,
+	);
+	assert(
+		expandAffiliateDomains(`facecot.com`).join(`|`) === `facebook.com|facecot.com`,
+		`Facebook affiliate blocking was not bidirectional.`,
+	);
+	assert(
+		expandAffiliateDomains(`example.com`, [{ sourceDomain: `example.com`, targetDomain: `embed.example.net` }]).join(`|`) ===
+		`embed.example.net|example.com`,
+		`Configured link-fixing affiliates were not expanded.`,
+	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
 	assert(

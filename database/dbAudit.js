@@ -184,6 +184,39 @@ const EXPECTED_SCHEMA = [
 		],
 	},
 	{
+		name: `linkConfigs`,
+		columns: [
+			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`fixingEnabled`, `TINYINT(1)`, { defaultValue: `0` }),
+			column(`blockingEnabled`, `TINYINT(1)`, { defaultValue: `0` }),
+			column(`autoModRuleId`, `VARCHAR(255)`, { nullable: true }),
+		],
+		indexes: [],
+	},
+	{
+		name: `linkFixRules`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`sourceDomain`, `VARCHAR(255)`),
+			column(`targetDomain`, `VARCHAR(255)`),
+			column(`createdBy`, `VARCHAR(255)`, { nullable: true }),
+			column(`createdAt`, `DATETIME`),
+		],
+		indexes: [index(`linkFixRulesGuildSource`, [`guildId`, `sourceDomain`], { unique: true })],
+	},
+	{
+		name: `linkBlockRules`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`domain`, `VARCHAR(255)`),
+			column(`createdBy`, `VARCHAR(255)`, { nullable: true }),
+			column(`createdAt`, `DATETIME`),
+		],
+		indexes: [index(`linkBlockRulesGuildDomain`, [`guildId`, `domain`], { unique: true })],
+	},
+	{
 		name: `twitchRoleConfigs`,
 		columns: [
 			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
