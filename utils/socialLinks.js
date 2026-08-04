@@ -1,113 +1,56 @@
-// Social-link normalization and embed-provider routing.
-//
-// Provider rules live together so automatic replies and the profile-installed
-// context menu cannot drift into different URL-cleaning behavior.
-const { URL, URLSearchParams } = require(`node:url`);
+// Validation and rewriting for guild-configured embed-provider host mappings.
+const { URL } = require(`node:url`);
+const { isIP } = require(`node:net`);
 
 const MAX_FIXED_LINKS = 5;
 const URL_PATTERN = /https?:\/\/[^\s<>]+/giu;
 const TRAILING_PUNCTUATION = /[.,!?;:|\]]+$/u;
-
-function hostRule(platform, sourceHosts, targetHost, options = {}) {
-	return {
-		platform,
-		sourceHosts: new Set(sourceHosts),
-		targetHost,
-		...options,
-	};
-}
-
-const PROVIDERS = [
-	hostRule(`Instagram`, [`instagram.com`, `www.instagram.com`], `www.kkinstagram.com`),
-	hostRule(`TikTok`, [`tiktok.com`, `www.tiktok.com`, `m.tiktok.com`], `kktiktok.com`),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		pathPattern: /^\/(?:[^/]+\/(?:posts|videos)\/[^/]+(?:\/[^/]+)?|share\/(?:r|v)\/[^/]+|share\/[^/]+|reel\/[^/]+)\/?$/u,
-	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		pathPattern: /^\/photo(?:\.php)?\/?$/u,
-		preserveParameters: new Set([`fbid`]),
-	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		pathPattern: /^\/watch\/?$/u,
-		preserveParameters: new Set([`v`]),
-	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		pathPattern: /^\/permalink\.php\/?$/u,
-		preserveParameters: new Set([`story_fbid`, `id`]),
-	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		pathPattern: /^\/groups\/[^/]+\/(?:posts|permalink)\/[^/]+\/?$/u,
-	}),
-	hostRule(`Facebook`, [`facebook.com`, `www.facebook.com`, `m.facebook.com`], `facecot.com`, {
-		// A bare group URL is useful to the embed provider only when multi_permalinks
-		// identifies the specific post shared from that group.
-		matches: url =>
-			/^\/groups\/[^/]+\/?$/u.test(url.pathname) &&
-			url.searchParams.has(`multi_permalinks`),
-		preserveParameters: new Set([`multi_permalinks`]),
-	}),
+const RECOMMENDED_FIX_RULES = [
+	{ sourceDomain: `instagram.com`, targetDomain: `www.kkinstagram.com` },
+	{ sourceDomain: `tiktok.com`, targetDomain: `kktiktok.com` },
 ];
+
+function normalizeDomain(value) {
+	const input = String(value || ``).trim().toLowerCase().replace(/\.$/u, ``);
+
+	if (!input || input.includes(`/`) || input.includes(`@`) || input.includes(`:`)) {
+		return null;
+	}
+
+	try {
+		const url = new URL(`https://${input}`);
+		return url.hostname === input && url.hostname.includes(`.`) && !isIP(url.hostname) ? url.hostname : null;
+	} catch {
+		return null;
+	}
+}
 
 function trimUrlCandidate(candidate) {
 	let value = candidate.replace(TRAILING_PUNCTUATION, ``);
-
-	// A closing parenthesis is punctuation only when it is not balanced inside
-	// the URL, such as a URL followed by prose in parentheses.
-	while (value.endsWith(`)`)) {
-		const opens = (value.match(/\(/gu) || []).length;
-		const closes = (value.match(/\)/gu) || []).length;
-
-		if (closes <= opens) {
-			break;
-		}
-
+	while (value.endsWith(`)`) && (value.match(/\)/gu) || []).length > (value.match(/\(/gu) || []).length) {
 		value = value.slice(0, -1);
 	}
-
 	return value;
 }
 
-function findProvider(url) {
-	return PROVIDERS.find(provider =>
-		provider.sourceHosts.has(url.hostname.toLowerCase()) &&
-		(!provider.pathPattern || provider.pathPattern.test(url.pathname)) &&
-		(!provider.matches || provider.matches(url)),
-	) || null;
+function findRule(hostname, rules) {
+	const host = hostname.toLowerCase();
+	return rules.find(rule => host === rule.sourceDomain || host.endsWith(`.${rule.sourceDomain}`)) || null;
 }
 
-function cleanSearch(url, provider) {
-	if (!provider.preserveParameters?.size) {
-		url.search = ``;
-		return;
-	}
-
-	const preserved = new URLSearchParams();
-
-	for (const parameter of provider.preserveParameters) {
-		for (const value of url.searchParams.getAll(parameter)) {
-			preserved.append(parameter, value);
-		}
-	}
-
-	url.search = preserved.toString();
-}
-
-function fixSocialUrl(value) {
+function fixSocialUrl(value, rules = []) {
 	let url;
-
 	try {
 		url = new URL(value);
 	} catch {
 		return null;
 	}
-
-	if (url.protocol !== `https:` && url.protocol !== `http:`) {
+	if (![`http:`, `https:`].includes(url.protocol)) {
 		return null;
 	}
 
-	const provider = findProvider(url);
-
-	if (!provider) {
+	const rule = findRule(url.hostname, rules);
+	if (!rule) {
 		return null;
 	}
 
@@ -115,86 +58,53 @@ function fixSocialUrl(value) {
 	url.username = ``;
 	url.password = ``;
 	url.port = ``;
-	url.hostname = provider.targetHost;
+	url.hostname = rule.targetDomain;
+	url.search = ``;
 	url.hash = ``;
-	cleanSearch(url, provider);
 
-	return {
-		platform: provider.platform,
-		url: url.toString(),
-	};
+	return { platform: rule.sourceDomain, url: url.toString() };
 }
 
-function extractFixedSocialLinks(content, { limit = MAX_FIXED_LINKS } = {}) {
-	if (!content || limit <= 0) {
+function extractFixedSocialLinks(content, rules, { limit = MAX_FIXED_LINKS } = {}) {
+	if (!content || !rules?.length || limit <= 0) {
 		return [];
 	}
-
 	const results = [];
 	const seen = new Set();
 
 	for (const match of content.matchAll(URL_PATTERN)) {
-		const fixed = fixSocialUrl(trimUrlCandidate(match[0]));
-
+		const fixed = fixSocialUrl(trimUrlCandidate(match[0]), rules);
 		if (!fixed || seen.has(fixed.url)) {
 			continue;
 		}
-
 		seen.add(fixed.url);
 		results.push(fixed);
-
 		if (results.length >= limit) {
 			break;
 		}
 	}
-
 	return results;
 }
 
-function markdownDestination(url) {
-	return url.replace(/\(/gu, `%28`).replace(/\)/gu, `%29`);
-}
-
 function formatFixedSocialLinks(links) {
-	if (!links.length) {
-		return ``;
-	}
-
-	if (links.length === 1) {
-		return `[${links[0].platform} link](${markdownDestination(links[0].url)})`;
-	}
-
-	const platformTotals = new Map();
-	const platformIndexes = new Map();
-
-	for (const link of links) {
-		platformTotals.set(link.platform, (platformTotals.get(link.platform) || 0) + 1);
-	}
-
-	return links.map(link => {
-		const index = (platformIndexes.get(link.platform) || 0) + 1;
-		const suffix = platformTotals.get(link.platform) > 1 ? ` ${index}` : ``;
-
-		platformIndexes.set(link.platform, index);
-
-		return `[${link.platform} link${suffix}](${markdownDestination(link.url)})`;
+	return links.map((link, index) => {
+		const suffix = links.length > 1 ? ` ${index + 1}` : ``;
+		const destination = link.url.replace(/\(/gu, `%28`).replace(/\)/gu, `%29`);
+		return `[Embed-friendly link${suffix}](${destination})`;
 	}).join(`\n`);
 }
 
-function buildFixedSocialLinks(content, options) {
-	const links = extractFixedSocialLinks(content, options);
-
-	return {
-		content: formatFixedSocialLinks(links),
-		links,
-	};
+function buildFixedSocialLinks(content, rules, options) {
+	const links = extractFixedSocialLinks(content, rules, options);
+	return { content: formatFixedSocialLinks(links), links };
 }
 
 module.exports = {
 	MAX_FIXED_LINKS,
-	PROVIDERS,
+	RECOMMENDED_FIX_RULES,
 	buildFixedSocialLinks,
 	extractFixedSocialLinks,
 	fixSocialUrl,
 	formatFixedSocialLinks,
+	normalizeDomain,
 };

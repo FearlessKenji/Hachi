@@ -3,6 +3,7 @@
 // Discord autocomplete handlers need at most 25 choices. These helpers filter
 // colors, birthdays, and timezones into Discord-ready choice arrays.
 const { colorAutocompletes } = require(`./colors.js`);
+const { RECOMMENDED_FIX_RULES } = require(`./socialLinks.js`);
 const { TIMEZONE_CHOICES } = require(`./timezones.js`);
 
 const MONTHS = [
@@ -54,6 +55,17 @@ function autocompletes(interaction) {
 
 	if (interaction.commandName === `rules` && focusedOption.name === `color`) {
 		return colorAutocompletes(focused);
+	}
+
+	if (interaction.commandName === `links` && [`source`, `replacement`].includes(focusedOption.name)) {
+		const source = interaction.options.getString(`source`)?.toLowerCase();
+		return RECOMMENDED_FIX_RULES
+			.filter(rule => !source || focusedOption.name === `source` || rule.sourceDomain === source)
+			.map(rule => {
+				const value = focusedOption.name === `source` ? rule.sourceDomain : rule.targetDomain;
+				return { name: `${rule.sourceDomain} → ${rule.targetDomain}`, value };
+			})
+			.filter(choice => choice.value.includes(focused));
 	}
 
 	return [];

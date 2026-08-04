@@ -180,7 +180,8 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Reaction Roles | `/reaction roles add` | Create a reaction-role panel. |
 | Reaction Roles | `Edit Reaction Roles` | Message context menu to edit an existing reaction-role panel. |
 | Reaction Roles | `Convert to Reaction Roles` | Message context menu to convert an existing message into a reaction-role panel. |
-| Utilities | `Fix Social Links` | Profile-installable message context menu for cleaned social links. |
+| Link Management | `/links fix add/remove/enable/disable/status` | Configure automatic embed-friendly domain replacements. |
+| Link Management | `/links block add/remove/enable/disable/status` | Manage AutoMod-backed blocked domains. |
 | Profiles | `/profile set` | Set a per-server profile avatar, banner, bio, or nickname. |
 | Profiles | `/profile clear` | Clear one or all per-server profile fields. |
 | Rules | `/rules` | Post a custom rules embed with optional reaction verification. |
@@ -221,25 +222,29 @@ Use `/setup` to open the setup hub. The hub routes to:
 - Security Reporting
 - Raid Protection
 - Hachi Updates
-- Social Link Fixing
 
 Buttons do not literally invoke slash commands in Discord, but they route to the same panels used by `/stream setup`, `/security setup`, and `/raid setup`.
 
-### Social Link Fixing
+### Link Management
 
-Server administrators can enable automatic social-link fixing from `/setup`.
-When a message contains a supported Instagram, TikTok, or Facebook link, Hachi
-posts one non-pinging reply with up to five cleaned masked links. Duplicate
-destinations are removed after cleaning. Facebook post identifiers stored in
-parameters, such as `fbid` and video `v`, are preserved while tracking data is
-removed.
+Use `/links fix` to configure source-to-replacement domain mappings. Hachi keeps
+the original path, removes query strings and fragments, and posts up to five
+non-pinging masked links. When no mappings exist, `/links fix status` recommends
+Instagram (`instagram.com` → `www.kkinstagram.com`) and TikTok (`tiktok.com` →
+`kktiktok.com`) as starting points; they are not hardcoded.
 
-The profile-installable `Fix Social Links` message context menu uses the same
-rules on demand, even when automatic replies are disabled.
+Facebook is not configured by default. Facebook share links may expose the
+sharer's profile identity, so Hachi warns administrators who explicitly add a
+Facebook mapping.
 
-Facebook support covers common posts, videos, reels, shares, photos, watch
-links, permalinks, and group-post links. Hachi leaves unsupported Facebook
-marketplace, event, story, `share/p`, and `fb.watch` links unchanged.
+Use `/links block` to manage prohibited domains. Enabling blocking creates a
+Hachi-owned Discord AutoMod rule, including subdomains, and displays a private
+rejection notice before a matching message is posted. `/links block status`
+reports the configured domains and whether the managed AutoMod rule is healthy.
+Hachi matches URL and bare-domain tokens, not ordinary words or partial domain
+names. Facebook/Facecot, Instagram/KKInstagram, and TikTok/KKTikTok are treated
+as affiliate pairs: blocking or removing either applies to both domains. Custom
+source and replacement mappings are treated as affiliate pairs as well.
 
 ### Stream Notifications
 

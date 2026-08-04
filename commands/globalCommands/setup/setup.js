@@ -21,7 +21,6 @@ const {
 	saveAnnouncementChannel,
 	sendLatestPatchNotesToGuild,
 } = require(`../../../utils/announcements.js`);
-const { Servers } = require(`../../../database/dbObjects.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
 const SETUP_COLOR = 0xffb020;
@@ -67,13 +66,8 @@ function buildSetupEmbed() {
 				inline: false,
 			},
 			{
-				name: `Social Link Fixing`,
-				value: `Optionally reply with cleaned social links.`,
-				inline: false,
-			},
-			{
 				name: `Other Setup Commands`,
-				value: `Use \`/rules\` for rules verification and \`/reaction roles add\` for reaction-role panels.`,
+				value: `Use \`/links\` for link handling, \`/rules\` for verification, and \`/reaction roles add\` for role panels.`,
 				inline: false,
 			},
 		);
@@ -103,73 +97,7 @@ function buildSetupComponents(setupId) {
 				.setLabel(`Raid Protection`)
 				.setStyle(ButtonStyle.Secondary),
 		),
-		new ActionRowBuilder().addComponents(
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:socialLinks`)
-				.setLabel(`Social Link Fixing`)
-				.setStyle(ButtonStyle.Secondary),
-		),
 	];
-}
-
-function buildSocialLinksContent(enabled, statusMessage = null) {
-	const status = statusMessage ? `\n### ${statusMessage}` : ``;
-
-	return `## Social Link Fixing
-- Automatic replies: ${enabled ? `Enabled` : `Disabled`}
-- Reply style: Non-pinging masked links
-- Maximum corrected links per message: 5
-
-Members can also use the profile-installable \`Fix Social Links\` message context menu.${status}`;
-}
-
-function buildSocialLinksComponents(setupId, enabled) {
-	return [
-		new ActionRowBuilder().addComponents(
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:socialLinksToggle`)
-				.setLabel(enabled ? `Disable` : `Enable`)
-				.setStyle(enabled ? ButtonStyle.Danger : ButtonStyle.Success),
-			new ButtonBuilder()
-				.setCustomId(`setup:${setupId}:home`)
-				.setLabel(`Back to Setup`)
-				.setStyle(ButtonStyle.Secondary),
-		),
-	];
-}
-
-async function getSocialLinkFixingEnabled(guildId) {
-	const server = await Servers.findOne({
-		attributes: [`socialLinkFixingEnabled`],
-		raw: true,
-		where: { guildId },
-	});
-
-	return Boolean(server?.socialLinkFixingEnabled);
-}
-
-async function showSocialLinksPanel(interaction, setupId, statusMessage = null) {
-	const enabled = await getSocialLinkFixingEnabled(interaction.guild.id);
-
-	await interaction.update({
-		content: buildSocialLinksContent(enabled, statusMessage),
-		components: buildSocialLinksComponents(setupId, enabled),
-		embeds: [],
-	});
-}
-
-async function toggleSocialLinkFixing(interaction, setupId) {
-	const enabled = !await getSocialLinkFixingEnabled(interaction.guild.id);
-
-	await Servers.upsert({
-		guildId: interaction.guild.id,
-		socialLinkFixingEnabled: enabled,
-	});
-	await interaction.update({
-		content: buildSocialLinksContent(enabled, `Automatic social-link replies ${enabled ? `enabled` : `disabled`}.`),
-		components: buildSocialLinksComponents(setupId, enabled),
-		embeds: [],
-	});
 }
 
 function buildAnnouncementsContent(settings, statusMessage = null) {
@@ -351,10 +279,6 @@ module.exports = {
 				await routeToCommandPanel(interaction, setupId, `security`);
 			} else if (action === `raid`) {
 				await routeToCommandPanel(interaction, setupId, `raid`);
-			} else if (action === `socialLinks`) {
-				await showSocialLinksPanel(interaction, setupId);
-			} else if (action === `socialLinksToggle`) {
-				await toggleSocialLinkFixing(interaction, setupId);
 			} else if (action === `announcements`) {
 				await showAnnouncementsPanel(interaction, setupId);
 			} else if (action === `announcementChannel`) {
