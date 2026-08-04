@@ -241,8 +241,9 @@ Use `/links block` to manage prohibited domains. Enabling blocking creates a
 Hachi-owned Discord AutoMod rule, including subdomains, and displays a private
 rejection notice before a matching message is posted. `/links block status`
 reports the configured domains and whether the managed AutoMod rule is healthy.
-Hachi matches URL and bare-domain tokens, not ordinary words or partial domain
-names. Facebook/Facecot, Instagram/KKInstagram, and TikTok/KKTikTok are treated
+Hachi uses case-insensitive wildcard matching, so every occurrence of a blocked
+domain is rejected, including masked links, emails, and longer hostnames.
+Facebook/Facecot, Instagram/KKInstagram, and TikTok/KKTikTok are treated
 as affiliate pairs: blocking or removing either applies to both domains. Custom
 source and replacement mappings are treated as affiliate pairs as well.
 

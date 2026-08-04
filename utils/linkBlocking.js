@@ -8,26 +8,18 @@ const { LinkConfigs } = require(`../database/dbObjects.js`);
 
 const RULE_NAME = `Hachi Blocked Links`;
 const BLOCK_MESSAGE = `Your message contained a link that is not allowed on this server.`;
-const MAX_REGEX_PATTERNS = 10;
+const MAX_BLOCKED_DOMAINS = 100;
+const MAX_BLOCKED_DOMAIN_LENGTH = 58;
 const AFFILIATE_DOMAIN_GROUPS = [
 	[`facebook.com`, `facecot.com`],
 	[`instagram.com`, `kkinstagram.com`],
 	[`tiktok.com`, `kktiktok.com`],
 ];
 
-function escapeRegex(value) {
-	return value.replace(/[.*+?^${}()|[\]\\]/gu, `\\$&`);
-}
-
-function domainPattern(domain) {
-	// Wrapper-aware boundaries catch Discord Markdown and sentence punctuation.
-	// Dots are accepted only as terminal punctuation so blocked.example.evil
-	// cannot be mistaken for the blocked hostname.
-	const wrapper = `[\\s>)\\]}"'|,*_~;!?]`;
-	const prefix = `(?:^|[\\s<({\\["'|*_~,:;!?])`;
-	const suffix = `(?:[/:?#]|$|${wrapper}|\\.(?:$|${wrapper}))`;
-
-	return `(?i)${prefix}(?:https?://)?(?:[^\\s./]+\\.)*${escapeRegex(domain)}${suffix}`;
+function domainKeyword(domain) {
+	// AutoMod wildcards intentionally block every occurrence, including masked
+	// links, emails, and deceptive longer hostnames containing the domain.
+	return `*${domain}*`;
 }
 
 function expandAffiliateDomains(domain, fixRules = []) {
@@ -75,8 +67,11 @@ async function fetchManagedRule(guild, config) {
 }
 
 async function syncBlockRule(guild, domains, enabled) {
-	if (domains.length > MAX_REGEX_PATTERNS) {
-		throw new Error(`Discord AutoMod supports at most ${MAX_REGEX_PATTERNS} blocked domains in this configuration.`);
+	if (domains.length > MAX_BLOCKED_DOMAINS) {
+		throw new Error(`Discord AutoMod supports at most ${MAX_BLOCKED_DOMAINS} blocked domains in this configuration.`);
+	}
+	if (domains.some(domain => domain.length > MAX_BLOCKED_DOMAIN_LENGTH)) {
+		throw new Error(`Discord AutoMod wildcard domains must be ${MAX_BLOCKED_DOMAIN_LENGTH} characters or fewer.`);
 	}
 
 	const config = await getConfig(guild.id);
@@ -96,7 +91,7 @@ async function syncBlockRule(guild, domains, enabled) {
 		eventType: AutoModerationRuleEventType.MessageSend,
 		name: RULE_NAME,
 		reason: `Synchronize Hachi's blocked-link domains`,
-		triggerMetadata: { regexPatterns: domains.map(domainPattern) },
+		triggerMetadata: { keywordFilter: domains.map(domainKeyword) },
 		triggerType: AutoModerationRuleTriggerType.Keyword,
 	};
 
@@ -114,9 +109,10 @@ async function syncBlockRule(guild, domains, enabled) {
 module.exports = {
 	AFFILIATE_DOMAIN_GROUPS,
 	BLOCK_MESSAGE,
-	MAX_REGEX_PATTERNS,
+	MAX_BLOCKED_DOMAINS,
+	MAX_BLOCKED_DOMAIN_LENGTH,
 	RULE_NAME,
-	domainPattern,
+	domainKeyword,
 	expandAffiliateDomains,
 	syncBlockRule,
 };
