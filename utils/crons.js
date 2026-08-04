@@ -10,6 +10,7 @@ const { ActivityType } = require(`discord.js`);
 const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
 const { checkBirthdays } = require(`./birthdays.js`);
 const { syncAllTwitchRoles } = require(`../modules/twitchRoles.js`);
+const { syncAllLinkBlockRules } = require(`./linkBlocking.js`);
 
 module.exports = (client) => {
 	let activityIndex = -1;
@@ -55,6 +56,7 @@ module.exports = (client) => {
 				updateTwitch(),
 				updateKick(),
 				syncAllTwitchRoles(client),
+				syncAllLinkBlockRules(client),
 			]);
 		}),
 	};

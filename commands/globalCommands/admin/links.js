@@ -11,6 +11,7 @@ const {
 	expandAffiliateDomains,
 	MAX_BLOCKED_DOMAIN_LENGTH,
 	MAX_BLOCKED_DOMAINS,
+	reconcileBlockDomains,
 	syncBlockRule,
 } = require(`../../../utils/linkBlocking.js`);
 const { normalizeDomain, RECOMMENDED_FIX_RULES } = require(`../../../utils/socialLinks.js`);
@@ -22,22 +23,31 @@ async function configFor(guildId) {
 	return config;
 }
 
-function domainOption(option, name, description, maxLength = 180) {
+function domainOption(option, name, description, maxLength = MAX_BLOCKED_DOMAIN_LENGTH) {
 	return option.setName(name).setDescription(description).setRequired(true).setMaxLength(maxLength);
 }
 
 async function setEnabled(interaction, feature, enabled) {
 	const config = await configFor(interaction.guild.id);
 	if (feature === `block`) {
-		const rules = await LinkBlockRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
-		if (enabled && !rules.length) {
+		const domains = await reconcileBlockDomains(interaction.guild.id);
+		if (enabled && !domains.length) {
 			throw new Error(`Add at least one blocked domain before enabling link blocking.`);
 		}
-		await syncBlockRule(interaction.guild, rules.map(rule => rule.domain), enabled);
+		await syncBlockRule(interaction.guild, domains, enabled);
 	} else {
 		await config.update({ fixingEnabled: enabled });
 	}
 	await interaction.reply({ content: `Link ${feature === `fix` ? `fixing` : `blocking`} is now **${enabled ? `enabled` : `disabled`}**.`, flags: MessageFlags.Ephemeral });
+}
+
+async function reconcileAfterFixChange(interaction) {
+	const config = await configFor(interaction.guild.id);
+	const domains = await reconcileBlockDomains(interaction.guild.id);
+
+	if (config.blockingEnabled) {
+		await syncBlockRule(interaction.guild, domains, true);
+	}
 }
 
 async function addFix(interaction) {
@@ -51,6 +61,7 @@ async function addFix(interaction) {
 	}
 
 	await LinkFixRules.upsert({ guildId: interaction.guild.id, sourceDomain, targetDomain, createdBy: interaction.user.id, createdAt: new Date() });
+	await reconcileAfterFixChange(interaction);
 	const facebookWarning = sourceDomain === `facebook.com` || sourceDomain.endsWith(`.facebook.com`) ?
 		`\n\n⚠️ Facebook share links may disclose the sharer's profile identity. This mapping is not considered privacy-safe.` :
 		``;
@@ -63,6 +74,9 @@ async function removeFix(interaction) {
 		throw new Error(`Source must be a plain domain name.`);
 	}
 	const removed = await LinkFixRules.destroy({ where: { guildId: interaction.guild.id, sourceDomain } });
+	if (removed) {
+		await reconcileAfterFixChange(interaction);
+	}
 	await interaction.reply({ content: removed ? `Removed the **${sourceDomain}** mapping.` : `No mapping exists for **${sourceDomain}**.`, flags: MessageFlags.Ephemeral });
 }
 
@@ -91,27 +105,33 @@ async function addBlock(interaction) {
 		throw new Error(`Blocked domains and their affiliates must be ${MAX_BLOCKED_DOMAIN_LENGTH} characters or fewer.`);
 	}
 	const existingRules = await LinkBlockRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
-	const existingDomains = new Set(existingRules.map(rule => rule.domain));
-	const domainsToAdd = affiliateDomains.filter(candidate => !existingDomains.has(candidate));
-	if (!domainsToAdd.length) {
+	const existingRule = existingRules.find(rule => rule.domain === domain);
+	if (existingRule && !existingRule.isGenerated) {
 		return interaction.reply({ content: `**${domain}** and its known affiliates are already blocked.`, flags: MessageFlags.Ephemeral });
 	}
-	if (existingDomains.size + domainsToAdd.length > MAX_BLOCKED_DOMAINS) {
+	const rootDomains = existingRules.filter(rule => !rule.isGenerated).map(rule => rule.domain);
+	const expectedDomains = new Set([...rootDomains, domain].flatMap(root => expandAffiliateDomains(root, fixRules)));
+	if (expectedDomains.size > MAX_BLOCKED_DOMAINS) {
 		throw new Error(`This server has reached Discord's ${MAX_BLOCKED_DOMAINS}-domain AutoMod limit.`);
 	}
-	await LinkBlockRules.bulkCreate(domainsToAdd.map(candidate => ({
-		createdAt: new Date(),
-		createdBy: interaction.user.id,
-		domain: candidate,
-		guildId: interaction.guild.id,
-	})));
+	if (existingRule) {
+		await LinkBlockRules.update({ createdBy: interaction.user.id, isGenerated: false }, { where: { id: existingRule.id } });
+	} else {
+		await LinkBlockRules.create({
+			createdAt: new Date(),
+			createdBy: interaction.user.id,
+			domain,
+			guildId: interaction.guild.id,
+			isGenerated: false,
+		});
+	}
+	const domains = await reconcileBlockDomains(interaction.guild.id);
 	const config = await configFor(interaction.guild.id);
 	if (config.blockingEnabled) {
-		const rules = await LinkBlockRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
-		await syncBlockRule(interaction.guild, rules.map(rule => rule.domain), true);
+		await syncBlockRule(interaction.guild, domains, true);
 	}
 	await interaction.reply({
-		content: `Blocked: ${affiliateDomains.map(candidate => `**${candidate}**`).join(`, `)}.`,
+		content: `Blocked anywhere in a message: ${affiliateDomains.map(candidate => `**${candidate}**`).join(`, `)}.`,
 		flags: MessageFlags.Ephemeral,
 	});
 }
@@ -128,9 +148,9 @@ async function removeBlock(interaction) {
 		where: { domain: affiliateDomains, guildId: interaction.guild.id },
 	});
 	const config = await configFor(interaction.guild.id);
+	const domains = await reconcileBlockDomains(interaction.guild.id);
 	if (removed && config.blockingEnabled) {
-		const rules = await LinkBlockRules.findAll({ raw: true, where: { guildId: interaction.guild.id } });
-		await syncBlockRule(interaction.guild, rules.map(rule => rule.domain), true);
+		await syncBlockRule(interaction.guild, domains, true);
 	}
 	await interaction.reply({
 		content: removed ?
@@ -152,7 +172,11 @@ async function blockStatus(interaction) {
 			sync = `Needs repair`;
 		}
 	}
-	const domains = rules.length ? rules.map(rule => `• ${rule.domain} (matched anywhere)`).join(`\n`) : `No blocked domains.`;
+	const domains = rules.length ?
+		rules.map(rule =>
+			`• \`*${rule.domain}*\`${rule.isGenerated ? ` (automatic affiliate)` : ``}`,
+		).join(`\n`) :
+		`No blocked domains.`;
 	const embed = new EmbedBuilder()
 		.setColor(COLOR)
 		.setTitle(`Link Blocking`)

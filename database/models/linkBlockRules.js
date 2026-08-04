@@ -3,6 +3,7 @@ module.exports = (sequelize, DataTypes) => sequelize.define(`linkBlockRules`, {
 	id: { type: DataTypes.INTEGER, primaryKey: true, autoIncrement: true },
 	guildId: { type: DataTypes.STRING, allowNull: false },
 	domain: { type: DataTypes.STRING, allowNull: false },
+	isGenerated: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false },
 	createdBy: { type: DataTypes.STRING, allowNull: true },
 	createdAt: { type: DataTypes.DATE, allowNull: false },
 }, {
