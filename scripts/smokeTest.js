@@ -1318,9 +1318,10 @@ function validatePureHelpers() {
 
 	assert(fixedSocialLinks.links.length === 2, `Social-link fixing did not remove a canonical duplicate.`);
 	assert(
-		fixedSocialLinks.content.includes(`https://kktiktok.com/`) &&
-		fixedSocialLinks.content.includes(`https://www.kkinstagram.com/`) &&
-		!fixedSocialLinks.content.includes(`](`),
+		fixedSocialLinks.content === [
+			`https://kktiktok.com/@example/video/123`,
+			`https://www.kkinstagram.com/reel/DbAO3edgEWh/`,
+		].join(`\n`),
 		`Fixed social links did not expose their replacement URLs.`,
 	);
 	const customFixedLinks = buildFixedSocialLinks(
@@ -1328,9 +1329,10 @@ function validatePureHelpers() {
 		[{ sourceDomain: `example.com`, targetDomain: `embed.example.net` }],
 	);
 	assert(
-		customFixedLinks.content.includes(`https://embed.example.net/one`) &&
-		customFixedLinks.content.includes(`https://embed.example.net/two`) &&
-		!customFixedLinks.content.includes(`](`),
+		customFixedLinks.content === [
+			`https://embed.example.net/one`,
+			`https://embed.example.net/two`,
+		].join(`\n`),
 		`Custom fixed links did not expose their replacement URLs.`,
 	);
 	assert(normalizeDomain(`Instagram.com`) === `instagram.com`, `Domain normalization failed.`);

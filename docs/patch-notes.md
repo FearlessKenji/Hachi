@@ -6,6 +6,10 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+### Reliability
+
+- Strengthened automated validation for generated replacement-link destinations.
+
 ### Link Fixing
 
 - Fixed-link replies now contain only the full replacement URLs, without labels
