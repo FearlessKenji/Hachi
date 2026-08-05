@@ -87,11 +87,7 @@ function extractFixedSocialLinks(content, rules, { limit = MAX_FIXED_LINKS } = {
 }
 
 function formatFixedSocialLinks(links) {
-	return links.map((link, index) => {
-		const suffix = links.length > 1 ? ` ${index + 1}` : ``;
-		const destination = link.url.replace(/\(/gu, `%28`).replace(/\)/gu, `%29`);
-		return `[Embed-friendly link${suffix}](${destination})`;
-	}).join(`\n`);
+	return links.map(link => link.url).join(`\n`);
 }
 
 function buildFixedSocialLinks(content, rules, options) {

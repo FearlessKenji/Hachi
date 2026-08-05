@@ -6,6 +6,11 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+### Link Fixing
+
+- Fixed-link replies now contain only the full replacement URLs, without labels
+  or masked Markdown destinations.
+
 # v3.5.0 - 2026-08-03
 
 ### Security

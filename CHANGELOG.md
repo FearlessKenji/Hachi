@@ -4,6 +4,10 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Removed labels and masked Markdown destinations from automatic fixed-link replies so they contain only fully visible replacement URLs.
+
 ## v3.5.0 - 2026-08-03
 
 ### Added
