@@ -229,7 +229,7 @@ Buttons do not literally invoke slash commands in Discord, but they route to the
 
 Use `/links fix` to configure source-to-replacement domain mappings. Hachi keeps
 the original path, removes query strings and fragments, and posts up to five
-non-pinging masked links. When no mappings exist, `/links fix status` recommends
+non-pinging links with fully visible destination URLs. When no mappings exist, `/links fix status` recommends
 Instagram (`instagram.com` → `www.kkinstagram.com`) and TikTok (`tiktok.com` →
 `kktiktok.com`) as starting points; they are not hardcoded.
 
