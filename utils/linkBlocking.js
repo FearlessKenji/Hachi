@@ -4,7 +4,9 @@ const {
 	AutoModerationRuleEventType,
 	AutoModerationRuleTriggerType,
 } = require(`discord.js`);
-const { LinkConfigs } = require(`../database/dbObjects.js`);
+const { Op } = require(`sequelize`);
+const { LinkBlockRules, LinkConfigs, LinkFixRules } = require(`../database/dbObjects.js`);
+const { error } = require(`./writeLog.js`);
 
 const RULE_NAME = `Hachi Blocked Links`;
 const BLOCK_MESSAGE = `Your message contained a link that is not allowed on this server.`;
@@ -106,6 +108,69 @@ async function syncBlockRule(guild, domains, enabled) {
 	return rule;
 }
 
+async function reconcileBlockDomains(guildId) {
+	const [blockRules, fixRules] = await Promise.all([
+		LinkBlockRules.findAll({ raw: true, where: { guildId } }),
+		LinkFixRules.findAll({ raw: true, where: { guildId } }),
+	]);
+	const roots = blockRules.filter(rule => !rule.isGenerated);
+	const expected = new Set(roots.flatMap(rule => expandAffiliateDomains(rule.domain, fixRules)));
+	const existing = new Map(blockRules.map(rule => [rule.domain, rule]));
+	const staleGeneratedIds = blockRules
+		.filter(rule => rule.isGenerated && !expected.has(rule.domain))
+		.map(rule => rule.id);
+
+	if (staleGeneratedIds.length) {
+		await LinkBlockRules.destroy({ where: { id: { [Op.in]: staleGeneratedIds } } });
+	}
+
+	const missingGenerated = [...expected].filter(domain => !existing.has(domain));
+	if (missingGenerated.length) {
+		await LinkBlockRules.bulkCreate(missingGenerated.map(domain => ({
+			createdAt: new Date(),
+			createdBy: null,
+			domain,
+			guildId,
+			isGenerated: true,
+		})));
+	}
+
+	return [...expected].sort();
+}
+
+async function reconcileGuildBlockRule(guild) {
+	const config = await LinkConfigs.findOne({ where: { guildId: guild.id } });
+	if (!config?.blockingEnabled) {
+		return { status: `disabled` };
+	}
+
+	const domains = await reconcileBlockDomains(guild.id);
+	await syncBlockRule(guild, domains, true);
+	return { domains: domains.length, status: `synchronized` };
+}
+
+async function syncAllLinkBlockRules(client) {
+	const configs = await LinkConfigs.findAll({ raw: true, where: { blockingEnabled: true } });
+	const results = [];
+
+	for (const config of configs) {
+		const guild = client.guilds.cache.get(config.guildId);
+		if (!guild) {
+			continue;
+		}
+		try {
+			results.push(await reconcileGuildBlockRule(guild));
+		} catch (err) {
+			error(`Failed to synchronize a managed link AutoMod rule.`, err, {
+				meta: { guildId: guild.id },
+				module: `link-blocking`,
+			});
+		}
+	}
+
+	return results;
+}
+
 module.exports = {
 	AFFILIATE_DOMAIN_GROUPS,
 	BLOCK_MESSAGE,
@@ -114,5 +179,8 @@ module.exports = {
 	RULE_NAME,
 	domainKeyword,
 	expandAffiliateDomains,
+	reconcileBlockDomains,
+	reconcileGuildBlockRule,
+	syncAllLinkBlockRules,
 	syncBlockRule,
 };

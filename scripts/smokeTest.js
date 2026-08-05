@@ -1280,7 +1280,12 @@ function validatePureHelpers() {
 		RECOMMENDED_FIX_RULES,
 	} = requireFresh(`utils`, `socialLinks.js`);
 	const { findKickVodUrl } = requireFresh(`modules`, `getKick.js`);
-	const { domainKeyword, expandAffiliateDomains } = requireFresh(`utils`, `linkBlocking.js`);
+	const {
+		domainKeyword,
+		expandAffiliateDomains,
+		MAX_BLOCKED_DOMAINS,
+		syncAllLinkBlockRules,
+	} = requireFresh(`utils`, `linkBlocking.js`);
 	const { isSecurityPolicyBlock } = requireFresh(`modules`, `kickVods.js`);
 	const {
 		getEventSubWebSocketUrlRejectionReason,
@@ -1321,6 +1326,8 @@ function validatePureHelpers() {
 	assert(normalizeDomain(`https://instagram.com`) === null, `Domain normalization accepted a URL.`);
 	assert(normalizeDomain(`127.0.0.1`) === null, `Domain normalization accepted an IPv4 address.`);
 	assert(domainKeyword(`blocked.example`) === `*blocked.example*`, `Blocked-domain wildcard was not generated correctly.`);
+	assert(MAX_BLOCKED_DOMAINS === 100, `Blocked-domain keyword capacity does not match Discord's limit.`);
+	assert(typeof syncAllLinkBlockRules === `function`, `Periodic link-block synchronization helper is missing.`);
 	assert(
 		expandAffiliateDomains(`www.instagram.com`).join(`|`) === `instagram.com|kkinstagram.com`,
 		`Instagram affiliate blocking did not include its embed provider.`,

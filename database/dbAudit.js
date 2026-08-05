@@ -211,6 +211,7 @@ const EXPECTED_SCHEMA = [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
 			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
 			column(`domain`, `VARCHAR(255)`),
+			column(`isGenerated`, `TINYINT(1)`, { defaultValue: `0` }),
 			column(`createdBy`, `VARCHAR(255)`, { nullable: true }),
 			column(`createdAt`, `DATETIME`),
 		],
