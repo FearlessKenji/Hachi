@@ -1,6 +1,6 @@
 # Hachi
 
-Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, fix supported social-media links, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
+Hachi is a Discord bot for Twitch and Kick live notifications. It can post when streamers go live, update live messages while streams continue, manage private Modmail tickets, fix supported social-media links, manage birthdays, create reaction-role panels, post rules embeds, monitor public application-command responses, provide raid-protection tools, and provide small utility commands.
 
 Hachi is managed through `HachiGen.exe`, a separate windowed setup and runtime manager available from the [HachiGen releases](https://github.com/FearlessKenji/HachiGen/releases).
 
@@ -20,6 +20,7 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 - Rules embeds with optional reaction verification
 - Optional application command monitoring with app/channel whitelists
 - Configurable raid protection with quarantine, join-spike alerts, spam evidence, and incident reports
+- Private Modmail tickets with role-based access, transcripts, storage quotas, and delayed cleanup
 - Optional non-pinging replies with cleaned social-media links
 - Permission-aware `/help` generated from command metadata
 - Timestamp and dice rolling utility commands
@@ -144,6 +145,9 @@ Bot tokens, API secrets, local config, logs, and databases are ignored by Git. D
 | Help | `/help` | Show a permission-aware command list. |
 | Help | `/help public:true` | Moderator-only public help flow with a category picker. |
 | Setup | `/setup` | Open the setup hub for stream, security, and raid configuration. |
+| Modmail | `/modmail setup` | Create the managed entry channel and configure ticket roles and storage. |
+| Modmail | `/modmail status` | Show Modmail channels, roles, numbering, and storage usage. |
+| Modmail | `/modmail stored` | List stored ticket transcripts. |
 | Streams | `/stream setup` | Configure Twitch/Kick notification channels and roles. |
 | Streams | `/stream add` | Add or edit a Twitch/Kick streamer entry. |
 | Streams | `/stream list` | List streamers configured for the server. |
@@ -224,6 +228,32 @@ Use `/setup` to open the setup hub. The hub routes to:
 - Hachi Updates
 
 Buttons do not literally invoke slash commands in Discord, but they route to the same panels used by `/stream setup`, `/security setup`, and `/raid setup`.
+
+## Modmail
+
+Run `/modmail setup` with Manage Server permission. Hachi creates a dedicated
+`#modmail` channel and a `Modmail Tickets` category. The entry channel contains
+only this panel:
+
+- **Title:** Modmail
+- **Description:** To create a ticket, press 📩
+- **Footer:** A moderator will respond when available.
+
+Hachi denies chat, reactions, and thread creation for `@everyone` in the entry
+channel. It deletes every message other than the active panel and recreates the
+panel if it is manually removed.
+
+Setup accepts up to 25 ping roles and 25 access-only roles. Ping roles are
+automatically included in ticket access. New tickets use per-server sequential
+names such as `ticket-0001`; a member can have only one open ticket at a time.
+
+Only configured staff or administrators can use ticket controls, and the ticket
+opener cannot close their own ticket. Closing requires confirmation, renames the
+channel, and removes the opener's access unless they hold an allowed or pinged
+role. The closed panel contains Transcript, Open, Delete, and Store buttons.
+Unstored closed channels are deleted after 15 days, including across restarts.
+Storing a ticket saves its text transcript, cancels automatic deletion, and uses
+one slot from the configured quota. Hachi never silently evicts stored tickets.
 
 ### Link Management
 

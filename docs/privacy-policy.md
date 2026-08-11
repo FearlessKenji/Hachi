@@ -84,6 +84,14 @@ When reaction-role features are used, Hachi may store:
 
 This information is used to create, edit, maintain, and clean up reaction-role panels and to add or remove roles when users react.
 
+### Modmail Information
+
+When a server enables Modmail, Hachi stores ticket numbers, Discord server,
+channel, user, and moderator IDs, ticket status and timestamps, and the configured
+role and channel IDs needed to control access. Staff can choose to store a plain-
+text transcript containing messages and attachment links from that ticket.
+Hachi does not archive Modmail attachment files locally.
+
 ### Command and Interaction Data
 
 When you use Hachi commands or interact with bot buttons, menus, context menus, or reactions, Discord sends Hachi the command name, command options, user context, server context, and related interaction data needed to respond.
@@ -136,6 +144,7 @@ Hachi uses collected information to:
 - Create, edit, convert, maintain, and clean up reaction-role panels
 - Add or remove Discord roles when users interact with reaction-role panels
 - Track operational state needed to update bot messages
+- Create private Modmail channels and retain ticket transcripts selected by authorized server staff
 - Maintain bot reliability and security
 - Diagnose errors and operational issues
 - Enforce applicable terms, protect users, and prevent abuse
@@ -164,6 +173,7 @@ Hachi keeps information only as long as reasonably needed for the purposes descr
 - Twitch role-sync broadcaster settings, role mappings, and user links are kept until removed by an administrator or no longer needed for role sync.
 - Birthday entries are kept until the user removes them, the server disables the feature, or the data is no longer needed.
 - Reaction-role panel data is kept while the panel is active and may be deleted or disabled when the related Discord message or channel is deleted.
+- Unstored Modmail ticket channels are scheduled for deletion 15 days after closure. Authorized server staff can store selected ticket transcripts up to the server's configured quota; stored transcripts remain until staff delete them or the server data is removed.
 - Operational logs are archived after about 1 day and archived logs are deleted after about 30 days, unless a longer period is needed for security, debugging, abuse prevention, or legal compliance.
 
 Some data may also remain in Discord, GitHub, Twitch, Kick, backups, or other third-party systems according to their own retention policies.

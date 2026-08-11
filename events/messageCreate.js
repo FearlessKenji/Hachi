@@ -12,6 +12,7 @@ const {
 const { CommandMonitorWhitelists, LinkConfigs, LinkFixRules, Servers } = require(`../database/dbObjects.js`);
 const { observeMessageForRaid } = require(`../utils/raidProtection.js`);
 const { buildFixedSocialLinks } = require(`../utils/socialLinks.js`);
+const { enforceEntryChannel } = require(`../utils/modmail.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 
 const COMMAND_MONITOR_COLOR = 0xffb020;
@@ -504,6 +505,14 @@ module.exports = {
 	name: Events.MessageCreate,
 
 	async execute(message) {
+		try {
+			if (await enforceEntryChannel(message)) {
+				return;
+			}
+		} catch (err) {
+			error(`Failed to enforce the managed Modmail entry channel:`, err, { module: `modmail` });
+		}
+
 		const metadata = getInteractionMetadata(message);
 
 		try {

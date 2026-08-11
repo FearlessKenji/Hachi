@@ -12,6 +12,8 @@ const {
 	BirthdayUsers,
 	Channels,
 	CommandMonitorWhitelists,
+	ModmailConfigs,
+	ModmailTickets,
 	RaidConfigs,
 	RaidIncidentFiles,
 	RaidIncidentMessages,
@@ -238,6 +240,8 @@ async function deleteGuildScopedRows(guildIds) {
 		await TwitchRoleLinks.destroy({ transaction, where: guildWhere });
 		await TwitchRoleConfigs.destroy({ transaction, where: guildWhere });
 		await CommandMonitorWhitelists.destroy({ transaction, where: guildWhere });
+		await ModmailTickets.destroy({ transaction, where: guildWhere });
+		await ModmailConfigs.destroy({ transaction, where: guildWhere });
 		await BirthdayCards.destroy({ transaction, where: guildWhere });
 		await BirthdayConfigs.destroy({ transaction, where: guildWhere });
 		await BirthdayUsers.destroy({ transaction, where: guildWhere });

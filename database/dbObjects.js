@@ -94,6 +94,8 @@ const RaidIncidentFiles = require(`./models/raidIncidentFiles.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
+const ModmailConfigs = require(`./models/modmailConfigs.js`)(sequelize, Sequelize.DataTypes);
+const ModmailTickets = require(`./models/modmailTickets.js`)(sequelize, Sequelize.DataTypes);
 
 // Live Notification Associations
 // Channel rows are tied to a server record, but server deletion is restricted so
@@ -334,6 +336,13 @@ RaidIncidentFiles.belongsTo(RaidIncidents, {
 	onUpdate: `CASCADE`,
 });
 
+// Modmail configuration is guild-scoped and owns an independently retained
+// ticket ledger. Ticket rows remain queryable after their channels are removed.
+Servers.hasOne(ModmailConfigs, { foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
+ModmailConfigs.belongsTo(Servers, { foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
+Servers.hasMany(ModmailTickets, { foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
+ModmailTickets.belongsTo(Servers, { foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
+
 module.exports = {
 	sequelize,
 	Servers,
@@ -356,4 +365,6 @@ module.exports = {
 	RaidIncidentUsers,
 	RaidIncidentMessages,
 	RaidIncidentFiles,
+	ModmailConfigs,
+	ModmailTickets,
 };

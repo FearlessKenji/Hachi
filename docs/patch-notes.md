@@ -6,9 +6,25 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
-### Reliability
+# v3.6.0 - 2026-08-11 - Special Delivery!
 
-- Strengthened automated validation for generated replacement-link destinations.
+### Modmail
+
+- Server managers can run `/modmail setup` to create a ready-to-use `#modmail`
+  entrance and a private category for support tickets.
+- Members open tickets with the **📩 Create Ticket** button. Hachi numbers each
+  private channel in order, beginning with `ticket-0001`.
+- Servers can choose several roles to notify and additional roles that may read
+  and answer tickets. Roles selected for notifications receive access
+  automatically.
+- Only the Modmail panel belongs in `#modmail`: members cannot chat, react, or
+  start threads there, and Hachi clears away other messages.
+- Ticket openers cannot close their own requests. A staff member must confirm
+  closure, after which the opener loses access unless they also belong to the
+  configured support team.
+- Closed tickets can be reopened, deleted, downloaded as a transcript, or stored
+  for later reference. Ordinary closed channels are removed after 15 days;
+  storing one keeps it available and counts toward the server's chosen limit.
 
 ### Link Fixing
 

@@ -1503,6 +1503,29 @@ function validateGitHygiene() {
 	}
 }
 
+function validateModmailContracts() {
+	const command = requireFresh(`commands`, `globalCommands`, `admin`, `modmail.js`);
+	const { buildEntryPanel, getRoleIds, ticketName } = requireFresh(`utils`, `modmail.js`);
+	const commandJson = command.data.toJSON();
+	const panel = buildEntryPanel();
+	const embed = panel.embeds[0].toJSON();
+	const button = panel.components[0].components[0].toJSON();
+	const roles = getRoleIds({
+		allowedRoleIdsJson: JSON.stringify([`allowed`, `shared`]),
+		pingRoleIdsJson: JSON.stringify([`ping`, `shared`]),
+	});
+
+	assert(commandJson.name === `modmail`, `Modmail command name is invalid.`);
+	assert(commandJson.options.some(option => option.name === `setup`), `Modmail setup subcommand is missing.`);
+	assert(commandJson.options.some(option => option.name === `status`), `Modmail status subcommand is missing.`);
+	assert(embed.title === `Modmail`, `Modmail entry panel title changed unexpectedly.`);
+	assert(embed.description === `To create a ticket, press 📩`, `Modmail entry panel description changed unexpectedly.`);
+	assert(embed.footer?.text === `A moderator will respond when available.`, `Modmail entry panel footer changed unexpectedly.`);
+	assert(button.custom_id === `modmail:create`, `Modmail create-ticket button is not persistently routable.`);
+	assert(ticketName(1) === `ticket-0001`, `Modmail ticket numbering format is invalid.`);
+	assert(roles.effectiveRoleIds.join(`,`) === `allowed,shared,ping`, `Ping roles were not merged into effective Modmail access.`);
+}
+
 async function main() {
 	let dbObjects = null;
 
@@ -1516,6 +1539,7 @@ async function main() {
 	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
 	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
+	await test(`Modmail panels, numbering, and role access expose valid contracts`, validateModmailContracts);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);
 	await test(`Hachi command surfaces expose valid contracts`, validateHachiCommandSurfaces);

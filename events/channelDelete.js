@@ -3,7 +3,7 @@
 // Several features store channel IDs. This cleanup path prevents deleted
 // channels from being reused as notification, birthday, rules, or report targets.
 const { Events } = require(`discord.js`);
-const { BirthdayConfigs, RulesVerificationMessages, Servers } = require(`../database/dbObjects.js`);
+const { BirthdayConfigs, ModmailConfigs, ModmailTickets, RulesVerificationMessages, Servers } = require(`../database/dbObjects.js`);
 const { disablePanelsForDeletedChannel } = require(`../utils/reactionRoles.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 
@@ -38,6 +38,24 @@ module.exports = {
 					},
 				},
 			);
+			const clearedModmailEntries = await ModmailConfigs.update(
+				{ entryChannelId: null, panelMessageId: null },
+				{ where: { guildId: channel.guild.id, entryChannelId: channel.id } },
+			);
+			const clearedModmailCategories = await ModmailConfigs.update(
+				{ ticketCategoryId: null },
+				{ where: { guildId: channel.guild.id, ticketCategoryId: channel.id } },
+			);
+			const removedTickets = await ModmailTickets.findAll({
+				where: { guildId: channel.guild.id, channelId: channel.id },
+			});
+			for (const ticket of removedTickets) {
+				await ticket.update({
+					channelId: null,
+					deleteAt: null,
+					status: ticket.storedAt ? `stored` : `deleted`,
+				});
+			}
 
 			if (removedBirthdayConfigs) {
 				info(`Removed ${removedBirthdayConfigs} birthday config(s) after channel deletion ${channel.id}.`);
@@ -53,6 +71,10 @@ module.exports = {
 
 			if (removedAnnouncementChannels[0]) {
 				info(`Cleared ${removedAnnouncementChannels[0]} Hachi announcement channel setting(s) after channel deletion ${channel.id}.`);
+			}
+
+			if (clearedModmailEntries[0] || clearedModmailCategories[0] || removedTickets.length) {
+				info(`Reconciled Modmail state after channel deletion ${channel.id}.`);
 			}
 		} catch (err) {
 			error(`Failed to handle channel deletion cleanup:`, err);
