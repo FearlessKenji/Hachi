@@ -363,6 +363,44 @@ const EXPECTED_SCHEMA = [
 			index(`raidIncidentFilesMessage`, [`messageId`]),
 		],
 	},
+	{
+		name: `modmailConfigs`,
+		columns: [
+			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`entryChannelId`, `VARCHAR(255)`, { nullable: true }),
+			column(`panelMessageId`, `VARCHAR(255)`, { nullable: true }),
+			column(`ticketCategoryId`, `VARCHAR(255)`, { nullable: true }),
+			column(`pingRoleIdsJson`, `TEXT`, { defaultValue: `'[]'` }),
+			column(`allowedRoleIdsJson`, `TEXT`, { defaultValue: `'[]'` }),
+			column(`maxStoredTickets`, `INTEGER`, { defaultValue: `50` }),
+			column(`nextTicketNumber`, `INTEGER`, { defaultValue: `1` }),
+		],
+		indexes: [],
+	},
+	{
+		name: `modmailTickets`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`ticketNumber`, `INTEGER`),
+			column(`channelId`, `VARCHAR(255)`, { nullable: true }),
+			column(`openerId`, `VARCHAR(255)`),
+			column(`status`, `VARCHAR(255)`, { defaultValue: `'open'` }),
+			column(`openedAt`, `DATETIME`),
+			column(`closedAt`, `DATETIME`, { nullable: true }),
+			column(`closedBy`, `VARCHAR(255)`, { nullable: true }),
+			column(`deleteAt`, `DATETIME`, { nullable: true }),
+			column(`storedAt`, `DATETIME`, { nullable: true }),
+			column(`storedBy`, `VARCHAR(255)`, { nullable: true }),
+			column(`transcript`, `TEXT`, { nullable: true }),
+		],
+		indexes: [
+			index(`modmailTicketsGuildNumber`, [`guildId`, `ticketNumber`], { unique: true }),
+			index(`modmailTicketsGuildOpenerStatus`, [`guildId`, `openerId`, `status`]),
+			index(`modmailTicketsChannel`, [`channelId`], { unique: true }),
+			index(`modmailTicketsStatusDeleteAt`, [`status`, `deleteAt`]),
+		],
+	},
 ];
 
 const LEGACY_INTERNAL_TABLES = [`schemaMigrations`];

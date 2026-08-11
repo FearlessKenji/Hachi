@@ -6,6 +6,7 @@ const { Events } = require(`discord.js`);
 const { ReactionRoleMessages, RulesVerificationMessages } = require(`../database/dbObjects.js`);
 const { deletePanelRecords } = require(`../utils/reactionRoles.js`);
 const { error, info } = require(`../utils/writeLog.js`);
+const { restoreDeletedPanel } = require(`../utils/modmail.js`);
 
 module.exports = {
 	name: Events.MessageDelete,
@@ -14,6 +15,10 @@ module.exports = {
 		try {
 			if (!message.guildId) {
 				return;
+			}
+
+			if (await restoreDeletedPanel(message)) {
+				info(`Restored deleted Modmail panel ${message.id} in guild ${message.guildId}.`);
 			}
 
 			const panel = await ReactionRoleMessages.findOne({

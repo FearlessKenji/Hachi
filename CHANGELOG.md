@@ -4,6 +4,17 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.6.0 - 2026-08-11 - Special Delivery!
+
+### Added
+
+- Updated the project version to `3.6.0`.
+- Added `/modmail setup`, `/modmail status`, stored-ticket listing, and stored-transcript deletion.
+- Added a Hachi-managed `#modmail` entry channel with a persistent ticket button, enforced no-chat/no-reaction permissions, automatic panel repair, and cleanup of every non-panel message.
+- Added incrementing private `ticket-0001` channels with separately configured ping and access roles; ping roles automatically receive access.
+- Added staff-only close confirmation, opener access removal, reopen/delete/transcript/store controls, and restart-safe deletion 15 days after closure.
+- Added configurable stored-ticket quotas and durable plain-text ticket transcripts.
+
 ### Fixed
 
 - Replaced partial URL assertions in social-link smoke coverage with exact output validation so security scanning can verify complete destinations.
