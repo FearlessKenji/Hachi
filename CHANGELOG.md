@@ -4,6 +4,21 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.7.0 - 2026-08-16
+
+### Added
+
+- Updated the project version to `3.7.0`.
+- Added canonical managed Twitch verification panels with create/move, refresh, removal, startup reconciliation, deletion repair, health status, and rate-limited manager warnings.
+- Added persisted, rate-limited Hachi Updates delivery warnings for members with Manage Server permission.
+
+### Changed
+
+- Limited Twitch role linking to VIP status across OAuth scopes, EventSub, reconciliation, commands, status, help, and verification panels, with retryable cleanup for Discord Moderator roles previously managed by Hachi.
+- Updated `/announce patch-notes` ephemeral summaries to condense successful deliveries while retaining every failed or skipped server by name and ID across Discord-safe follow-up messages.
+- Replaced silent Hachi Updates delivery failures with headed, permission-gated ephemeral manager reminders, limited to three per server per 24-hour window with at least 15 minutes between reminders.
+- Preserved deleted Hachi Updates channel selections so managers receive an actionable reminder instead of the server being silently unsubscribed.
+
 ## v3.6.0 - 2026-08-11 - Special Delivery!
 
 ### Added

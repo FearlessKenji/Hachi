@@ -74,6 +74,10 @@ const TwitchRoleEventMessages = require(`./models/twitchRoleEventMessages.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
+const TwitchVerificationPanels = require(`./models/twitchVerificationPanels.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
 const RaidConfigs = require(`./models/raidConfigs.js`)(
 	sequelize,
 	Sequelize.DataTypes,
@@ -263,6 +267,13 @@ TwitchRoleLinks.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+Servers.hasOne(TwitchVerificationPanels, {
+	foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+TwitchVerificationPanels.belongsTo(Servers, {
+	foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+
 // Raid Protection Associations
 // Configuration is guild-scoped, while incidents own their captured users,
 // messages, and archived attachment records.
@@ -360,6 +371,7 @@ module.exports = {
 	TwitchRoleConfigs,
 	TwitchRoleLinks,
 	TwitchRoleEventMessages,
+	TwitchVerificationPanels,
 	RaidConfigs,
 	RaidIncidents,
 	RaidIncidentUsers,

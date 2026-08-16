@@ -6,6 +6,35 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.7.0 - 2026-08-16
+
+### Twitch Role Linking
+
+- Twitch role linking now manages VIP status only. Hachi no longer requests
+  Moderator access or subscribes to Moderator updates. Previously linked
+  accounts remain linked.
+- Hachi removes Discord Moderator roles that it previously managed before
+  clearing the old mapping. If Discord's role hierarchy prevents cleanup, Hachi
+  keeps the mapping so an administrator can fix permissions and retry
+  `/twitch sync`.
+- `/twitch panel` now creates a canonical managed verification panel. Hachi
+  refreshes its wording on startup, recreates it when its message is deleted,
+  and supports moving, refreshing, or removing it with the `channel` and
+  `action` options. `/twitch status` reports its health, and managers receive
+  private guidance when Hachi loses channel access.
+
+### Patch Notes
+
+- `/announce patch-notes` now identifies every server by name and ID when
+  delivery fails or is skipped across private follow-up messages. Successful
+  deliveries are condensed into the total so long summaries remain within
+  Discord's limits.
+- When patch notes cannot reach the configured Hachi Updates channel, Hachi now
+  privately reminds members with **Manage Server** permission during later
+  command use. Reminders identify unavailable channels or missing permissions
+  under a **Hachi updates need attention:** heading and are limited to three per
+  server each day, at least 15 minutes apart.
+
 # v3.6.0 - 2026-08-11 - Special Delivery!
 
 ### Modmail

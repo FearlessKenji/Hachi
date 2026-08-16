@@ -47,16 +47,16 @@ This information is used to check whether configured streamers are live and to p
 
 ### Twitch Role Sync Information
 
-When server administrators enable Twitch VIP or Moderator role sync, Hachi may store:
+When server administrators enable Twitch VIP role sync, Hachi may store:
 
 - The Discord server ID
-- Discord role IDs mapped to Twitch VIP and Moderator status
+- The Discord role ID mapped to Twitch VIP status
 - The connected Twitch broadcaster user ID and login
 - Twitch OAuth access and refresh tokens for the connected broadcaster
 - Discord user IDs linked to verified Twitch user IDs and Twitch logins
 - Twitch EventSub message IDs used to avoid processing duplicate role events
 
-Broadcaster tokens are used to read Twitch VIP and Moderator lists and to subscribe to Twitch EventSub events for that broadcaster. Member Twitch access tokens are used only during verification and are not intentionally kept after the Discord user ID to Twitch user ID link is saved.
+Broadcaster tokens are used to read the Twitch VIP list and subscribe to VIP EventSub events for that broadcaster. Member Twitch access tokens are used only during verification and are not intentionally kept after the Discord user ID to Twitch user ID link is saved.
 
 ### Birthday Information
 
@@ -139,7 +139,7 @@ Hachi uses collected information to:
 - Provide Discord bot commands and responses
 - Send Twitch and Kick live notifications
 - Store and apply server notification settings
-- Sync Twitch VIP and Moderator status to configured Discord roles
+- Sync Twitch VIP status to a configured Discord role
 - Store and post birthday reminders when users choose to use the birthday feature
 - Create, edit, convert, maintain, and clean up reaction-role panels
 - Add or remove Discord roles when users interact with reaction-role panels
@@ -156,7 +156,7 @@ Hachi does not sell personal information.
 Information may be visible or shared in these limited situations:
 
 - With Discord, because Hachi operates on Discord's platform
-- With Twitch or Kick APIs, when checking configured streamer channels, posting live notification information, validating Twitch role-sync authorizations, and reading Twitch VIP or Moderator status
+- With Twitch or Kick APIs, when checking configured streamer channels, posting live notification information, validating Twitch role-sync authorizations, and reading Twitch VIP status
 - With GitHub, if you visit Hachi's GitHub Pages site
 - With the bot owner or authorized maintainers for operation, moderation, maintenance, and support
 - When Hachi posts information into a Discord server as part of an enabled feature, such as a live notification, birthday post, or reaction-role panel

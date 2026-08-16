@@ -296,33 +296,171 @@ async function validateSetupHubOrdering() {
 }
 
 async function validateTwitchVerificationPanelPrivacyCopy() {
-	const { PermissionFlagsBits } = require(`discord.js`);
-	const twitch = requireFresh(`commands`, `globalCommands`, `utility`, `twitch.js`);
-	let sentPayload = null;
-	let replyPayload = null;
+	const { panelPayload } = requireFresh(`utils`, `twitchVerificationPanels.js`);
+	const payload = panelPayload();
 
-	await twitch.execute({
-		options: {
-			getSubcommand: () => `panel`,
+	assert(payload.content.includes(`-# Hachi never sees your Twitch password`), `Twitch verification panel is missing Discord subtext privacy copy.`);
+	assert(payload.content.includes(`does not store OAuth tokens from this verification`), `Twitch verification panel should explain OAuth token storage behavior.`);
+	assert(payload.content.includes(`VIP for the connected channel`), `Twitch verification panel should describe VIP role linking.`);
+	assert(!payload.content.includes(`Moderator`), `Twitch verification panel should not advertise Moderator role linking.`);
+	assert(payload.components[0].components[0].data.custom_id === `twitch:verify`, `Managed Twitch verification panel should retain its restart-safe button ID.`);
+}
+
+async function validateVipOnlyTwitchRoleSync() {
+	const { PermissionFlagsBits } = require(`discord.js`);
+	const {
+		BROADCASTER_SCOPES,
+		cleanupLegacyModeratorRoles,
+	} = requireFresh(`modules`, `twitchRoles.js`);
+	const removedRoles = [];
+	const legacyRole = {
+		comparePositionTo: () => -1,
+		id: `legacy-moderator-role`,
+		managed: false,
+	};
+	const member = {
+		roles: {
+			cache: new Map([[legacyRole.id, legacyRole]]),
+			remove: async (roleId, reason) => removedRoles.push({ reason, roleId }),
 		},
-		memberPermissions: {
-			has: permission => permission === PermissionFlagsBits.ManageGuild,
-		},
-		channel: {
-			send(payload) {
-				sentPayload = payload;
-				return Promise.resolve();
+	};
+	const guild = {
+		id: `vip-only-guild`,
+		members: {
+			fetch: async () => member,
+			me: {
+				permissions: { has: permission => permission === PermissionFlagsBits.ManageRoles },
+				roles: { highest: {} },
 			},
 		},
-		reply(payload) {
-			replyPayload = payload;
-			return Promise.resolve();
+		roles: { cache: new Map([[legacyRole.id, legacyRole]]) },
+	};
+	const config = {
+		moderatorRoleId: legacyRole.id,
+		async update(values) {
+			Object.assign(this, values);
+		},
+	};
+	const result = await cleanupLegacyModeratorRoles(guild, config, [{ discordUserId: `linked-member` }]);
+
+	assert(BROADCASTER_SCOPES.join(` `) === `channel:read:vips`, `Twitch broadcaster authorization should request only the VIP scope.`);
+	assert(result.complete && removedRoles.length === 1, `Legacy Twitch Moderator roles should be removed from linked members.`);
+	assert(config.moderatorRoleId === null, `Legacy Twitch Moderator mapping should clear after successful cleanup.`);
+	assert(removedRoles[0].reason === `Retiring Twitch Moderator role sync`, `Legacy role cleanup should use an auditable reason.`);
+}
+
+async function validateManagedTwitchVerificationPanelLifecycle() {
+	const { PermissionFlagsBits } = require(`discord.js`);
+	const { TwitchVerificationPanels } = require(resolveProject(`database`, `dbObjects.js`));
+	const {
+		removeVerificationPanel,
+		repairVerificationPanel,
+		sendVerificationPanelWarningToManager,
+		setVerificationPanel,
+	} = requireFresh(`utils`, `twitchVerificationPanels.js`);
+	const originalFindByPk = TwitchVerificationPanels.findByPk;
+	const originalUpsert = TwitchVerificationPanels.upsert;
+	const lifecycle = [];
+	const oldMessage = { delete: async () => lifecycle.push(`delete-old`) };
+	let nextMessageId = 1;
+	let panel = {
+		channelId: `old-channel`,
+		failureCode: null,
+		guildId: `panel-guild`,
+		lastRepairAt: null,
+		messageId: `old-message`,
+		async destroy() {
+			lifecycle.push(`destroy-record`);
+		},
+		async update(values) {
+			Object.assign(this, values);
+		},
+	};
+	const permissions = { has: permission => [
+		PermissionFlagsBits.ReadMessageHistory,
+		PermissionFlagsBits.SendMessages,
+		PermissionFlagsBits.ViewChannel,
+	].includes(permission) };
+	const channels = new Map();
+	const makeChannel = (id, fetchedMessage = null) => ({
+		id,
+		isTextBased: () => true,
+		messages: { fetch: async () => fetchedMessage },
+		permissionsFor: () => permissions,
+		async send(payload) {
+			assert(payload.content.startsWith(`## Twitch Verification`), `Managed panel should use the canonical payload.`);
+			return { id: `new-message-${nextMessageId++}` };
 		},
 	});
+	channels.set(`old-channel`, makeChannel(`old-channel`, oldMessage));
+	channels.set(`new-channel`, makeChannel(`new-channel`));
+	const guild = {
+		channels: { fetch: async id => channels.get(id) || null },
+		id: `panel-guild`,
+		members: { me: {} },
+	};
+	const client = { guilds: { cache: new Map([[guild.id, guild]]) } };
 
-	assert(sentPayload?.content?.includes(`-# Hachi never sees your Twitch password`), `Twitch verification panel is missing Discord subtext privacy copy.`);
-	assert(sentPayload?.content?.includes(`does not store OAuth tokens from this verification`), `Twitch verification panel should explain OAuth token storage behavior.`);
-	assert(replyPayload?.content === `Twitch verification panel posted.`, `Twitch panel command did not confirm posting.`);
+	try {
+		TwitchVerificationPanels.findByPk = async () => panel;
+		TwitchVerificationPanels.upsert = async values => {
+			panel = { ...panel, ...values };
+		};
+
+		const movedMessage = await setVerificationPanel(guild, channels.get(`new-channel`));
+		assert(movedMessage.id === `new-message-1`, `Moving a managed panel should create its replacement.`);
+		assert(lifecycle[0] === `delete-old`, `Moving a managed panel should delete the old message only after replacement succeeds.`);
+		assert(panel.channelId === `new-channel` && panel.messageId === movedMessage.id, `Moving a managed panel should store its replacement IDs.`);
+
+		panel.update = async values => Object.assign(panel, values);
+		panel.lastRepairAt = null;
+		const repaired = await repairVerificationPanel(client, panel, { force: true });
+		assert(repaired.repaired && panel.messageId === `new-message-2`, `Missing managed panel messages should be recreated and stored.`);
+
+		let warningCount = 0;
+		Object.assign(panel, {
+			failureCode: `send-history`,
+			warningCount: 0,
+			warningLastSentAt: null,
+			warningWindowStartedAt: null,
+		});
+		const managerInteraction = {
+			deferred: true,
+			async followUp(payload) {
+				assert(payload.flags === 64, `Managed-panel warnings should be ephemeral.`);
+				assert(payload.content.includes(`Send Messages, Read Message History`), `Managed-panel warnings should name missing permissions.`);
+				warningCount += 1;
+			},
+			guildId: guild.id,
+			isChatInputCommand: () => true,
+			memberPermissions: { has: permission => permission === PermissionFlagsBits.ManageGuild },
+		};
+		const warningStart = new Date(`2026-08-16T12:00:00.000Z`);
+		for (const minutes of [0, 5, 15, 30, 45]) {
+			await sendVerificationPanelWarningToManager(
+				managerInteraction,
+				new Date(warningStart.getTime() + minutes * 60 * 1000),
+			);
+		}
+		assert(warningCount === 3, `Managed-panel warnings should allow three reminders at least 15 minutes apart.`);
+		await sendVerificationPanelWarningToManager(
+			managerInteraction,
+			new Date(warningStart.getTime() + 24 * 60 * 60 * 1000),
+		);
+		assert(warningCount === 4, `Managed-panel warning budget should refresh after 24 hours.`);
+
+		const removalMessage = { delete: async () => lifecycle.push(`delete-removed`) };
+		channels.set(`new-channel`, makeChannel(`new-channel`, removalMessage));
+		panel.destroy = async () => lifecycle.push(`destroy-record`);
+		await removeVerificationPanel(guild);
+		assert(
+			lifecycle.slice(-2).join(`,`) === `destroy-record,delete-removed`,
+			`Removing a managed panel should clear ownership before deleting its message.`,
+		);
+	} finally {
+		TwitchVerificationPanels.findByPk = originalFindByPk;
+		TwitchVerificationPanels.upsert = originalUpsert;
+	}
 }
 
 async function validateAnnouncementChannelIdNormalization() {
@@ -365,6 +503,63 @@ async function validateAnnouncementChannelIdNormalization() {
 		Servers.findByPk = originalFindByPk;
 		Servers.findOne = originalFindOne;
 		Servers.create = originalCreate;
+	}
+}
+
+async function validateManagerAnnouncementWarnings() {
+	const announcements = requireFresh(`utils`, `announcements.js`);
+	const { PermissionFlagsBits } = require(`discord.js`);
+	const { Servers } = require(resolveProject(`database`, `dbObjects.js`));
+	const originalFindByPk = Servers.findByPk;
+	let managerWarnings = 0;
+	const server = {
+		hachiAnnouncementChannelId: `updates-channel`,
+		hachiAnnouncementWarningCount: 0,
+		hachiAnnouncementWarningKey: `updates-channel:send`,
+		hachiAnnouncementWarningLastSentAt: null,
+		hachiAnnouncementWarningWindowStartedAt: null,
+		async update(values) {
+			Object.assign(this, values);
+		},
+	};
+
+	try {
+		Servers.findByPk = async guildId => {
+			assert(guildId === `warning-guild`, `Manager warning looked up the wrong server.`);
+			return server;
+		};
+		const managerInteraction = {
+			deferred: true,
+			async followUp(payload) {
+				assert(payload.flags === 64, `Manager warning should be ephemeral.`);
+				assert(payload.content.startsWith(`## Hachi updates need attention:`), `Manager warning should start with the attention header.`);
+				assert(payload.content.includes(`**Missing permissions:** Send Messages`), `Manager warning should name missing permissions.`);
+				managerWarnings += 1;
+			},
+			guildId: `warning-guild`,
+			isChatInputCommand: () => true,
+			memberPermissions: { has: permission => permission === PermissionFlagsBits.ManageGuild },
+		};
+		const warningStart = new Date(`2026-08-11T12:00:00.000Z`);
+
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, warningStart);
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, new Date(warningStart.getTime() + 5 * 60 * 1000));
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, new Date(warningStart.getTime() + 15 * 60 * 1000));
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, new Date(warningStart.getTime() + 30 * 60 * 1000));
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, new Date(warningStart.getTime() + 45 * 60 * 1000));
+		assert(managerWarnings === 3, `Manager warnings should allow three reminders with at least 15 minutes between them.`);
+		await announcements.sendAnnouncementWarningToManager(managerInteraction, new Date(warningStart.getTime() + 24 * 60 * 60 * 1000));
+		assert(managerWarnings === 4, `Manager warning budget should refresh after 24 hours.`);
+
+		const channelWithViewOnly = {
+			isTextBased: () => true,
+			permissionsFor: () => ({ has: permission => permission === PermissionFlagsBits.ViewChannel }),
+			send: () => null,
+		};
+		const access = await announcements.checkAnnouncementChannelAccess({ members: { me: {} } }, channelWithViewOnly);
+		assert(access.code === `send`, `Announcement access checks should identify a missing Send Messages permission.`);
+	} finally {
+		Servers.findByPk = originalFindByPk;
 	}
 }
 
@@ -1442,6 +1637,26 @@ function validatePureHelpers() {
 
 	assert(splitPatchNoteMessages.length > 1, `Long patch-note announcements should split into multiple messages.`);
 	assert(!splitPatchNoteMessages.some(message => /_Part \d+\/\d+_/u.test(message)), `Split patch-note announcements should not add Part X/Y labels.`);
+	const { summarizeResults } = requireFresh(`commands`, `globalCommands`, `admin`, `announce.js`);
+	const summarizedBroadcast = summarizeResults([
+		...Array.from({ length: 12 }, (_, index) => ({
+			guildId: `success-${index + 1}`,
+			message: `Delivered.`,
+			ok: true,
+			skipped: false,
+		})),
+		{ guildId: `skipped-server`, guildName: `Skipped Guild`, message: `Already sent.`, ok: true, skipped: true },
+		{ guildId: `failed-server`, guildName: `Failed Guild`, message: `Missing access.`, ok: false, skipped: false },
+		{ guildId: `long-failure`, guildName: `Long Failure Guild`, message: `x`.repeat(2000), ok: false, skipped: false },
+	]);
+	const completeBroadcastSummary = summarizedBroadcast.join(`\n`);
+
+	assert(summarizedBroadcast.every(message => message.length <= 1900), `Patch-note summaries should stay within Discord's safe message length.`);
+	assert(completeBroadcastSummary.includes(`Sent: 12`), `Patch-note summaries should condense successful deliveries into the sent total.`);
+	assert(completeBroadcastSummary.includes(`Skipped Guild (skipped-server): skipped. Already sent.`), `Patch-note summaries should name every skipped server.`);
+	assert(completeBroadcastSummary.includes(`Failed Guild (failed-server): failed. Missing access.`), `Patch-note summaries should name every failed server.`);
+	assert(completeBroadcastSummary.includes(`long-failure`), `Patch-note summaries should preserve long failures across messages.`);
+	assert(!completeBroadcastSummary.includes(`more result`), `Patch-note summaries should not use ambiguous result overflow text.`);
 	const multiReleasePatchNotes = parsePatchNoteReleases(`# Unreleased
 
 # v3.5.0 - 2026-07-24
@@ -1536,7 +1751,10 @@ async function main() {
 	await test(`commands load and serialize for Discord deployment`, collectCommands);
 	await test(`/setup hub uses expected panel order`, validateSetupHubOrdering);
 	await test(`/twitch panel includes privacy subtext`, validateTwitchVerificationPanelPrivacyCopy);
+	await test(`Twitch role linking is VIP-only and retires legacy Moderator roles`, validateVipOnlyTwitchRoleSync);
+	await test(`managed Twitch verification panels move, repair, and remove safely`, validateManagedTwitchVerificationPanelLifecycle);
 	await test(`/setup Hachi Updates stores primitive channel IDs`, validateAnnouncementChannelIdNormalization);
+	await test(`failed Hachi Updates deliveries warn server managers privately`, validateManagerAnnouncementWarnings);
 	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`Modmail panels, numbering, and role access expose valid contracts`, validateModmailContracts);
