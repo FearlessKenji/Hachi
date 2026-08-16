@@ -311,7 +311,8 @@ Twitch/Kick fetchers:
 Twitch role sync:
 
 - `twitchRoles.js` handles Twitch device-code authorization, token validation,
-  role mapping, VIP/moderator reconciliation, and member verification.
+  role mapping, VIP reconciliation, legacy Moderator-role cleanup, and member
+  verification.
 - `twitchRoleEventSub.js` handles EventSub-related lifecycle where applicable.
 
 Provider auth:

@@ -7,6 +7,7 @@ const { ReactionRoleMessages, RulesVerificationMessages } = require(`../database
 const { deletePanelRecords } = require(`../utils/reactionRoles.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 const { restoreDeletedPanel } = require(`../utils/modmail.js`);
+const { repairVerificationPanel } = require(`../utils/twitchVerificationPanels.js`);
 
 module.exports = {
 	name: Events.MessageDelete,
@@ -19,6 +20,14 @@ module.exports = {
 
 			if (await restoreDeletedPanel(message)) {
 				info(`Restored deleted Modmail panel ${message.id} in guild ${message.guildId}.`);
+			}
+
+			const { TwitchVerificationPanels } = require(`../database/dbObjects.js`);
+			const twitchPanel = await TwitchVerificationPanels.findByPk(message.guildId);
+			if (twitchPanel?.messageId === message.id) {
+				await twitchPanel.update({ messageId: null });
+				await repairVerificationPanel(message.client, twitchPanel, { force: true });
+				info(`Repaired deleted Twitch verification panel ${message.id} in guild ${message.guildId}.`);
 			}
 
 			const panel = await ReactionRoleMessages.findOne({

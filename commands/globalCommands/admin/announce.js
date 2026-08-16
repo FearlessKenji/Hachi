@@ -14,30 +14,59 @@ const { broadcastLatestPatchNotes } = require(`../../../utils/announcements.js`)
 const { isConfiguredOwner } = require(`../../../utils/configValues.js`);
 const { error: logError, info } = require(`../../../utils/writeLog.js`);
 
+const RESULT_MESSAGE_LIMIT = 1900;
+
+function appendResultText(messages, text) {
+	let remaining = text;
+
+	while (remaining) {
+		const current = messages.at(-1) || ``;
+		const separator = current ? `\n` : ``;
+		const available = RESULT_MESSAGE_LIMIT - current.length - separator.length;
+
+		if (available <= 0) {
+			messages.push(``);
+			continue;
+		}
+
+		messages[messages.length - 1] = `${current}${separator}${remaining.slice(0, available)}`;
+		remaining = remaining.slice(available);
+
+		if (remaining) {
+			messages.push(``);
+		}
+	}
+}
+
 function summarizeResults(results) {
 	const sent = results.filter(result => result.ok && !result.skipped).length;
 	const skipped = results.filter(result => result.skipped).length;
 	const failed = results.filter(result => !result.ok).length;
-	const lines = results.slice(0, 10).map(result => {
-		const status = result.ok ?
-			(result.skipped ? `skipped` : `sent`) :
-			`failed`;
-
-		return `- ${result.guildId}: ${status}. ${result.message}`;
-	});
-	const overflow = results.length > lines.length ?
-		`\n- ...and ${results.length - lines.length} more result(s).` :
-		``;
-
-	return `Patch-note broadcast complete.
+	const exceptionalResults = results.filter(result => result.skipped || !result.ok);
+	const messages = [`Patch-note broadcast complete.
 - Sent: ${sent}
 - Skipped: ${skipped}
-- Failed: ${failed}
+- Failed: ${failed}`];
 
-${lines.join(`\n`)}${overflow}`;
+	if (!exceptionalResults.length) {
+		appendResultText(messages, `\nAll deliveries succeeded.`);
+		return messages;
+	}
+
+	appendResultText(messages, `\nSkipped and failed results:`);
+	for (const result of exceptionalResults) {
+		const status = result.skipped ? `skipped` : `failed`;
+		const guildLabel = `${result.guildName || `Unknown Server`} (${result.guildId})`;
+
+		// Keep every actionable result, splitting across Discord-safe messages when necessary.
+		appendResultText(messages, `- ${guildLabel}: ${status}. ${result.message}`);
+	}
+
+	return messages;
 }
 
 module.exports = {
+	summarizeResults,
 	data: new SlashCommandBuilder()
 		.setName(`announce`)
 		.setDescription(`Owner-only Hachi announcement tools.`)
@@ -82,6 +111,7 @@ module.exports = {
 					force,
 					results: results.map(result => ({
 						guildId: result.guildId,
+						guildName: result.guildName,
 						message: result.message,
 						ok: result.ok,
 						sent: result.sent,
@@ -91,7 +121,12 @@ module.exports = {
 				module: `announcements`,
 			});
 
-			await interaction.editReply({ content: summarizeResults(results) });
+			const resultMessages = summarizeResults(results);
+
+			await interaction.editReply({ content: resultMessages[0] });
+			for (const content of resultMessages.slice(1)) {
+				await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+			}
 		} catch (err) {
 			logError(`Failed to broadcast patch notes:`, err);
 			await interaction.editReply({ content: `Failed to broadcast patch notes: ${err.message}` });

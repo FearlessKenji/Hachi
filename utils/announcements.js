@@ -6,13 +6,23 @@
 const fs = require(`node:fs`);
 const path = require(`node:path`);
 const { Op } = require(`sequelize`);
-const { PermissionFlagsBits } = require(`discord.js`);
+const { MessageFlags, PermissionFlagsBits } = require(`discord.js`);
 const { Servers } = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
 
 const PATCH_NOTES_PATH = path.resolve(__dirname, `..`, `docs`, `patch-notes.md`);
 const ANNOUNCEMENT_MESSAGE_LIMIT = 1900;
+const MANAGER_WARNING_LIMIT = 3;
+const MANAGER_WARNING_INTERVAL_MS = 15 * 60 * 1000;
+const MANAGER_WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RELEASE_HEADING_PATTERN = /^#\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/u;
+
+const CLEARED_WARNING_STATE = {
+	hachiAnnouncementWarningCount: 0,
+	hachiAnnouncementWarningKey: null,
+	hachiAnnouncementWarningLastSentAt: null,
+	hachiAnnouncementWarningWindowStartedAt: null,
+};
 
 function normalizeNewlines(text) {
 	return String(text || ``).replace(/\r\n?/gu, `\n`).trim();
@@ -223,12 +233,14 @@ async function updateAnnouncementSettings(guildId, values) {
 async function saveAnnouncementChannel(guildId, channelId) {
 	return updateAnnouncementSettings(guildId, {
 		hachiAnnouncementChannelId: normalizeAnnouncementId(channelId),
+		...CLEARED_WARNING_STATE,
 	});
 }
 
 async function clearAnnouncementChannel(guildId) {
 	return updateAnnouncementSettings(guildId, {
 		hachiAnnouncementChannelId: null,
+		...CLEARED_WARNING_STATE,
 	});
 }
 
@@ -236,50 +248,173 @@ async function fetchGuild(client, guildId) {
 	return client.guilds.cache.get(guildId) || client.guilds.fetch(guildId).catch(() => null);
 }
 
-async function fetchAnnouncementChannel(guild, channelId) {
-	if (!channelId) {
-		return { ok: false, message: `No announcement channel is configured.` };
+function missingPermissionResult(cannotView, cannotSend) {
+	if (!cannotView && !cannotSend) {
+		return null;
 	}
 
-	const channel = await guild.channels.fetch(channelId).catch(() => null);
+	const missing = [];
+	if (cannotView) {
+		missing.push(`view`);
+	}
+	if (cannotSend) {
+		missing.push(`send`);
+	}
 
-	if (!channel?.send) {
-		return { ok: false, message: `The configured announcement channel is unavailable.` };
+	let ability = `send messages in`;
+	if (missing.length === 2) {
+		ability = `view or send messages in`;
+	} else if (missing[0] === `view`) {
+		ability = `view`;
+	}
+
+	return {
+		code: missing.join(`-`),
+		ok: false,
+		message: `Hachi cannot ${ability} the configured updates channel.`,
+	};
+}
+
+async function checkAnnouncementChannelAccess(guild, channel) {
+	if (!channel?.send || !channel.isTextBased?.()) {
+		return { code: `unavailable`, ok: false, message: `The configured Hachi Updates channel is unavailable.` };
 	}
 
 	const me = guild.members.me || await guild.members.fetchMe().catch(() => null);
 	const permissions = me ? channel.permissionsFor(me) : null;
+	const cannotView = !permissions?.has(PermissionFlagsBits.ViewChannel);
+	const cannotSend = !permissions?.has(PermissionFlagsBits.SendMessages);
 
-	if (!permissions?.has(PermissionFlagsBits.ViewChannel) || !permissions?.has(PermissionFlagsBits.SendMessages)) {
-		return { ok: false, message: `Hachi cannot view or send messages in the configured announcement channel.` };
+	return missingPermissionResult(cannotView, cannotSend) || { channel, ok: true };
+}
+
+async function fetchAnnouncementChannel(guild, channelId) {
+	if (!channelId) {
+		return { code: `missing`, ok: false, message: `No Hachi Updates channel is configured.` };
 	}
 
-	return { channel, ok: true };
+	const channel = await guild.channels.fetch(channelId).catch(() => null);
+	return checkAnnouncementChannelAccess(guild, channel);
+}
+
+async function recordAnnouncementFailure(guild, channelId, channelResult) {
+	const server = await Servers.findByPk(guild.id);
+	const warningKey = `${channelId || `none`}:${channelResult.code || `unknown`}`;
+
+	if (server && server.hachiAnnouncementWarningKey !== warningKey) {
+		// A materially different failure receives a fresh warning budget immediately.
+		await server.update({
+			...CLEARED_WARNING_STATE,
+			hachiAnnouncementWarningKey: warningKey,
+		});
+	}
+}
+
+function managerWarningContent(warningKey) {
+	const failureCode = String(warningKey || ``).split(`:`).at(-1);
+
+	if (failureCode === `unavailable`) {
+		return [
+			`You are seeing this message because Hachi has patch note updates enabled on this server,`,
+			`but the configured channel is no longer available. Use /setup to select another Hachi Updates`,
+			`channel or clear the existing setting.`,
+		].join(` `);
+	}
+
+	const permissionNames = [];
+	if (failureCode.split(`-`).includes(`view`)) {
+		permissionNames.push(`View Channel`);
+	}
+	if (failureCode.split(`-`).includes(`send`)) {
+		permissionNames.push(`Send Messages`);
+	}
+	const missingPermissions = permissionNames.length ? permissionNames.join(`, `) : `Unknown`;
+
+	return [
+		`You are seeing this message because Hachi has patch note updates enabled on this server,`,
+		`but it cannot post to the configured channel due to current permissions. Use /setup to repair`,
+		`or clear the Hachi Updates channel, or modify the destination channel's permissions.`,
+	].join(` `) + `\n\n**Missing permissions:** ${missingPermissions}`;
+}
+
+function isEligibleManagerInteraction(interaction) {
+	return interaction.isChatInputCommand?.() && interaction.guildId &&
+		interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild);
+}
+
+function availableManagerWarningBudget(server, now) {
+	const windowStartedAt = server.hachiAnnouncementWarningWindowStartedAt;
+	const lastSentAt = server.hachiAnnouncementWarningLastSentAt;
+	const windowExpired = !windowStartedAt || now - new Date(windowStartedAt) >= MANAGER_WARNING_WINDOW_MS;
+	const warningCount = windowExpired ? 0 : server.hachiAnnouncementWarningCount;
+	const intervalActive = lastSentAt && now - new Date(lastSentAt) < MANAGER_WARNING_INTERVAL_MS;
+
+	if (warningCount >= MANAGER_WARNING_LIMIT || intervalActive) {
+		return null;
+	}
+
+	return { warningCount, windowExpired, windowStartedAt };
+}
+
+async function sendAnnouncementWarningToManager(interaction, now = new Date()) {
+	if (!isEligibleManagerInteraction(interaction)) {
+		return false;
+	}
+
+	const server = await Servers.findByPk(interaction.guildId);
+	if (!server?.hachiAnnouncementChannelId || !server.hachiAnnouncementWarningKey) {
+		return false;
+	}
+
+	const budget = availableManagerWarningBudget(server, now);
+	if (!budget) {
+		return false;
+	}
+
+	const payload = {
+		content: `## Hachi updates need attention:\n\n${managerWarningContent(server.hachiAnnouncementWarningKey)}`,
+		flags: MessageFlags.Ephemeral,
+	};
+
+	if (interaction.replied || interaction.deferred) {
+		await interaction.followUp(payload);
+	} else {
+		await interaction.reply(payload);
+	}
+
+	await server.update({
+		hachiAnnouncementWarningCount: budget.warningCount + 1,
+		hachiAnnouncementWarningLastSentAt: now,
+		hachiAnnouncementWarningWindowStartedAt: budget.windowExpired ? now : budget.windowStartedAt,
+	});
+	return true;
 }
 
 async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = {}) {
+	const guild = await fetchGuild(client, guildId);
+	const guildName = guild?.name || `Unknown Server`;
 	const settings = await getAnnouncementSettings(guildId);
 	const notes = getPatchNotesForAnnouncement(settings.hachiAnnouncementLastId, { force });
 	const latestNote = getLatestPatchNotes();
 
 	if (!latestNote) {
-		return { guildId, ok: false, sent: 0, skipped: true, message: `No patch notes were found.` };
+		return { guildId, guildName, ok: false, sent: 0, skipped: true, message: `No patch notes were found.` };
 	}
 
 	if (!notes.length) {
-		return { guildId, ok: true, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Latest patch notes were already sent.` };
+		return { guildId, guildName, ok: true, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Latest patch notes were already sent.` };
 	}
 
-	const guild = await fetchGuild(client, guildId);
-
 	if (!guild) {
-		return { guildId, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Guild is unavailable.` };
+		return { guildId, guildName, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Guild is unavailable.` };
 	}
 
 	const channelResult = await fetchAnnouncementChannel(guild, settings.hachiAnnouncementChannelId);
 
 	if (!channelResult.ok) {
-		return { guildId, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: channelResult.message };
+		await recordAnnouncementFailure(guild, settings.hachiAnnouncementChannelId, channelResult);
+
+		return { guildId, guildName, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: channelResult.message };
 	}
 
 	const messages = notes.flatMap(note => formatPatchNotesMessages(note));
@@ -291,10 +426,12 @@ async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = 
 
 	await updateAnnouncementSettings(guildId, {
 		hachiAnnouncementLastId: latestSentNote.id,
+		...CLEARED_WARNING_STATE,
 	});
 
 	return {
 		guildId,
+		guildName,
 		ok: true,
 		patchNoteId: latestSentNote.id,
 		patchNoteIds: notes.map(note => note.id),
@@ -321,8 +458,10 @@ async function broadcastLatestPatchNotes(client, { force = false } = {}) {
 			results.push(await sendLatestPatchNotesToGuild(client, server.guildId, { force }));
 		} catch (err) {
 			error(`Failed to send Hachi patch notes for guild ${server.guildId}:`, err);
+			const guild = client.guilds.cache.get(server.guildId);
 			results.push({
 				guildId: server.guildId,
+				guildName: guild?.name || `Unknown Server`,
 				ok: false,
 				sent: 0,
 				skipped: true,
@@ -340,6 +479,7 @@ async function broadcastLatestPatchNotes(client, { force = false } = {}) {
 
 module.exports = {
 	broadcastLatestPatchNotes,
+	checkAnnouncementChannelAccess,
 	clearAnnouncementChannel,
 	formatPatchNotesMessages,
 	getAnnouncementSettings,
@@ -349,6 +489,7 @@ module.exports = {
 	parseLatestPatchNotes,
 	parsePatchNoteReleases,
 	saveAnnouncementChannel,
+	sendAnnouncementWarningToManager,
 	sendLatestPatchNotesToGuild,
 	selectPatchNotesForAnnouncement,
 	splitAnnouncementText,

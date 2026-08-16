@@ -7,6 +7,8 @@
 const { Events, MessageFlags } = require(`discord.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const { autocompletes } = require(`../utils/autocompletes.js`);
+const { sendAnnouncementWarningToManager } = require(`../utils/announcements.js`);
+const { sendVerificationPanelWarningToManager } = require(`../utils/twitchVerificationPanels.js`);
 
 async function sendInteractionError(interaction) {
 	const payload = {
@@ -47,6 +49,13 @@ module.exports = {
 
 			try {
 				await command.execute(interaction);
+				// Delivery warnings remain private and only follow completed slash commands.
+				try {
+					await sendAnnouncementWarningToManager(interaction);
+					await sendVerificationPanelWarningToManager(interaction);
+				} catch (warningError) {
+					warn(`Could not send an update-channel warning after ${interaction.commandName}.`, warningError);
+				}
 			} catch (err) {
 				error(`Error executing ${interaction.commandName}`, err);
 				await sendInteractionError(interaction);

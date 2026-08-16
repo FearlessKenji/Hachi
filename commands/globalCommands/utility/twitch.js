@@ -1,4 +1,5 @@
 // /twitch command group.
+// Component routing uses the persistent twitch:verify button prefix.
 //
 // Handles Twitch account verification and broadcaster role-sync setup. The
 // command starts device-code flows, saves role mappings, posts verification
@@ -7,12 +8,18 @@ const {
 	ActionRowBuilder,
 	ButtonBuilder,
 	ButtonStyle,
+	ChannelType,
 	InteractionContextType,
 	MessageFlags,
 	PermissionFlagsBits,
 	SlashCommandBuilder,
 } = require(`discord.js`);
-const { Servers, TwitchRoleConfigs, TwitchRoleLinks } = require(`../../../database/dbObjects.js`);
+const {
+	Servers,
+	TwitchRoleConfigs,
+	TwitchRoleLinks,
+	TwitchVerificationPanels,
+} = require(`../../../database/dbObjects.js`);
 const {
 	BROADCASTER_SCOPES,
 	MEMBER_SCOPES,
@@ -27,7 +34,13 @@ const {
 	waitForDeviceAuthorization,
 } = require(`../../../modules/twitchRoles.js`);
 const { roleIsAssignable } = require(`../../../utils/reactionRoles.js`);
+const {
+	removeVerificationPanel,
+	repairVerificationPanel,
+	setVerificationPanel,
+} = require(`../../../utils/twitchVerificationPanels.js`);
 const { error: logError, warn } = require(`../../../utils/writeLog.js`);
+const TWITCH_VERIFY_CUSTOM_ID = `twitch:verify`;
 
 // Formatting helpers keep the status panel focused on setup state rather than
 // leaking raw database nulls or provider IDs into user-facing text.
@@ -69,24 +82,6 @@ Open Twitch and approve Hachi.
 Activation code: \`${device.user_code}\`
 
 This request expires in about ${Math.floor((Number(device.expires_in) || 0) / 60)} minutes.`;
-}
-
-function buildPanelComponents() {
-	return [
-		new ActionRowBuilder().addComponents(
-			new ButtonBuilder()
-				.setCustomId(`twitch:verify`)
-				.setLabel(`Verify Twitch`)
-				.setStyle(ButtonStyle.Primary),
-		),
-	];
-}
-
-function buildPanelContent() {
-	return `## Twitch Verification
-Click the button to verify your Twitch account with Hachi. If your Twitch account is a VIP or Moderator for the connected channel, Hachi will update your Discord roles.
-
--# Hachi never sees your Twitch password and does not store OAuth tokens from this verification.`;
 }
 
 async function safeFollowUp(interaction, payload) {
@@ -208,9 +203,7 @@ async function setRoleMappings(interaction) {
 	}
 
 	const vipRole = interaction.options.getRole(`vip`);
-	const moderatorRole = interaction.options.getRole(`moderator`);
-
-	if (!vipRole && !moderatorRole) {
+	if (!vipRole) {
 		await interaction.reply({
 			content: `Choose at least one Discord role to map.`,
 			flags: MessageFlags.Ephemeral,
@@ -220,19 +213,9 @@ async function setRoleMappings(interaction) {
 
 	const existing = await TwitchRoleConfigs.findByPk(interaction.guild.id);
 	const nextVipRoleId = vipRole?.id || existing?.vipRoleId || null;
-	const nextModeratorRoleId = moderatorRole?.id || existing?.moderatorRoleId || null;
-
-	if (nextVipRoleId && nextModeratorRoleId && nextVipRoleId === nextModeratorRoleId) {
-		await interaction.reply({
-			content: `VIP and Moderator must use different Discord roles so remove events stay safe.`,
-			flags: MessageFlags.Ephemeral,
-		});
-		return;
-	}
 
 	try {
 		await ensureRoleIsAssignable(interaction, vipRole, `VIP`);
-		await ensureRoleIsAssignable(interaction, moderatorRole, `Moderator`);
 	} catch (err) {
 		await interaction.reply({
 			content: err.message,
@@ -241,19 +224,21 @@ async function setRoleMappings(interaction) {
 		return;
 	}
 
+	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
 	await Servers.upsert({ guildId: interaction.guild.id });
 	await TwitchRoleConfigs.upsert({
 		guildId: interaction.guild.id,
 		vipRoleId: nextVipRoleId,
-		moderatorRoleId: nextModeratorRoleId,
 	});
 
 	interaction.client.twitchRoleEventSub?.restart();
+	const syncResult = await syncGuildTwitchRoles(interaction.client, interaction.guild.id);
+	const cleanupWarning = syncResult.legacyModeratorCleanupPending ?
+		`\nThe former Moderator role mapping could not be fully cleaned up yet; check Hachi's role hierarchy and run /twitch sync again.` :
+		``;
 
-	await interaction.reply({
-		content: `Twitch role mappings saved.\nVIP: ${formatRole(nextVipRoleId)}\nModerator: ${formatRole(nextModeratorRoleId)}`,
-		flags: MessageFlags.Ephemeral,
-	});
+	await interaction.editReply(`Twitch VIP role mapping saved.\nVIP: ${formatRole(nextVipRoleId)}${cleanupWarning}`);
 }
 
 async function syncNow(interaction) {
@@ -280,21 +265,28 @@ async function syncNow(interaction) {
 async function postVerificationPanel(interaction) {
 	if (!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageGuild)) {
 		await interaction.reply({
-			content: `You need Manage Server to post the Twitch verification panel.`,
+			content: `You need Manage Server to manage the Twitch verification panel.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
 	}
 
-	await interaction.channel.send({
-		content: buildPanelContent(),
-		components: buildPanelComponents(),
-	});
+	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-	await interaction.reply({
-		content: `Twitch verification panel posted.`,
-		flags: MessageFlags.Ephemeral,
-	});
+	const action = interaction.options.getString?.(`action`) || `set`;
+	if (action === `remove`) {
+		const removed = await removeVerificationPanel(interaction.guild);
+		await interaction.editReply(removed ? `Managed Twitch verification panel removed.` : `No managed Twitch verification panel is configured.`);
+		return;
+	}
+	if (action === `refresh`) {
+		const result = await repairVerificationPanel(interaction.client, interaction.guild.id, { force: true });
+		await interaction.editReply(result.ok ? `Twitch verification panel refreshed.` : `Twitch verification panel could not be refreshed: ${result.reason}`);
+		return;
+	}
+	const channel = interaction.options.getChannel?.(`channel`) || interaction.channel;
+	await setVerificationPanel(interaction.guild, channel);
+	await interaction.editReply(`Managed Twitch verification panel is now in <#${channel.id}>.`);
 }
 
 async function showStatus(interaction) {
@@ -302,12 +294,14 @@ async function showStatus(interaction) {
 		TwitchRoleConfigs.findByPk(interaction.guild.id),
 		TwitchRoleLinks.count({ where: { guildId: interaction.guild.id } }),
 	]);
+	const panel = await TwitchVerificationPanels.findByPk(interaction.guild.id);
+	const panelStatus = panel ? `<#${panel.channelId}> — ${panel.failureCode ? `Needs attention (${panel.failureCode})` : `Healthy`}` : `Not configured`;
 
 	await interaction.reply({
 		content: `## Twitch Role Sync
 - Broadcaster: ${formatBroadcaster(config)}
 - VIP role: ${formatRole(config?.vipRoleId)}
-- Moderator role: ${formatRole(config?.moderatorRoleId)}
+- Verification panel: ${panelStatus}
 - Verified users: ${linkCount}
 - Last sync: ${formatLastSync(config)}`,
 		flags: MessageFlags.Ephemeral,
@@ -362,7 +356,7 @@ async function disconnectBroadcaster(interaction) {
 module.exports = {
 	data: new SlashCommandBuilder()
 		.setName(`twitch`)
-		.setDescription(`Sync Twitch VIP and Moderator status to Discord roles.`)
+		.setDescription(`Sync Twitch VIP status to a Discord role.`)
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`connect`)
@@ -371,32 +365,40 @@ module.exports = {
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`roles`)
-				.setDescription(`Map Twitch VIP and Moderator to Discord roles.`)
+				.setDescription(`Map Twitch VIP status to a Discord role.`)
 				.addRoleOption(option =>
 					option
 						.setName(`vip`)
-						.setDescription(`Discord role for Twitch VIPs.`),
-				)
-				.addRoleOption(option =>
-					option
-						.setName(`moderator`)
-						.setDescription(`Discord role for Twitch Moderators.`),
+						.setDescription(`Discord role for Twitch VIPs.`)
+						.setRequired(true),
 				),
 		)
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`verify`)
-				.setDescription(`Verify your Twitch account for VIP/Moderator role sync.`),
+				.setDescription(`Verify your Twitch account for VIP role sync.`),
 		)
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`panel`)
-				.setDescription(`Post a public Twitch verification button in this channel.`),
+				.setDescription(`Create, move, refresh, or remove the managed verification panel.`)
+				.addChannelOption(option => option
+					.setName(`channel`)
+					.setDescription(`Channel for the managed panel; defaults to this channel.`)
+					.addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement))
+				.addStringOption(option => option
+					.setName(`action`)
+					.setDescription(`Manage the existing panel.`)
+					.addChoices(
+						{ name: `Create or move`, value: `set` },
+						{ name: `Refresh`, value: `refresh` },
+						{ name: `Remove`, value: `remove` },
+					)),
 		)
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`sync`)
-				.setDescription(`Reconcile linked users against Twitch VIP/Moderator lists now.`),
+				.setDescription(`Reconcile linked users against the Twitch VIP list now.`),
 		)
 		.addSubcommand(subcommand =>
 			subcommand
@@ -415,11 +417,11 @@ module.exports = {
 		entries: [
 			{
 				command: `/twitch verify`,
-				description: `verify your Twitch account for VIP/Moderator role sync.`,
+				description: `verify your Twitch account for VIP role sync.`,
 			},
 			{
 				command: `/twitch connect/roles/panel/sync`,
-				description: `configure Twitch VIP and Moderator role sync.`,
+				description: `configure Twitch VIP role sync.`,
 				permissions: [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageRoles],
 			},
 		],
@@ -462,6 +464,9 @@ module.exports = {
 	},
 
 	async handleComponent(interaction) {
+		if (interaction.customId !== TWITCH_VERIFY_CUSTOM_ID) {
+			return;
+		}
 		const [, action] = interaction.customId.split(`:`);
 
 		if (action === `verify`) {

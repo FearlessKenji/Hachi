@@ -10,6 +10,7 @@ const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
 const { startTwitchRoleEventSub } = require(`../modules/twitchRoleEventSub.js`);
 const { syncAllTwitchRoles } = require(`../modules/twitchRoles.js`);
 const { reconcileServerRows } = require(`../utils/serverLifecycle.js`);
+const { reconcileVerificationPanels } = require(`../utils/twitchVerificationPanels.js`);
 
 module.exports = {
 	name: Events.ClientReady,
@@ -34,6 +35,7 @@ module.exports = {
 		client.twitchRoleEventSub = startTwitchRoleEventSub(client);
 
 		await syncAllTwitchRoles(client);
+		await reconcileVerificationPanels(client);
 
 		// Start all cron jobs
 		for (const [name, job] of Object.entries(client.cronJobs)) {

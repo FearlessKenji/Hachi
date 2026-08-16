@@ -3,7 +3,13 @@
 // Several features store channel IDs. This cleanup path prevents deleted
 // channels from being reused as notification, birthday, rules, or report targets.
 const { Events } = require(`discord.js`);
-const { BirthdayConfigs, ModmailConfigs, ModmailTickets, RulesVerificationMessages, Servers } = require(`../database/dbObjects.js`);
+const {
+	BirthdayConfigs,
+	ModmailConfigs,
+	ModmailTickets,
+	RulesVerificationMessages,
+	TwitchVerificationPanels,
+} = require(`../database/dbObjects.js`);
 const { disablePanelsForDeletedChannel } = require(`../utils/reactionRoles.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 
@@ -29,15 +35,6 @@ module.exports = {
 					guildId: channel.guild.id,
 				},
 			});
-			const removedAnnouncementChannels = await Servers.update(
-				{ hachiAnnouncementChannelId: null },
-				{
-					where: {
-						guildId: channel.guild.id,
-						hachiAnnouncementChannelId: channel.id,
-					},
-				},
-			);
 			const clearedModmailEntries = await ModmailConfigs.update(
 				{ entryChannelId: null, panelMessageId: null },
 				{ where: { guildId: channel.guild.id, entryChannelId: channel.id } },
@@ -56,7 +53,10 @@ module.exports = {
 					status: ticket.storedAt ? `stored` : `deleted`,
 				});
 			}
-
+			const twitchPanel = await TwitchVerificationPanels.findByPk(channel.guild.id);
+			if (twitchPanel?.channelId === channel.id) {
+				await twitchPanel.update({ failureCode: `unavailable`, messageId: null });
+			}
 			if (removedBirthdayConfigs) {
 				info(`Removed ${removedBirthdayConfigs} birthday config(s) after channel deletion ${channel.id}.`);
 			}
@@ -67,10 +67,6 @@ module.exports = {
 
 			if (panels.length) {
 				info(`Disabled ${panels.length} reaction-role panel(s) after channel deletion ${channel.id}.`);
-			}
-
-			if (removedAnnouncementChannels[0]) {
-				info(`Cleared ${removedAnnouncementChannels[0]} Hachi announcement channel setting(s) after channel deletion ${channel.id}.`);
 			}
 
 			if (clearedModmailEntries[0] || clearedModmailCategories[0] || removedTickets.length) {

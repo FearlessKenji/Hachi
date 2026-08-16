@@ -1,7 +1,7 @@
 // Twitch role-sync feature.
 //
 // This module owns Twitch device-code authorization, broadcaster/member token
-// validation, VIP/moderator role mappings, and synchronization from Twitch state
+// validation, VIP role mapping, and synchronization from Twitch state
 // to Discord roles.
 const { PermissionFlagsBits } = require(`discord.js`);
 const { URL, URLSearchParams } = require(`node:url`);
@@ -16,7 +16,7 @@ const { warn, error } = require(`../utils/writeLog.js`);
 const TWITCH_AUTH_BASE = `https://id.twitch.tv/oauth2`;
 const TWITCH_HELIX_BASE = `https://api.twitch.tv/helix`;
 const DEVICE_GRANT_TYPE = `urn:ietf:params:oauth:grant-type:device_code`;
-const BROADCASTER_SCOPES = [`channel:read:vips`, `moderation:read`];
+const BROADCASTER_SCOPES = [`channel:read:vips`];
 const MEMBER_SCOPES = (process.env.twitchMemberScopes || ``)
 	.split(/\s+/u)
 	.map(scope => scope.trim())
@@ -260,7 +260,7 @@ async function saveBroadcasterAuthorization({ guildId, requestedBy, token, valid
 	}
 
 	if (!hasRequiredScopes(validation.scopes, BROADCASTER_SCOPES)) {
-		throw new Error(`Twitch did not grant the required VIP and Moderator scopes.`);
+		throw new Error(`Twitch did not grant the required VIP scope.`);
 	}
 
 	await Servers.upsert({ guildId });
@@ -405,13 +405,9 @@ async function fetchAllPages(config, endpoint, params = {}) {
 
 async function fetchTwitchRoleSets(config) {
 	const broadcasterId = config.broadcasterTwitchUserId;
-	const [vipRows, moderatorRows] = await Promise.all([
-		fetchAllPages(config, `/channels/vips`, { broadcaster_id: broadcasterId }),
-		fetchAllPages(config, `/moderation/moderators`, { broadcaster_id: broadcasterId }),
-	]);
+	const vipRows = await fetchAllPages(config, `/channels/vips`, { broadcaster_id: broadcasterId });
 
 	return {
-		moderatorIds: new Set(moderatorRows.map(row => row.user_id)),
 		vipIds: new Set(vipRows.map(row => row.user_id)),
 	};
 }
@@ -493,18 +489,11 @@ async function syncLinkRoles({ guild, config, link, roleSets }) {
 	}
 
 	const twitchUserId = link.twitchUserId;
-	const roleChecks = [
-		{
-			roleId: config.vipRoleId,
-			shouldHave: roleSets.vipIds.has(twitchUserId),
-			reason: `Twitch VIP role sync`,
-		},
-		{
-			roleId: config.moderatorRoleId,
-			shouldHave: roleSets.moderatorIds.has(twitchUserId),
-			reason: `Twitch Moderator role sync`,
-		},
-	];
+	const roleChecks = [{
+		roleId: config.vipRoleId,
+		shouldHave: roleSets.vipIds.has(twitchUserId),
+		reason: `Twitch VIP role sync`,
+	}];
 
 	for (const roleCheck of roleChecks) {
 		try {
@@ -525,6 +514,54 @@ function configHasRoleMapping(config) {
 	return Boolean(config?.vipRoleId || config?.moderatorRoleId);
 }
 
+async function cleanupLegacyModeratorRoles(guild, config, links) {
+	const result = emptySyncResult();
+
+	if (!config.moderatorRoleId) {
+		return { ...result, complete: true };
+	}
+
+	if (config.moderatorRoleId === config.vipRoleId) {
+		// The role remains actively managed as the VIP mapping, so only retire the
+		// legacy Moderator association and let normal VIP reconciliation decide membership.
+		await config.update({ moderatorRoleId: null });
+		return { ...result, complete: true };
+	}
+
+	if (!guild.roles.cache.get(config.moderatorRoleId)) {
+		await config.update({ moderatorRoleId: null });
+		return { ...result, complete: true };
+	}
+
+	for (const link of links) {
+		const member = await guild.members.fetch(link.discordUserId).catch(() => null);
+
+		if (!member) {
+			result.missingMembers += 1;
+			continue;
+		}
+
+		try {
+			mergeSyncResult(result, await setMemberRole({
+				guild,
+				member,
+				roleId: config.moderatorRoleId,
+				shouldHave: false,
+				reason: `Retiring Twitch Moderator role sync`,
+			}));
+		} catch (err) {
+			result.errors.push(err.message);
+		}
+	}
+
+	const complete = result.errors.length === 0 && result.skipped === 0;
+	if (complete) {
+		await config.update({ moderatorRoleId: null });
+	}
+
+	return { ...result, complete };
+}
+
 async function syncGuildTwitchRoles(client, guildId) {
 	const result = {
 		...emptySyncResult(),
@@ -533,25 +570,42 @@ async function syncGuildTwitchRoles(client, guildId) {
 		reason: null,
 	};
 	const config = await TwitchRoleConfigs.findByPk(guildId);
+	const hasLegacyModeratorMapping = Boolean(config?.moderatorRoleId);
 
-	if (!config?.broadcasterTwitchUserId) {
+	if (!config?.broadcasterTwitchUserId && !hasLegacyModeratorMapping) {
 		result.reason = `No Twitch broadcaster is connected.`;
 		return result;
 	}
 
 	if (!configHasRoleMapping(config)) {
-		result.reason = `No Discord VIP or Moderator role is configured.`;
+		result.reason = `No Discord VIP role is configured.`;
 		return result;
 	}
 
 	const guild = await fetchGuildForRoleSync(client, guildId);
-	const roleSets = await fetchTwitchRoleSets(config);
 	const links = await TwitchRoleLinks.findAll({
 		where: { guildId },
 		order: [[`discordUserId`, `ASC`]],
 	});
 
 	result.linkedUsers = links.length;
+	const cleanupResult = await cleanupLegacyModeratorRoles(guild, config, links);
+	mergeSyncResult(result, cleanupResult);
+	result.legacyModeratorCleanupPending = !cleanupResult.complete;
+
+	if (!config.vipRoleId) {
+		result.reason = cleanupResult.complete ?
+			`Legacy Twitch Moderator role cleanup complete; no Discord VIP role is configured.` :
+			`Legacy Twitch Moderator role cleanup is incomplete.`;
+		return result;
+	}
+
+	if (!config.broadcasterTwitchUserId) {
+		result.reason = `No Twitch broadcaster is connected.`;
+		return result;
+	}
+
+	const roleSets = await fetchTwitchRoleSets(config);
 
 	for (const link of links) {
 		mergeSyncResult(result, await syncLinkRoles({
@@ -591,7 +645,7 @@ async function syncMemberTwitchRoles(client, guildId, discordUserId) {
 	}
 
 	if (!configHasRoleMapping(config)) {
-		result.reason = `No Discord VIP or Moderator role is configured.`;
+		result.reason = `No Discord VIP role is configured.`;
 		return result;
 	}
 
@@ -646,7 +700,12 @@ async function applyTwitchRoleEvent(client, event) {
 	};
 
 	for (const config of configs) {
-		const roleId = event.roleType === `vip` ? config.vipRoleId : config.moderatorRoleId;
+		if (event.roleType !== `vip`) {
+			summary.skipped += 1;
+			continue;
+		}
+
+		const roleId = config.vipRoleId;
 
 		if (!roleId) {
 			summary.skipped += 1;
@@ -682,7 +741,7 @@ async function applyTwitchRoleEvent(client, event) {
 				member,
 				roleId,
 				shouldHave: event.shouldHave,
-				reason: `Twitch ${event.roleType === `vip` ? `VIP` : `Moderator`} EventSub sync`,
+				reason: `Twitch VIP EventSub sync`,
 			}));
 		} catch (err) {
 			summary.errors.push(err.message);
@@ -723,6 +782,7 @@ module.exports = {
 	MEMBER_SCOPES,
 	applyTwitchRoleEvent,
 	canManageTwitchRoleSync,
+	cleanupLegacyModeratorRoles,
 	ensureBroadcasterAccess,
 	fetchTwitchRoleSets,
 	formatSyncResult,

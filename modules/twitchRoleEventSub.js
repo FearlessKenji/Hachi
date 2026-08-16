@@ -1,4 +1,4 @@
-// Twitch EventSub WebSocket support for role-sync related updates.
+// Twitch EventSub WebSocket support for VIP role-sync updates.
 //
 // The polling/sync command path remains the source of truth, but EventSub can
 // keep connected broadcaster state fresher when the provider connection is live.
@@ -18,8 +18,6 @@ const RECONNECT_DELAY_MS = 15000;
 const SUBSCRIPTION_TYPES = [
 	{ roleType: `vip`, shouldHave: true, type: `channel.vip.add` },
 	{ roleType: `vip`, shouldHave: false, type: `channel.vip.remove` },
-	{ roleType: `moderator`, shouldHave: true, type: `channel.moderator.add` },
-	{ roleType: `moderator`, shouldHave: false, type: `channel.moderator.remove` },
 ];
 
 let activeService = null;
@@ -129,17 +127,13 @@ function createService(client) {
 
 		return configs.filter(config =>
 			config.broadcasterTwitchUserId &&
-			(config.vipRoleId || config.moderatorRoleId),
+			config.vipRoleId,
 		);
 	}
 
 	async function subscribeConfig(sessionId, config) {
 		for (const subscription of SUBSCRIPTION_TYPES) {
-			const roleId = subscription.roleType === `vip` ?
-				config.vipRoleId :
-				config.moderatorRoleId;
-
-			if (!roleId) {
+			if (!config.vipRoleId) {
 				continue;
 			}
 

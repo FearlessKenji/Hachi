@@ -58,6 +58,23 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.STRING,
 			allowNull: true,
 		},
+		hachiAnnouncementWarningKey: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		hachiAnnouncementWarningCount: {
+			type: DataTypes.INTEGER,
+			allowNull: false,
+			defaultValue: 0,
+		},
+		hachiAnnouncementWarningWindowStartedAt: {
+			type: DataTypes.DATE,
+			allowNull: true,
+		},
+		hachiAnnouncementWarningLastSentAt: {
+			type: DataTypes.DATE,
+			allowNull: true,
+		},
 	},
 	{
 		timestamps: false,
