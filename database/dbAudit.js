@@ -144,6 +144,7 @@ const EXPECTED_SCHEMA = [
 			column(`dayChannelId`, `VARCHAR(255)`, { nullable: true }),
 			column(`weekRoleId`, `VARCHAR(255)`, { nullable: true }),
 			column(`dayRoleId`, `VARCHAR(255)`, { nullable: true }),
+			column(`boardOnlyWhenUpcoming`, `TINYINT(1)`, { defaultValue: `0` }),
 			column(`hour`, `INTEGER`),
 			column(`timezone`, `VARCHAR(255)`),
 			column(`lastWeekPostDate`, `VARCHAR(255)`, { nullable: true }),

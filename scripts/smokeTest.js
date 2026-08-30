@@ -1459,6 +1459,7 @@ function validatePureHelpers() {
 		buildBirthdayPanelComponents,
 		deriveBirthdayDeliveryUrl,
 		formatBoardEntry,
+		getBirthdayBoardRefreshAction,
 		normalizeBirthdayCardUrl,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
@@ -1565,6 +1566,25 @@ function validatePureHelpers() {
 			component.custom_id === `birthday:panel:toggleDayRole` && component.label === `Toggle Birthday Pings`,
 		),
 		`Birthday board did not show the configured Birthday-day Role toggle.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
+		`Daily Birthday Board mode did not preserve daily replacement behavior.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [], null) === `remove`,
+		`Upcoming-only Birthday Board mode did not stay quiet without upcoming birthdays.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [{}], { edit: () => true }) === `edit`,
+		`Upcoming-only Birthday Board mode did not maintain its existing message.`,
+	);
+	const birthdayCommandSource = fs.readFileSync(resolveProject(`commands`, `globalCommands`, `utility`, `birthday.js`), `utf8`);
+
+	assert(
+		birthdayCommandSource.includes(`You will now receive birthday pings when it's someone's birthday.`) &&
+		birthdayCommandSource.includes(`You will no longer receive pings on birthdays.`),
+		`Birthday ping role feedback does not match the intended member-facing wording.`,
 	);
 	const birthdayBoardEntry = {
 		card: { boardUrl: `https://recocards.com/board/smoke` },

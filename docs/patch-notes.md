@@ -14,6 +14,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
   beside each member so card coverage is easy to scan.
 - When a Birthday-day Role is configured, the Birthday Board now offers a
   `Toggle Birthday Pings` button so members can opt in or out themselves.
+- Birthday setup can keep posting the board daily or show one maintained board
+  only while a birthday is within the upcoming two-week window.
 
 # v3.7.0 - 2026-08-16
 

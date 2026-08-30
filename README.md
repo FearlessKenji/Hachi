@@ -407,8 +407,10 @@ The setup panel configures:
 - Optional role to ping on birthday days.
 - Whole-hour local posting time.
 - IANA timezone used for the server's birthday schedule.
+- Daily Birthday Boards or one maintained board only while a birthday is within
+  the upcoming two-week window.
 
-Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set or update their birthday and open signable cards. When a Birthday-day Role is configured, the board also lets members toggle that ping role themselves.
+Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. Birthday boards show birthdays in the next two weeks and can either be reposted daily or maintained as one message only while birthdays are upcoming. Members can use the board buttons to set or update their birthday and open signable cards. When a Birthday-day Role is configured, the board also lets members toggle that ping role themselves.
 
 Administrators can attach RecoCards board links to upcoming birthdays. Use the
 `/board/...` link that members sign; Hachi derives the `/view/b/...` delivery

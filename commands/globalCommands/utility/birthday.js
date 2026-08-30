@@ -489,6 +489,8 @@ async function getBirthdaySettings(guildId) {
 		guildId,
 		channelId: config?.channelId || null,
 		boardChannelId: config?.boardChannelId || config?.channelId || null,
+		boardMessageId: config?.boardMessageId || null,
+		boardOnlyWhenUpcoming: Boolean(config?.boardOnlyWhenUpcoming),
 		weekChannelId: config?.weekChannelId || null,
 		dayChannelId: config?.dayChannelId || null,
 		weekRoleId: config?.weekRoleId || null,
@@ -507,6 +509,7 @@ function buildBirthdaySetupContent(settings) {
 
 	return `## Birthday Setup
 - Birthday Board Channel: ${formatChannel(settings.boardChannelId)}
+- Birthday Board Posting: ${settings.boardOnlyWhenUpcoming ? `Upcoming birthdays only` : `Daily`}
 - Week-before Ping Channel: ${formatOptionalChannel(settings.weekChannelId)}
 - Birthday-day Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
 - Posting Hour: ${formatHour(settings.hour)}
@@ -531,6 +534,7 @@ function buildScheduleContent(settings) {
 
 	return `## Birthday Schedule
 - Posting Hour: ${formatHour(settings.hour)}
+- Birthday Board Posting: ${settings.boardOnlyWhenUpcoming ? `Upcoming birthdays only` : `Daily`}
 - Timezone: ${settings.timezone ? `\`${settings.timezone}\`` : `Not set`}${status}`;
 }
 
@@ -707,6 +711,12 @@ function buildScheduleComponents(setupId, settings) {
 		buildHourSelect(setupId, settings.hour),
 		buildTimezoneRegionSelect(setupId, settings.timezoneRegionId),
 		buildTimezoneSelect(setupId, settings),
+		new ActionRowBuilder().addComponents(
+			new ButtonBuilder()
+				.setCustomId(`birthday:${setupId}:setup:toggleBoardPosting`)
+				.setLabel(settings.boardOnlyWhenUpcoming ? `Board: Upcoming Only` : `Board: Daily`)
+				.setStyle(settings.boardOnlyWhenUpcoming ? ButtonStyle.Secondary : ButtonStyle.Primary),
+		),
 		buildBackRow(setupId, settings.parentSetupId),
 	];
 }
@@ -794,7 +804,8 @@ async function saveBirthdaySettings(guildId, settings) {
 	await Servers.upsert({ guildId });
 	await BirthdayConfigs.upsert({
 		boardChannelId,
-		boardMessageId: null,
+		boardMessageId: settings.boardMessageId || null,
+		boardOnlyWhenUpcoming: Boolean(settings.boardOnlyWhenUpcoming),
 		channelId: boardChannelId,
 		dayChannelId: settings.dayChannelId || null,
 		dayRoleId: settings.dayRoleId || null,
@@ -903,6 +914,8 @@ async function handleBirthdaySetupComponent(interaction, setupId, action, field)
 		pendingSetup.weekRoleId = interaction.values[0] || null;
 	} else if (action === `dayRole`) {
 		pendingSetup.dayRoleId = interaction.values[0] || null;
+	} else if (action === `toggleBoardPosting`) {
+		pendingSetup.boardOnlyWhenUpcoming = !pendingSetup.boardOnlyWhenUpcoming;
 	} else if (action === `hour`) {
 		pendingSetup.hour = Number(interaction.values[0]);
 	} else if (action === `timezoneRegion`) {
@@ -970,8 +983,8 @@ async function toggleBirthdayDayRole(interaction) {
 
 	await interaction.reply({
 		content: hasRole ?
-			`You will no longer receive birthday-day pings.` :
-			`You will now receive birthday-day pings.`,
+			`You will no longer receive pings on birthdays.` :
+			`You will now receive birthday pings when it's someone's birthday.`,
 		flags: MessageFlags.Ephemeral,
 	});
 }

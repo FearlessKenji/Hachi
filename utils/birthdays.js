@@ -444,7 +444,7 @@ function buildBirthdayPanelComponents(config) {
 
 async function buildBirthdayBoardPayload(guild, config, options = {}) {
 	const now = options.now || DateTime.now().setZone(config.timezone || `UTC`);
-	const entries = await getUpcomingBirthdayEntries(guild, config, {
+	const entries = options.entries || await getUpcomingBirthdayEntries(guild, config, {
 		days: options.days ?? UPCOMING_BIRTHDAY_DAYS,
 		now,
 	});
@@ -533,6 +533,18 @@ async function sendBirthdayMessage(client, config, channelId, payload) {
 	return true;
 }
 
+function getBirthdayBoardRefreshAction(config, entries, existingMessage) {
+	if (!config.boardOnlyWhenUpcoming) {
+		return `replace`;
+	}
+
+	if (!entries.length) {
+		return `remove`;
+	}
+
+	return existingMessage?.edit ? `edit` : `replace`;
+}
+
 async function refreshBirthdayBoard(client, config, now) {
 	const channelId = getBirthdayChannelId(config, `board`);
 
@@ -553,15 +565,41 @@ async function refreshBirthdayBoard(client, config, now) {
 		return false;
 	}
 
-	if (config.boardMessageId) {
-		const oldMessage = await channel.messages.fetch(config.boardMessageId).catch(() => null);
+	const entries = await getUpcomingBirthdayEntries(guild, config, { now });
+	const existingMessage = config.boardMessageId ?
+		await channel.messages.fetch(config.boardMessageId).catch(() => null) :
+		null;
+	const refreshAction = getBirthdayBoardRefreshAction(config, entries, existingMessage);
 
-		if (oldMessage) {
-			await oldMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
+	// Upcoming-only mode keeps channels quiet between birthday windows and edits
+	// the active board in place so its countdowns remain current without reposting.
+	if (refreshAction === `remove`) {
+		if (existingMessage) {
+			await existingMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
+		}
+
+		await config.update({
+			boardMessageId: null,
+			lastBoardPostDate: now.toISODate(),
+		});
+		return false;
+	}
+
+	const payload = await buildBirthdayBoardPayload(guild, config, { entries, now });
+
+	if (refreshAction === `edit`) {
+		await existingMessage.edit(payload);
+		await config.update({ lastBoardPostDate: now.toISODate() });
+		return true;
+	}
+
+	if (config.boardMessageId) {
+		if (existingMessage) {
+			await existingMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
 		}
 	}
 
-	const message = await channel.send(await buildBirthdayBoardPayload(guild, config, { now }));
+	const message = await channel.send(payload);
 
 	await config.update({
 		boardMessageId: message.id,
@@ -654,6 +692,7 @@ module.exports = {
 	formatDaysAway,
 	getMonthName,
 	getNextBirthdayDate,
+	getBirthdayBoardRefreshAction,
 	getUpcomingBirthdayEntries,
 	isValidTimezone,
 	deriveBirthdayDeliveryUrl,
