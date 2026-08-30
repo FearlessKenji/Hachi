@@ -390,8 +390,9 @@ function formatBoardEntry(entry) {
 	const dateLabel = entry.daysAway === 0 ?
 		`Today` :
 		`${entry.date.toFormat(`MMM d`)} (${formatDaysAway(entry.daysAway)})`;
+	const cardStatus = entry.daysAway > 0 ? ` ${entry.card ? `(has card)` : `(no card set)`}` : ``;
 
-	return `**${dateLabel}** - ${entry.mention}`;
+	return `**${dateLabel}** - ${entry.mention}${cardStatus}`;
 }
 
 function buildBirthdayBoardEmbed(guild, now, entries) {
@@ -417,8 +418,8 @@ function buildBirthdayBoardEmbed(guild, now, entries) {
 		});
 }
 
-function buildBirthdayPanelComponents() {
-	return new ActionRowBuilder().addComponents(
+function buildBirthdayPanelComponents(config) {
+	const buttons = [
 		new ButtonBuilder()
 			.setCustomId(`birthday:panel:set`)
 			.setLabel(`Set / Update Birthday`)
@@ -427,7 +428,18 @@ function buildBirthdayPanelComponents() {
 			.setCustomId(`birthday:panel:sign`)
 			.setLabel(`Sign Upcoming Card`)
 			.setStyle(ButtonStyle.Secondary),
-	);
+	];
+
+	if (config.dayRoleId) {
+		buttons.push(
+			new ButtonBuilder()
+				.setCustomId(`birthday:panel:toggleDayRole`)
+				.setLabel(`Toggle Birthday Pings`)
+				.setStyle(ButtonStyle.Secondary),
+		);
+	}
+
+	return new ActionRowBuilder().addComponents(buttons);
 }
 
 async function buildBirthdayBoardPayload(guild, config, options = {}) {
@@ -439,7 +451,7 @@ async function buildBirthdayBoardPayload(guild, config, options = {}) {
 
 	return {
 		allowedMentions: { parse: [] },
-		components: [buildBirthdayPanelComponents()],
+		components: [buildBirthdayPanelComponents(config)],
 		embeds: [buildBirthdayBoardEmbed(guild, now, entries)],
 	};
 }
@@ -636,6 +648,8 @@ async function checkBirthdays(client) {
 module.exports = {
 	checkBirthdays,
 	buildBirthdayBoardPayload,
+	buildBirthdayPanelComponents,
+	formatBoardEntry,
 	formatBirthday,
 	formatDaysAway,
 	getMonthName,

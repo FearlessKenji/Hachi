@@ -4,6 +4,18 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.8.0 - 2026-08-29
+
+### Added
+
+- Added an opt-in Birthday-day Role toggle to birthday boards when that role is configured.
+- Added an optional `npm run pm2:start` convenience script for globally installed PM2 environments.
+
+### Changed
+
+- Updated the project version to `3.8.0`.
+- Added saved-card status labels to upcoming birthday board entries for easier scanning.
+
 ## v3.7.0 - 2026-08-16
 
 ### Added

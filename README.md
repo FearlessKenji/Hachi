@@ -4,6 +4,8 @@ Hachi is a Discord bot for Twitch and Kick live notifications. It can post when 
 
 Hachi is managed through `HachiGen.exe`, a separate windowed setup and runtime manager available from the [HachiGen releases](https://github.com/FearlessKenji/HachiGen/releases).
 
+Run Hachi directly with `npm start`. Environments that already provide PM2 globally can instead use `npm run pm2:start`; PM2 is optional and is not installed as a project dependency.
+
 Release history is available in the [Changelog](CHANGELOG.md). User-facing release notes are available in [Patch Notes](docs/patch-notes.md).
 Developer architecture notes are available in the [Developer Guide](docs/developer-guide.md).
 
@@ -406,7 +408,7 @@ The setup panel configures:
 - Whole-hour local posting time.
 - IANA timezone used for the server's birthday schedule.
 
-Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set or update their birthday and open signable cards.
+Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. The birthday board refreshes daily and shows birthdays in the next two weeks. Members can use the board buttons to set or update their birthday and open signable cards. When a Birthday-day Role is configured, the board also lets members toggle that ping role themselves.
 
 Administrators can attach RecoCards board links to upcoming birthdays. Use the
 `/board/...` link that members sign; Hachi derives the `/view/b/...` delivery

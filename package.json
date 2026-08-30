@@ -23,10 +23,11 @@
   },
   "name": "Hachi",
   "description": "This Discord bot will automatically send a message and tag the assigned role whenever a streamer went live.\r The notifications will update every 10 minutes(default) while the streamer is live.",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "main": "index.js",
   "scripts": {
     "start": "node .",
+    "pm2:start": "pm2 start config/ecosystem.config.js",
     "check": "node scripts/syntaxCheck.js",
     "db:audit": "node database/dbAudit.js",
     "db:migrate": "node database/dbAudit.js --migrate",

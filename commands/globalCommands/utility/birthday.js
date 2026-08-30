@@ -935,12 +935,45 @@ async function handleBirthdayPanelComponent(interaction, action) {
 		await handlePanelSignCards(interaction);
 	} else if (action === `cardSelect`) {
 		await handleBirthdayCardSelect(interaction);
+	} else if (action === `toggleDayRole`) {
+		await toggleBirthdayDayRole(interaction);
 	} else if (action === `view` || action === `remove`) {
 		await interaction.reply({
 			content: `That birthday-board button is no longer available. Use \`/birthday view\` or \`/birthday remove\` instead.`,
 			flags: MessageFlags.Ephemeral,
 		});
 	}
+}
+
+async function toggleBirthdayDayRole(interaction) {
+	const config = await BirthdayConfigs.findByPk(interaction.guild.id);
+	const role = config?.dayRoleId ? interaction.guild.roles.cache.get(config.dayRoleId) : null;
+
+	// A stale or unassignable configured role should fail privately instead of
+	// exposing Discord permission errors from a public birthday-board action.
+	if (!role || role.id === interaction.guild.id || role.managed || !role.editable) {
+		await interaction.reply({
+			content: `The Birthday-day Role is unavailable or Hachi cannot assign it. Ask a server manager to check the birthday setup and role hierarchy.`,
+			flags: MessageFlags.Ephemeral,
+		});
+		return;
+	}
+
+	const member = await interaction.guild.members.fetch(interaction.user.id);
+	const hasRole = member.roles.cache.has(role.id);
+
+	if (hasRole) {
+		await member.roles.remove(role, `Birthday-day ping opt-out`);
+	} else {
+		await member.roles.add(role, `Birthday-day ping opt-in`);
+	}
+
+	await interaction.reply({
+		content: hasRole ?
+			`You will no longer receive birthday-day pings.` :
+			`You will now receive birthday-day pings.`,
+		flags: MessageFlags.Ephemeral,
+	});
 }
 
 async function handleBirthdayPanelModalSubmit(interaction) {
