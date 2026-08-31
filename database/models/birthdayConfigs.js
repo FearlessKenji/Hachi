@@ -1,7 +1,7 @@
 // Per-server birthday announcement configuration.
 //
-// This stores where birthday board/reminder/day-of messages go and which
-// timezone/hour should be used when the birthday cron checks due posts.
+// This stores where birthday board/reminder/day-of messages go, how often the
+// board should appear, and when the birthday cron checks due posts.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`birthdayConfigs`, {
 		guildId: {
@@ -31,6 +31,11 @@ module.exports = (sequelize, DataTypes) => {
 		dayRoleId: {
 			type: DataTypes.STRING,
 			allowNull: true,
+		},
+		boardOnlyWhenUpcoming: {
+			type: DataTypes.BOOLEAN,
+			allowNull: false,
+			defaultValue: false,
 		},
 		hour: {
 			type: DataTypes.INTEGER,

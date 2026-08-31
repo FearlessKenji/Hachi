@@ -6,6 +6,20 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.8.0 - 2026-08-29
+
+### Birthdays
+
+- Upcoming Birthday Board entries show `(has card)` or `(no card set)` beside
+  each member. Today's birthday entries do not show a card status.
+- When a Birthday-day Role is configured, the Birthday Board shows a
+  `Toggle Birthday Pings` button. Clicking it adds the role; clicking it again
+  removes the role.
+- Birthday setup now includes a `Birthday Board Posting` setting. `Daily`
+  continues posting a new board each day. `Upcoming birthdays only` shows one
+  board when a birthday is within two weeks, updates that message instead of
+  reposting it, and removes it when no birthdays are within the two-week window.
+
 # v3.7.0 - 2026-08-16
 
 ### Twitch Role Linking

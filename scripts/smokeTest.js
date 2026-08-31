@@ -1456,7 +1456,10 @@ async function validateToolDatabaseConnectionPromises() {
 function validatePureHelpers() {
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const {
+		buildBirthdayPanelComponents,
 		deriveBirthdayDeliveryUrl,
+		formatBoardEntry,
+		getBirthdayBoardRefreshAction,
 		normalizeBirthdayCardUrl,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
@@ -1551,6 +1554,57 @@ function validatePureHelpers() {
 	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
+	const birthdayPanelWithoutPingRole = buildBirthdayPanelComponents({ dayRoleId: null }).toJSON();
+	const birthdayPanelWithPingRole = buildBirthdayPanelComponents({ dayRoleId: `456` }).toJSON();
+
+	assert(
+		birthdayPanelWithoutPingRole.components.length === 2,
+		`Birthday board unexpectedly showed the ping toggle without a Birthday-day Role.`,
+	);
+	assert(
+		birthdayPanelWithPingRole.components.some(component =>
+			component.custom_id === `birthday:panel:toggleDayRole` && component.label === `Toggle Birthday Pings`,
+		),
+		`Birthday board did not show the configured Birthday-day Role toggle.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
+		`Daily Birthday Board mode did not preserve daily replacement behavior.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [], null) === `remove`,
+		`Upcoming-only Birthday Board mode did not stay quiet without upcoming birthdays.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [{}], { edit: () => true }) === `edit`,
+		`Upcoming-only Birthday Board mode did not maintain its existing message.`,
+	);
+	const birthdayCommandSource = fs.readFileSync(resolveProject(`commands`, `globalCommands`, `utility`, `birthday.js`), `utf8`);
+
+	assert(
+		birthdayCommandSource.includes(`You will now receive birthday pings when it's someone's birthday.`) &&
+		birthdayCommandSource.includes(`You will no longer receive pings on birthdays.`),
+		`Birthday ping role feedback does not match the intended member-facing wording.`,
+	);
+	const birthdayBoardEntry = {
+		card: { boardUrl: `https://recocards.com/board/smoke` },
+		date: { toFormat: () => `Aug 25` },
+		daysAway: 4,
+		mention: `<@123>`,
+	};
+
+	assert(
+		formatBoardEntry(birthdayBoardEntry) === `**Aug 25 (in 4 days)** - <@123> (has card)`,
+		`Birthday board entry did not show its saved-card status.`,
+	);
+	assert(
+		formatBoardEntry({ ...birthdayBoardEntry, card: null }) === `**Aug 25 (in 4 days)** - <@123> (no card set)`,
+		`Birthday board entry did not show its missing-card status.`,
+	);
+	assert(
+		formatBoardEntry({ ...birthdayBoardEntry, daysAway: 0 }) === `**Today** - <@123>`,
+		`Today's birthday board entry unexpectedly showed a card status.`,
+	);
 	assert(
 		normalizeBirthdayCardUrl(`https://recocards.com/board/happy-birthday-smoke-123`) ===
 		`https://recocards.com/board/happy-birthday-smoke-123`,
