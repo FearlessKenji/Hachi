@@ -10,12 +10,15 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ### Birthdays
 
-- Upcoming Birthday Board entries now show `(has card)` or `(no card set)`
-  beside each member so card coverage is easy to scan.
-- When a Birthday-day Role is configured, the Birthday Board now offers a
-  `Toggle Birthday Pings` button so members can opt in or out themselves.
-- Birthday setup can keep posting the board daily or show one maintained board
-  only while a birthday is within the upcoming two-week window.
+- Upcoming Birthday Board entries show `(has card)` or `(no card set)` beside
+  each member. Today's birthday entries do not show a card status.
+- When a Birthday-day Role is configured, the Birthday Board shows a
+  `Toggle Birthday Pings` button. Clicking it adds the role; clicking it again
+  removes the role.
+- Birthday setup now includes a `Birthday Board Posting` setting. `Daily`
+  continues posting a new board each day. `Upcoming birthdays only` shows one
+  board when a birthday is within two weeks, updates that message instead of
+  reposting it, and removes it when no birthdays are within the two-week window.
 
 # v3.7.0 - 2026-08-16
 
