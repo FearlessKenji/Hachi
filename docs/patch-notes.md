@@ -6,13 +6,28 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.9.0 - 2026-09-11
+
+### Birthdays
+
+- Birthday setup now uses `Upcoming Birthday Reminder Channel`, `Upcoming
+  Birthday Reminder Role`, `Day of Birthday Ping Channel`, and `Day of Birthday
+  Role` labels.
+- Every unannounced birthday within two weeks receives one upcoming reminder.
+  The reminder is posted even without a configured reminder role; that role
+  only controls its optional mention. A `Create a Card` button opens the
+  RecoCards birthday-card creator directly.
+- Birthdays added one or two days beforehand receive the upcoming reminder
+  immediately. A birthday added on the day itself after the configured posting
+  hour receives the birthday announcement immediately.
+
 # v3.8.0 - 2026-08-29
 
 ### Birthdays
 
 - Upcoming Birthday Board entries show `(has card)` or `(no card set)` beside
   each member. Today's birthday entries do not show a card status.
-- When a Birthday-day Role is configured, the Birthday Board shows a
+- When a Day of Birthday Role is configured, the Birthday Board shows a
   `Toggle Birthday Pings` button. Clicking it adds the role; clicking it again
   removes the role.
 - Birthday setup now includes a `Birthday Board Posting` setting. `Daily`
@@ -155,7 +170,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 ### Birthdays
 
 - Birthday setup now supports separate channels for the birthday board,
-  week-before pings, and birthday-day pings.
+  week-before pings, and pings on birthdays.
 - Birthday boards can show today's birthdays and upcoming birthdays in the next
   two weeks.
 - Members can set, view, or remove their birthday from the birthday board
@@ -169,7 +184,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - Week-before birthday reminders ping only the configured reminder role, not the
   birthday members being listed.
 - Birthday cards only need the RecoCards board link. Hachi automatically derives
-  the delivery link for birthday-day announcements.
+  the delivery link for birthday announcements.
 - When staff add or remove a birthday card, Hachi refreshes the birthday board
   right away when a board channel is configured.
 - Upcoming card links are available through an ephemeral selector so a birthday

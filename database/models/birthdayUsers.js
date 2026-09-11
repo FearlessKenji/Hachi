@@ -25,6 +25,14 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.INTEGER,
 			allowNull: false,
 		},
+		lastUpcomingReminderDate: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		lastBirthdayAnnouncementDate: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
 	},
 	{
 		indexes: [

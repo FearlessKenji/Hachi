@@ -14,8 +14,9 @@ const { BirthdayCards, BirthdayConfigs, BirthdayUsers } = require(`../database/d
 const { error, warn } = require(`./writeLog.js`);
 
 const UPCOMING_BIRTHDAY_DAYS = 14;
+const IMMEDIATE_BIRTHDAY_REMINDER_DAYS = 2;
 const BIRTHDAY_BOARD_COLOR = 0xf0b83a;
-const RECOCARDS_CREATE_URL = `https://recocards.com/home`;
+const RECOCARDS_CREATE_URL = `https://recocards.com/create-card/HAPPY_BIRTHDAY`;
 const CARD_URL_HOSTS = new Set([
 	`recocards.com`,
 	`www.recocards.com`,
@@ -287,17 +288,22 @@ async function fetchBirthdaysForDate(guildId, target) {
 	return rows;
 }
 
-function buildWeekContent(config, groups) {
+function buildUpcomingReminderContent(config, entries) {
 	const roleMention = config.weekRoleId ? `<@&${config.weekRoleId}> ` : ``;
-	const lines = groups.map(group => `${formatBirthday(group.month, group.day)}: ${formatMemberList(group.userIds)}`);
+	const groups = groupBirthdaysByDay(entries);
+	const lines = groups.map(group => {
+		const daysAway = entries.find(entry => entry.month === group.month && entry.day === group.day).daysAway;
 
-	return `${roleMention}Upcoming birthday${groups.length === 1 ? `` : `s`} in one week:\n${lines.join(`\n`)}`;
+		return `${formatBirthday(group.month, group.day)} (${formatDaysAway(daysAway)}): ${formatMemberList(group.userIds)}`;
+	});
+
+	return `${roleMention}Upcoming birthday${groups.length === 1 ? `` : `s`}:\n${lines.join(`\n`)}`;
 }
 
 function buildCreateCardButton() {
 	return new ActionRowBuilder().addComponents(
 		new ButtonBuilder()
-			.setLabel(`Create a card`)
+			.setLabel(`Create a Card`)
 			.setStyle(ButtonStyle.Link)
 			.setURL(RECOCARDS_CREATE_URL),
 	);
@@ -516,6 +522,10 @@ async function getBirthdayGuild(client, guildId) {
 }
 
 async function sendBirthdayMessage(client, config, channelId, payload) {
+	if (!channelId) {
+		return false;
+	}
+
 	const guild = await getBirthdayGuild(client, config.guildId);
 
 	if (!guild) {
@@ -531,6 +541,141 @@ async function sendBirthdayMessage(client, config, channelId, payload) {
 
 	await channel.send(payload);
 	return true;
+}
+
+function getPendingUpcomingBirthdayEntries(birthdays, now, maxDays = UPCOMING_BIRTHDAY_DAYS) {
+	const today = now.startOf(`day`);
+
+	return birthdays
+		.map(birthday => {
+			const date = getNextBirthdayDate(now, birthday);
+			const daysAway = Math.floor(date.diff(today, `days`).days);
+
+			return { ...birthday, date, daysAway };
+		})
+		.filter(entry =>
+			entry.daysAway > 0 &&
+			entry.daysAway <= maxDays &&
+			entry.lastUpcomingReminderDate !== entry.date.toISODate(),
+		)
+		.sort((left, right) => left.date.toMillis() - right.date.toMillis() || left.userId.localeCompare(right.userId));
+}
+
+function getNewBirthdayAnnouncementAction(daysAway, currentHour, postingHour) {
+	if (daysAway === 0 && currentHour >= postingHour) {
+		return `birthday`;
+	}
+
+	if (daysAway > 0 && daysAway <= IMMEDIATE_BIRTHDAY_REMINDER_DAYS) {
+		return `upcoming`;
+	}
+
+	return null;
+}
+
+async function markBirthdayEntries(entries, field, valueForEntry) {
+	await Promise.all(entries.map(entry => BirthdayUsers.update(
+		{ [field]: valueForEntry(entry) },
+		{ where: { guildId: entry.guildId, userId: entry.userId } },
+	)));
+}
+
+async function sendPendingUpcomingBirthdayReminders(client, config, now, maxDays = UPCOMING_BIRTHDAY_DAYS) {
+	const birthdays = await BirthdayUsers.findAll({
+		order: [[`month`, `ASC`], [`day`, `ASC`], [`userId`, `ASC`]],
+		raw: true,
+		where: { guildId: config.guildId },
+	});
+	const entries = getPendingUpcomingBirthdayEntries(birthdays, now, maxDays);
+
+	if (!entries.length) {
+		return false;
+	}
+
+	const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `week`), {
+		allowedMentions: {
+			roles: config.weekRoleId ? [config.weekRoleId] : [],
+			users: [],
+		},
+		components: [buildCreateCardButton()],
+		content: buildUpcomingReminderContent(config, entries),
+	});
+
+	if (!sent) {
+		return false;
+	}
+
+	// Mark an occurrence only after Discord accepts the message so a transient
+	// delivery failure remains eligible for the next scheduled check.
+	await markBirthdayEntries(entries, `lastUpcomingReminderDate`, entry => entry.date.toISODate());
+	await config.update({ lastWeekPostDate: now.toISODate() });
+	return true;
+}
+
+async function sendPendingBirthdayAnnouncements(client, config, now) {
+	const todayKey = now.toISODate();
+	const birthdays = (await fetchBirthdaysForDate(config.guildId, {
+		day: now.day,
+		month: now.month,
+		year: now.year,
+	})).filter(birthday => birthday.lastBirthdayAnnouncementDate !== todayKey);
+
+	if (!birthdays.length) {
+		return false;
+	}
+
+	const cards = await fetchBirthdayCardsForUsers(
+		config.guildId,
+		now.year,
+		birthdays.map(birthday => birthday.userId),
+	);
+	const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `day`), {
+		content: buildDayContent(config, birthdays, cards),
+	});
+
+	if (!sent) {
+		return false;
+	}
+
+	// Same-day additions can arrive after the scheduled post, so deduplicate by
+	// member and occurrence rather than relying on the config's daily timestamp.
+	await markBirthdayEntries(birthdays, `lastBirthdayAnnouncementDate`, () => todayKey);
+	await config.update({ lastDayPostDate: todayKey });
+	return true;
+}
+
+async function announceNewlyStoredBirthday(client, guildId, userId) {
+	const config = await BirthdayConfigs.findByPk(guildId);
+
+	if (!config?.timezone) {
+		return false;
+	}
+
+	const now = DateTime.now().setZone(config.timezone);
+
+	if (!now.isValid) {
+		return false;
+	}
+
+	const birthday = await BirthdayUsers.findOne({ raw: true, where: { guildId, userId } });
+
+	if (!birthday) {
+		return false;
+	}
+
+	const daysAway = Math.floor(getNextBirthdayDate(now, birthday).diff(now.startOf(`day`), `days`).days);
+
+	const action = getNewBirthdayAnnouncementAction(daysAway, now.hour, config.hour);
+
+	if (action === `birthday`) {
+		return sendPendingBirthdayAnnouncements(client, config, now);
+	}
+
+	if (action === `upcoming`) {
+		return sendPendingUpcomingBirthdayReminders(client, config, now, IMMEDIATE_BIRTHDAY_REMINDER_DAYS);
+	}
+
+	return false;
 }
 
 function getBirthdayBoardRefreshAction(config, entries, existingMessage) {
@@ -620,51 +765,9 @@ async function processBirthdayConfig(client, config) {
 	}
 
 	const todayKey = now.toISODate();
-	const today = { day: now.day, month: now.month, year: now.year };
-	const oneWeekOut = now.plus({ days: 7 });
-	const weekTarget = getAdjustedBirthdayDate(oneWeekOut, oneWeekOut.month, oneWeekOut.day);
 
-	if (config.lastWeekPostDate !== todayKey) {
-		const weekBirthdays = await fetchBirthdaysForDate(config.guildId, {
-			day: weekTarget.day,
-			month: weekTarget.month,
-			year: weekTarget.year,
-		});
-
-		if (weekBirthdays.length) {
-			const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `week`), {
-				allowedMentions: {
-					roles: config.weekRoleId ? [config.weekRoleId] : [],
-					users: [],
-				},
-				components: [buildCreateCardButton()],
-				content: buildWeekContent(config, groupBirthdaysByDay(weekBirthdays)),
-			});
-
-			if (sent) {
-				await config.update({ lastWeekPostDate: todayKey });
-			}
-		}
-	}
-
-	if (config.lastDayPostDate !== todayKey) {
-		const dayBirthdays = await fetchBirthdaysForDate(config.guildId, today);
-
-		if (dayBirthdays.length) {
-			const dayBirthdayCards = await fetchBirthdayCardsForUsers(
-				config.guildId,
-				today.year,
-				dayBirthdays.map(birthday => birthday.userId),
-			);
-			const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `day`), {
-				content: buildDayContent(config, dayBirthdays, dayBirthdayCards),
-			});
-
-			if (sent) {
-				await config.update({ lastDayPostDate: todayKey });
-			}
-		}
-	}
+	await sendPendingUpcomingBirthdayReminders(client, config, now);
+	await sendPendingBirthdayAnnouncements(client, config, now);
 
 	if (config.lastBoardPostDate !== todayKey) {
 		await refreshBirthdayBoard(client, config, now);
@@ -684,6 +787,7 @@ async function checkBirthdays(client) {
 }
 
 module.exports = {
+	announceNewlyStoredBirthday,
 	checkBirthdays,
 	buildBirthdayBoardPayload,
 	buildBirthdayPanelComponents,
@@ -693,6 +797,8 @@ module.exports = {
 	getMonthName,
 	getNextBirthdayDate,
 	getBirthdayBoardRefreshAction,
+	getNewBirthdayAnnouncementAction,
+	getPendingUpcomingBirthdayEntries,
 	getUpcomingBirthdayEntries,
 	isValidTimezone,
 	deriveBirthdayDeliveryUrl,
@@ -701,5 +807,6 @@ module.exports = {
 	parseHour,
 	parseMonth,
 	refreshBirthdayBoard,
+	IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 	UPCOMING_BIRTHDAY_DAYS,
 };

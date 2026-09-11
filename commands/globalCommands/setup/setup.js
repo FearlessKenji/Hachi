@@ -52,7 +52,7 @@ function buildSetupEmbed() {
 			},
 			{
 				name: `Birthday Posts`,
-				value: `Configure automatic birthday reminder and birthday-day posts.`,
+				value: `Configure automatic birthday reminders and posts on birthdays.`,
 				inline: false,
 			},
 			{
