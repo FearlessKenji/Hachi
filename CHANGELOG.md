@@ -4,11 +4,27 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.9.0 - 2026-09-11
+
+### Added
+
+- Added per-birthday reminder tracking so every unannounced birthday inside the two-week window receives one upcoming reminder, including immediate reminders for birthdays added one or two days beforehand.
+
+### Changed
+
+- Updated the project version to `3.9.0`.
+- Updated birthday setup and related user-facing text to use `Day of Birthday` wording.
+- Updated upcoming birthday reminders to use a two-week window, post with or without a configured reminder role, and link directly to the RecoCards birthday-card creator.
+- Added immediate birthday announcements when members save today's birthday after the configured posting hour.
+- Updated the transitive `@humanfs/node` development dependency to `0.16.8` to address its recursive-copy symlink traversal advisory.
+- Added a release-preparation check that refuses to run on `main` and executes the required verification suite from a release branch.
+- Updated the birthday reminder smoke test to validate the rendered card button instead of matching a URL substring in source text.
+
 ## v3.8.0 - 2026-08-29
 
 ### Added
 
-- Added an opt-in Birthday-day Role toggle to birthday boards when that role is configured.
+- Added an opt-in Day of Birthday Role toggle to birthday boards when that role is configured.
 - Added an optional `npm run pm2:start` convenience script for globally installed PM2 environments.
 - Added a birthday setup toggle for daily boards or a single maintained board only while birthdays are upcoming.
 
@@ -124,11 +140,11 @@ Notable changes to Hachi are documented here.
 
 ### Changed
 
-- Expanded `/birthday setup` with separate board, week-before ping, and birthday-day ping channel settings while preserving the legacy birthday channel as a fallback.
+- Expanded `/birthday setup` with separate board and ping channel settings for the week before and day of a birthday while preserving the legacy birthday channel as a fallback.
 - Updated birthday cron processing to refresh the birthday board daily and show birthdays in the next two weeks.
 - Kept the `Create a card` shortcut button on week-before birthday reminders while requiring staff to attach finished card links with `/birthday card set`.
 - Refreshed the birthday board immediately after staff add or remove a birthday card link.
-- Added saved RecoCards delivery links directly to birthday-day announcement messages.
+- Added saved RecoCards delivery links directly to birthday announcements.
 - Derived birthday-card delivery links automatically from saved RecoCards board links.
 - Restricted week-before birthday reminders so they ping only the configured reminder role, not the birthday members being listed.
 - Updated patch-note announcements to send every unsent release newer than the stored last-sent version, oldest-to-newest, before recording the newest sent ID.

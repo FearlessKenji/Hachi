@@ -16,7 +16,7 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 - VoD/end-of-stream updates when a previous live message can be matched
 - Twitch VIP role sync through Twitch device-code authorization
 - Per-server notification setup for self streams and affiliate streams
-- Birthday storage, birthday month lists, one-week reminders, birthday-day posts, a birthday board, and staff-managed RecoCards links
+- Birthday storage, birthday month lists, one-week reminders, posts on birthdays, a birthday board, and staff-managed RecoCards links
 - Reaction-role panel creation, editing, message conversion, and cleanup when messages or channels are deleted
 - Per-server profile customization with avatar, banner, bio, and nickname fields
 - Rules embeds with optional reaction verification
@@ -401,16 +401,16 @@ Administrators can configure automatic birthday posts:
 The setup panel configures:
 
 - Birthday board channel.
-- Optional separate channel for week-before pings.
-- Optional separate channel for birthday-day pings.
-- Optional role to ping one week before birthdays.
+- Optional separate channel for upcoming birthday reminders.
+- Optional separate channel for pings on birthdays.
+- Optional role to ping with upcoming birthday reminders.
 - Optional role to ping on birthday days.
 - Whole-hour local posting time.
 - IANA timezone used for the server's birthday schedule.
 - Daily Birthday Boards or one maintained board only while a birthday is within
   the upcoming two-week window.
 
-Hachi posts one reminder seven days before a birthday and one birthday message on the day itself. Week-before reminders include a Create a card button that opens RecoCards and only ping the configured reminder role, not the birthday members being listed. Birthday-day messages include saved delivery links. Birthday boards show birthdays in the next two weeks and can either be reposted daily or maintained as one message only while birthdays are upcoming. Members can use the board buttons to set or update their birthday and open signable cards. When a Birthday-day Role is configured, the board also lets members toggle that ping role themselves.
+Hachi posts one upcoming reminder for every birthday within the next two weeks and one birthday message on the day itself. Upcoming reminders include a Create a Card button that opens the RecoCards birthday-card creator directly. The reminder is posted with or without a configured reminder role; the role only controls its optional mention, and birthday members are not pinged by the reminder. Birthdays added one or two days beforehand receive an immediate upcoming reminder. A birthday added on the day itself after the configured posting hour receives an immediate birthday announcement. Birthday boards can either be reposted daily or maintained as one message only while birthdays are upcoming. Board buttons let members set or update their birthday, open signable cards, and toggle the configured Day of Birthday Role. Birthday announcements include saved delivery links.
 
 Administrators can attach RecoCards board links to upcoming birthdays. Use the
 `/board/...` link that members sign; Hachi derives the `/view/b/...` delivery
@@ -421,7 +421,7 @@ link automatically:
 /birthday card remove user: @member
 ```
 
-Upcoming card links are shown through an ephemeral selector. A birthday person's own card stays hidden from them until their birthday, and the birthday-day announcement includes their delivery link when one is saved. Adding or removing a card refreshes the birthday board immediately when a board channel is configured. February 29 birthdays are celebrated on February 28 during non-leap years.
+Upcoming card links are shown through an ephemeral selector. A birthday person's own card stays hidden from them until their birthday, and the birthday announcement includes their delivery link when one is saved. Adding or removing a card refreshes the birthday board immediately when a board channel is configured. February 29 birthdays are celebrated on February 28 during non-leap years.
 
 ### Profiles
 
@@ -508,6 +508,8 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 ## Developer Notes
 
 Hachi bot releases use `hachi-vX.X.X` tags from this repository's root `package.json`. HachiGen releases use `hachigen-vX.X.X` tags in the separate [HachiGen repository](https://github.com/FearlessKenji/HachiGen).
+
+Prepare Hachi releases on a dedicated branch, never directly on `main`. Run `npm run release:check` from that branch to enforce the branch requirement and run syntax, lint, smoke, dependency-audit, and diff-whitespace checks before pushing the release for review.
 
 ### File Map
 

@@ -49,7 +49,7 @@ Hachi may post live notifications and update notification messages based on info
 
 Users are responsible for any birthday information they choose to save with Hachi. Hachi stores birth month and day only, not birth year.
 
-Birthday lists, reminders, and birthday-day posts may be visible to members of the relevant Discord server depending on channel permissions and server configuration. Do not use the birthday feature to submit private, confidential, or sensitive information.
+Birthday lists, reminders, and posts on birthdays may be visible to members of the relevant Discord server depending on channel permissions and server configuration. Do not use the birthday feature to submit private, confidential, or sensitive information.
 
 ## Reaction Roles and Role Management
 

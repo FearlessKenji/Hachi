@@ -935,6 +935,7 @@ function validateProjectFiles() {
 		`database/dbInit.js`,
 		`docs/_config.yml`,
 		`docs/patch-notes.md`,
+		`scripts/releaseCheck.js`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
 		`events/guildDelete.js`,
@@ -955,6 +956,7 @@ function validateProjectFiles() {
 	const rootChangelog = fs.readFileSync(resolveProject(`CHANGELOG.md`), `utf8`);
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
+	const releaseCheck = fs.readFileSync(resolveProject(`scripts`, `releaseCheck.js`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
 	const ciWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `ci.yml`), `utf8`);
 	const hachiReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachi.yml`), `utf8`);
@@ -963,6 +965,8 @@ function validateProjectFiles() {
 	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
 	assert(patchNotes.includes(`# ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
 	assert(patchNotes.includes(`### Reliability`), `docs/patch-notes.md should include release category headings.`);
+	assert(readJson(`package.json`).scripts?.[`release:check`] === `node scripts/releaseCheck.js`, `package.json should expose the release preparation check.`);
+	assert(releaseCheck.includes("branch === `main`"), `Release preparation should refuse to run on main.`);
 	assert(!/^## Hachi$/mu.test(patchNotes), `docs/patch-notes.md should not embed redundant Hachi product sections.`);
 	assert(!/^## HachiGen$/mu.test(patchNotes), `docs/patch-notes.md should not embed HachiGen release sections.`);
 	assert(docsIndex.includes(`https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md`), `docs/index.md should link to the root changelog.`);
@@ -1454,12 +1458,17 @@ async function validateToolDatabaseConnectionPromises() {
 }
 
 function validatePureHelpers() {
+	const { DateTime } = require(`luxon`);
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const {
+		buildCreateCardButton,
 		buildBirthdayPanelComponents,
 		deriveBirthdayDeliveryUrl,
 		formatBoardEntry,
 		getBirthdayBoardRefreshAction,
+		getNewBirthdayAnnouncementAction,
+		getPendingUpcomingBirthdayEntries,
+		IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 		normalizeBirthdayCardUrl,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
@@ -1559,14 +1568,32 @@ function validatePureHelpers() {
 
 	assert(
 		birthdayPanelWithoutPingRole.components.length === 2,
-		`Birthday board unexpectedly showed the ping toggle without a Birthday-day Role.`,
+		`Birthday board unexpectedly showed the ping toggle without a Day of Birthday Role.`,
 	);
 	assert(
 		birthdayPanelWithPingRole.components.some(component =>
 			component.custom_id === `birthday:panel:toggleDayRole` && component.label === `Toggle Birthday Pings`,
 		),
-		`Birthday board did not show the configured Birthday-day Role toggle.`,
+		`Birthday board did not show the configured Day of Birthday Role toggle.`,
 	);
+	assert(IMMEDIATE_BIRTHDAY_REMINDER_DAYS === 2, `Urgent birthday reminder window should stay at two days.`);
+	const birthdayReminderNow = DateTime.fromISO(`2026-09-01T12:00:00`, { zone: `UTC` });
+	const pendingBirthdayReminders = getPendingUpcomingBirthdayEntries([
+		{ day: 2, guildId: `guild`, month: 9, userId: `one` },
+		{ day: 3, guildId: `guild`, month: 9, userId: `two` },
+		{ day: 15, guildId: `guild`, month: 9, userId: `fourteen` },
+		{ day: 16, guildId: `guild`, month: 9, userId: `fifteen` },
+		{ day: 5, guildId: `guild`, lastUpcomingReminderDate: `2026-09-05`, month: 9, userId: `sent` },
+	], birthdayReminderNow);
+
+	assert(
+		pendingBirthdayReminders.map(entry => entry.userId).join(`,`) === `one,two,fourteen`,
+		`Upcoming birthday reminders did not include the full unannounced two-week window.`,
+	);
+	assert(getNewBirthdayAnnouncementAction(2, 1, 12) === `upcoming`, `Two-day birthday reminder was not immediate.`);
+	assert(getNewBirthdayAnnouncementAction(3, 13, 12) === null, `Non-urgent birthday reminder did not wait for the schedule.`);
+	assert(getNewBirthdayAnnouncementAction(0, 13, 12) === `birthday`, `Late same-day birthday did not announce immediately.`);
+	assert(getNewBirthdayAnnouncementAction(0, 11, 12) === null, `Early same-day birthday did not wait for the schedule.`);
 	assert(
 		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
 		`Daily Birthday Board mode did not preserve daily replacement behavior.`,
@@ -1585,6 +1612,13 @@ function validatePureHelpers() {
 		birthdayCommandSource.includes(`You will now receive birthday pings when it's someone's birthday.`) &&
 		birthdayCommandSource.includes(`You will no longer receive pings on birthdays.`),
 		`Birthday ping role feedback does not match the intended member-facing wording.`,
+	);
+	const createCardButton = buildCreateCardButton().toJSON().components[0];
+
+	assert(
+		createCardButton.label === `Create a Card` &&
+		createCardButton.url === `https://recocards.com/create-card/HAPPY_BIRTHDAY`,
+		`Upcoming birthday reminder is missing the direct RecoCards creation link.`,
 	);
 	const birthdayBoardEntry = {
 		card: { boardUrl: `https://recocards.com/board/smoke` },

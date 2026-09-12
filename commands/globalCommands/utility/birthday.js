@@ -27,6 +27,7 @@ const {
 	Servers,
 } = require(`../../../database/dbObjects.js`);
 const {
+	announceNewlyStoredBirthday,
 	formatBirthday,
 	formatDaysAway,
 	getMonthName,
@@ -97,6 +98,8 @@ async function setBirthday(interaction) {
 		content: `Your birthday is set to ${formatBirthday(parsed.month, parsed.day)}.`,
 		flags: MessageFlags.Ephemeral,
 	});
+	await announceNewlyStoredBirthday(interaction.client, interaction.guild.id, interaction.user.id)
+		.catch(err => logError(`Failed to announce newly stored birthday:`, err));
 }
 
 async function viewBirthday(interaction) {
@@ -255,7 +258,11 @@ async function setBirthdayCard(interaction) {
 	}
 
 	const user = interaction.options.getUser(`user`, true);
-	const normalizedUrl = normalizeBirthdayCardUrl(interaction.options.getString(`url`, true));
+	await saveBirthdayCard(interaction, user, interaction.options.getString(`url`, true));
+}
+
+async function saveBirthdayCard(interaction, user, submittedUrl) {
+	const normalizedUrl = normalizeBirthdayCardUrl(submittedUrl);
 
 	if (!normalizedUrl) {
 		await interaction.reply({
@@ -510,12 +517,12 @@ function buildBirthdaySetupContent(settings) {
 	return `## Birthday Setup
 - Birthday Board Channel: ${formatChannel(settings.boardChannelId)}
 - Birthday Board Posting: ${settings.boardOnlyWhenUpcoming ? `Upcoming birthdays only` : `Daily`}
-- Week-before Ping Channel: ${formatOptionalChannel(settings.weekChannelId)}
-- Birthday-day Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
+- Upcoming Birthday Reminder Channel: ${formatOptionalChannel(settings.weekChannelId)}
+- Day of Birthday Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
 - Posting Hour: ${formatHour(settings.hour)}
 - Timezone: ${settings.timezone ? `\`${settings.timezone}\`` : `Not set`}
-- Week-before Role: ${formatRole(settings.weekRoleId)}
-- Birthday-day Role: ${formatRole(settings.dayRoleId)}${status}`;
+- Upcoming Birthday Reminder Role: ${formatRole(settings.weekRoleId)}
+- Day of Birthday Role: ${formatRole(settings.dayRoleId)}${status}`;
 }
 
 function buildChannelsContent(settings) {
@@ -523,8 +530,8 @@ function buildChannelsContent(settings) {
 
 	return `## Birthday Channels
 - Birthday Board Channel: ${formatChannel(settings.boardChannelId)}
-- Week-before Ping Channel: ${formatOptionalChannel(settings.weekChannelId)}
-- Birthday-day Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
+- Upcoming Birthday Reminder Channel: ${formatOptionalChannel(settings.weekChannelId)}
+- Day of Birthday Ping Channel: ${formatOptionalChannel(settings.dayChannelId)}
 
 If a ping channel is not set, Hachi posts that ping in the birthday board channel.${status}`;
 }
@@ -542,8 +549,8 @@ function buildRolesContent(settings) {
 	const status = settings.statusMessage ? `\n### ${settings.statusMessage}` : ``;
 
 	return `## Birthday Roles
-- Week-before Role: ${formatRole(settings.weekRoleId)}
-- Birthday-day Role: ${formatRole(settings.dayRoleId)}${status}`;
+- Upcoming Birthday Reminder Role: ${formatRole(settings.weekRoleId)}
+- Day of Birthday Role: ${formatRole(settings.dayRoleId)}${status}`;
 }
 
 function buildChannelSelect(setupId, action, placeholder) {
@@ -700,8 +707,8 @@ function buildBackRow(setupId, parentSetupId = null, options = {}) {
 function buildChannelComponents(setupId, settings) {
 	return [
 		buildChannelSelect(setupId, `boardChannel`, `Birthday board channel`),
-		buildChannelSelect(setupId, `weekChannel`, `Week-before ping channel`),
-		buildChannelSelect(setupId, `dayChannel`, `Birthday-day ping channel`),
+		buildChannelSelect(setupId, `weekChannel`, `Upcoming birthday reminder channel`),
+		buildChannelSelect(setupId, `dayChannel`, `Day of birthday ping channel`),
 		buildBackRow(setupId, settings.parentSetupId, { clearChannels: true }),
 	];
 }
@@ -723,8 +730,8 @@ function buildScheduleComponents(setupId, settings) {
 
 function buildRolesComponents(setupId, settings) {
 	return [
-		buildRoleSelect(`birthday:${setupId}:setup:weekRole`, `Week-before role`),
-		buildRoleSelect(`birthday:${setupId}:setup:dayRole`, `Birthday-day role`),
+		buildRoleSelect(`birthday:${setupId}:setup:weekRole`, `Upcoming birthday reminder role`),
+		buildRoleSelect(`birthday:${setupId}:setup:dayRole`, `Day of birthday role`),
 		buildBackRow(setupId, settings.parentSetupId, { clearRoles: true }),
 	];
 }
@@ -966,7 +973,7 @@ async function toggleBirthdayDayRole(interaction) {
 	// exposing Discord permission errors from a public birthday-board action.
 	if (!role || role.id === interaction.guild.id || role.managed || !role.editable) {
 		await interaction.reply({
-			content: `The Birthday-day Role is unavailable or Hachi cannot assign it. Ask a server manager to check the birthday setup and role hierarchy.`,
+			content: `The Day of Birthday Role is unavailable or Hachi cannot assign it. Ask a server manager to check the birthday setup and role hierarchy.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
@@ -976,9 +983,9 @@ async function toggleBirthdayDayRole(interaction) {
 	const hasRole = member.roles.cache.has(role.id);
 
 	if (hasRole) {
-		await member.roles.remove(role, `Birthday-day ping opt-out`);
+		await member.roles.remove(role, `Day of Birthday ping opt-out`);
 	} else {
-		await member.roles.add(role, `Birthday-day ping opt-in`);
+		await member.roles.add(role, `Day of Birthday ping opt-in`);
 	}
 
 	await interaction.reply({
@@ -1005,6 +1012,8 @@ async function handleBirthdayPanelModalSubmit(interaction) {
 		content: `Your birthday is set to ${formatBirthday(parsed.month, parsed.day)}.`,
 		flags: MessageFlags.Ephemeral,
 	});
+	await announceNewlyStoredBirthday(interaction.client, interaction.guild.id, interaction.user.id)
+		.catch(err => logError(`Failed to announce newly stored birthday:`, err));
 }
 
 module.exports = {
@@ -1173,7 +1182,6 @@ module.exports = {
 			await handleBirthdayPanelModalSubmit(interaction);
 		} catch (err) {
 			logError(`Failed to handle birthday modal:`, err);
-
 			if (interaction.replied || interaction.deferred) {
 				await interaction.followUp({ content: `Failed to save birthday.`, flags: MessageFlags.Ephemeral });
 			} else {
