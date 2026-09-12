@@ -1461,6 +1461,7 @@ function validatePureHelpers() {
 	const { DateTime } = require(`luxon`);
 	const { birthdayAutocompletes, timezoneAutocompletes } = requireFresh(`utils`, `autocompletes.js`);
 	const {
+		buildCreateCardButton,
 		buildBirthdayPanelComponents,
 		deriveBirthdayDeliveryUrl,
 		formatBoardEntry,
@@ -1612,11 +1613,11 @@ function validatePureHelpers() {
 		birthdayCommandSource.includes(`You will no longer receive pings on birthdays.`),
 		`Birthday ping role feedback does not match the intended member-facing wording.`,
 	);
-	const birthdayUtilsSource = fs.readFileSync(resolveProject(`utils`, `birthdays.js`), `utf8`);
+	const createCardButton = buildCreateCardButton().toJSON().components[0];
 
 	assert(
-		birthdayUtilsSource.includes(`https://recocards.com/create-card/HAPPY_BIRTHDAY`) &&
-		birthdayUtilsSource.includes(`.setLabel(\`Create a Card\`)`),
+		createCardButton.label === `Create a Card` &&
+		createCardButton.url === `https://recocards.com/create-card/HAPPY_BIRTHDAY`,
 		`Upcoming birthday reminder is missing the direct RecoCards creation link.`,
 	);
 	const birthdayBoardEntry = {

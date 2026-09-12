@@ -789,6 +789,7 @@ async function checkBirthdays(client) {
 module.exports = {
 	announceNewlyStoredBirthday,
 	checkBirthdays,
+	buildCreateCardButton,
 	buildBirthdayBoardPayload,
 	buildBirthdayPanelComponents,
 	formatBoardEntry,

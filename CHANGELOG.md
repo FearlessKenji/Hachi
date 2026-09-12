@@ -18,6 +18,7 @@ Notable changes to Hachi are documented here.
 - Added immediate birthday announcements when members save today's birthday after the configured posting hour.
 - Updated the transitive `@humanfs/node` development dependency to `0.16.8` to address its recursive-copy symlink traversal advisory.
 - Added a release-preparation check that refuses to run on `main` and executes the required verification suite from a release branch.
+- Updated the birthday reminder smoke test to validate the rendered card button instead of matching a URL substring in source text.
 
 ## v3.8.0 - 2026-08-29
 
