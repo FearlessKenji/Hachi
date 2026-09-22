@@ -1466,10 +1466,12 @@ function validatePureHelpers() {
 		deriveBirthdayDeliveryUrl,
 		formatBoardEntry,
 		getBirthdayBoardRefreshAction,
+		getBirthdayNotificationUserIds,
 		getNewBirthdayAnnouncementAction,
 		getPendingUpcomingBirthdayEntries,
 		IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 		normalizeBirthdayCardUrl,
+		selectBirthdayCardDeliveryGuild,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
@@ -1594,6 +1596,42 @@ function validatePureHelpers() {
 	assert(getNewBirthdayAnnouncementAction(3, 13, 12) === null, `Non-urgent birthday reminder did not wait for the schedule.`);
 	assert(getNewBirthdayAnnouncementAction(0, 13, 12) === `birthday`, `Late same-day birthday did not announce immediately.`);
 	assert(getNewBirthdayAnnouncementAction(0, 11, 12) === null, `Early same-day birthday did not wait for the schedule.`);
+	const deliveryCard = { guildId: `200`, userId: `birthday-user`, year: 2026 };
+	const tiedDeliveryCandidates = [
+		{ guildId: `100`, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+		{ guildId: `200`, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+	];
+
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, tiedDeliveryCandidates) === `200`,
+		`The card-owning server did not win an equal-time birthday delivery tie.`,
+	);
+	assert(
+		selectBirthdayCardDeliveryGuild({ ...deliveryCard, guildId: `300` }, tiedDeliveryCandidates) === `100`,
+		`Equal-time birthday delivery did not fall back to the stable lowest guild ID.`,
+	);
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, [
+			...tiedDeliveryCandidates,
+			{ guildId: `400`, scheduledAt: DateTime.fromISO(`2026-09-22T11:00:00Z`) },
+		]) === `400`,
+		`Birthday card delivery did not select the earliest absolute posting time.`,
+	);
+	const notificationCards = new Map([
+		[`winner`, { deliveryGuildId: `100`, notificationDeliveredAt: null }],
+		[`later`, { deliveryGuildId: `200`, notificationDeliveredAt: null }],
+		[`delivered`, { deliveryGuildId: `100`, notificationDeliveredAt: new Date() }],
+	]);
+
+	assert(
+		getBirthdayNotificationUserIds([
+			{ userId: `winner` },
+			{ userId: `later` },
+			{ userId: `delivered` },
+			{ userId: `no-card` },
+		], notificationCards, `100`).join(`,`) === `winner,no-card`,
+		`Birthday notification filtering did not limit global-card pings to the selected server.`,
+	);
 	assert(
 		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
 		`Daily Birthday Board mode did not preserve daily replacement behavior.`,

@@ -38,7 +38,10 @@ const {
 	normalizeBirthdayCardUrl,
 	parseBirthdayDate,
 	parseMonth,
-	refreshBirthdayBoard,
+	refreshBirthdayBoardsForUser,
+	reverifyBirthdayCardDelivery,
+	reverifyBirthdayCardsForGuild,
+	reverifyBirthdayCardsForUser,
 	UPCOMING_BIRTHDAY_DAYS,
 } = require(`../../../utils/birthdays.js`);
 const {
@@ -79,6 +82,7 @@ async function saveUserBirthday(guildId, userId, parsed) {
 		month: parsed.month,
 		userId,
 	});
+	await reverifyBirthdayCardsForUser(userId, { force: true });
 }
 
 async function setBirthday(interaction) {
@@ -196,6 +200,10 @@ async function removeBirthday(interaction) {
 		},
 	});
 
+	if (count) {
+		await reverifyBirthdayCardsForUser(interaction.user.id, { force: true });
+	}
+
 	await interaction.reply({
 		content: count ? `Your birthday has been removed.` : `You do not have a birthday set.`,
 		flags: MessageFlags.Ephemeral,
@@ -229,27 +237,6 @@ function resolveBirthdayCardYear(birthday, timezone) {
 	const now = DateTime.now().setZone(timezone || `UTC`);
 
 	return getNextBirthdayDate(now, birthday).year;
-}
-
-async function refreshBirthdayBoardForInteraction(interaction) {
-	const config = await BirthdayConfigs.findOne({
-		where: { guildId: interaction.guild.id },
-	});
-
-	if (!config?.timezone || !(config.boardChannelId || config.channelId)) {
-		return false;
-	}
-
-	const now = DateTime.now().setZone(config.timezone);
-
-	if (!now.isValid) {
-		return false;
-	}
-
-	return refreshBirthdayBoard(interaction.client, config, now).catch(err => {
-		logError(`Failed to refresh birthday board after card update:`, err);
-		return false;
-	});
 }
 
 async function setBirthdayCard(interaction) {
@@ -289,35 +276,48 @@ async function saveBirthdayCard(interaction, user, submittedUrl) {
 	const year = resolveBirthdayCardYear(birthday, config.timezone);
 	const existing = await BirthdayCards.findOne({
 		where: {
-			guildId: interaction.guild.id,
 			userId: user.id,
 			year,
 		},
 	});
 
 	if (existing) {
+		await reverifyBirthdayCardDelivery(existing, { force: true });
+
+		if (existing.guildId !== interaction.guild.id) {
+			await refreshBirthdayBoardsForUser(interaction.client, user.id);
+			await interaction.editReply({
+				content: `A global birthday card already exists for ${user}'s next birthday. Hachi will reuse that card in this server; only the server that attached it can replace or remove it.`,
+			});
+			return;
+		}
+
 		await existing.update({
 			deliveryUrl: derivedDeliveryUrl,
 			updatedAt: new Date(),
 			url: normalizedUrl,
 		});
+		await reverifyBirthdayCardDelivery(existing, { force: true });
 	} else {
-		await BirthdayCards.create({
+		const card = await BirthdayCards.create({
 			createdAt: new Date(),
 			createdBy: interaction.user.id,
+			deliveryGuildId: null,
 			deliveryUrl: derivedDeliveryUrl,
 			guildId: interaction.guild.id,
+			notificationDeliveredAt: null,
 			updatedAt: null,
 			url: normalizedUrl,
 			userId: user.id,
 			year,
 		});
+		await reverifyBirthdayCardDelivery(card, { force: true });
 	}
 
-	const refreshed = await refreshBirthdayBoardForInteraction(interaction);
+	const refreshed = await refreshBirthdayBoardsForUser(interaction.client, user.id);
 
 	await interaction.editReply({
-		content: `Birthday card saved for ${user}'s next birthday.${refreshed ? ` The birthday board was refreshed.` : ``}`,
+		content: `Birthday card saved for ${user}'s next birthday.${refreshed ? ` Birthday boards were refreshed.` : ``}`,
 	});
 }
 
@@ -341,18 +341,26 @@ async function removeBirthdayCard(interaction) {
 	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
 	const year = resolveBirthdayCardYear(birthday, config.timezone);
-	const count = await BirthdayCards.destroy({
+	const card = await BirthdayCards.findOne({
 		where: {
-			guildId: interaction.guild.id,
 			userId: user.id,
 			year,
 		},
 	});
-	const refreshed = count ? await refreshBirthdayBoardForInteraction(interaction) : false;
+
+	if (card && card.guildId !== interaction.guild.id) {
+		await interaction.editReply({
+			content: `That global birthday card was attached by another server, so it cannot be removed here.`,
+		});
+		return;
+	}
+
+	const count = card ? await card.destroy() : 0;
+	const refreshed = count ? await refreshBirthdayBoardsForUser(interaction.client, user.id) : false;
 
 	await interaction.editReply({
 		content: count ?
-			`Birthday card removed for ${user}'s next birthday.${refreshed ? ` The birthday board was refreshed.` : ``}` :
+			`Birthday card removed for ${user}'s next birthday.${refreshed ? ` Birthday boards were refreshed.` : ``}` :
 			`No birthday card was saved for ${user}'s next birthday.`,
 	});
 }
@@ -825,6 +833,7 @@ async function saveBirthdaySettings(guildId, settings) {
 		weekChannelId: settings.weekChannelId || null,
 		weekRoleId: settings.weekRoleId || null,
 	});
+	await reverifyBirthdayCardsForGuild(guildId, { force: true });
 }
 
 async function submitBirthdaySetup(interaction, setupId, pendingSetup) {

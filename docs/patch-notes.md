@@ -20,6 +20,12 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - Birthdays added one or two days beforehand receive the upcoming reminder
   immediately. A birthday added on the day itself after the configured posting
   hour receives the birthday announcement immediately.
+- A birthday card is now shared across Hachi servers where the member has saved
+  their birthday, so communities can contribute to one card. The earliest
+  scheduled server notifies the member; later servers show the birthday mention
+  and card without sending another member notification.
+- Only the server that attached a global card can replace or remove it. If Hachi
+  leaves that server, card ownership transfers to the next eligible server.
 
 # v3.8.0 - 2026-08-29
 

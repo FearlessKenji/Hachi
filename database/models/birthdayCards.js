@@ -1,7 +1,7 @@
 // Birthday card links prepared by server staff.
 //
-// Cards are scoped to one user's birthday in one server/year so upcoming-card
-// signing can stay hidden from the birthday person until their actual birthday.
+// Cards are global per user/year. guildId identifies the server that owns card
+// management, while deliveryGuildId selects the one server allowed to notify.
 module.exports = (sequelize, DataTypes) => {
 	return sequelize.define(`birthdayCards`, {
 		id: {
@@ -11,7 +11,7 @@ module.exports = (sequelize, DataTypes) => {
 		},
 		guildId: {
 			type: DataTypes.STRING,
-			allowNull: false,
+			allowNull: true,
 		},
 		userId: {
 			type: DataTypes.STRING,
@@ -41,17 +41,25 @@ module.exports = (sequelize, DataTypes) => {
 			type: DataTypes.DATE,
 			allowNull: true,
 		},
+		deliveryGuildId: {
+			type: DataTypes.STRING,
+			allowNull: true,
+		},
+		notificationDeliveredAt: {
+			type: DataTypes.DATE,
+			allowNull: true,
+		},
 	}, {
 		timestamps: false,
 		indexes: [
 			{
 				unique: true,
-				fields: [`guildId`, `userId`, `year`],
-				name: `birthdayCardsGuildUserYear`,
+				fields: [`userId`, `year`],
+				name: `birthdayCardsUserYear`,
 			},
 			{
-				fields: [`guildId`, `year`],
-				name: `birthdayCardsGuildYear`,
+				fields: [`deliveryGuildId`, `year`],
+				name: `birthdayCardsDeliveryGuildYear`,
 			},
 		],
 	});
