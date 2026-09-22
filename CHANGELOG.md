@@ -20,7 +20,7 @@ Notable changes to Hachi are documented here.
 - Updated the transitive `@humanfs/node` development dependency to `0.16.8` to address its recursive-copy symlink traversal advisory.
 - Added a release-preparation check that refuses to run on `main` and executes the required verification suite from a release branch.
 - Updated the birthday reminder smoke test to validate the rendered card button instead of matching a URL substring in source text.
-- Updated birthday boards, signing selectors, and day-of announcements to reuse global cards while keeping birthday enrollment and announcement history server-specific.
+- Updated birthday boards, signing selectors, and day-of announcements to reuse global cards while keeping birthday enrollment and announcement history server-specific; boards show the signing button only when an upcoming card exists.
 
 ## v3.8.0 - 2026-08-29
 

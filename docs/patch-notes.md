@@ -23,7 +23,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 - A birthday card is now shared across Hachi servers where the member has saved
   their birthday, so communities can contribute to one card. The earliest
   scheduled server notifies the member; later servers show the birthday mention
-  and card without sending another member notification.
+  and card without sending another member notification. Birthday Boards show
+  `Sign Upcoming Card` only while an upcoming card is available.
 - Only the server that attached a global card can replace or remove it. If Hachi
   leaves that server, card ownership transfers to the next eligible server.
 

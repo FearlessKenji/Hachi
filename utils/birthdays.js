@@ -550,6 +550,7 @@ function formatBoardEntry(entry) {
 function buildBirthdayBoardEmbed(guild, now, entries) {
 	const todayEntries = entries.filter(entry => entry.daysAway === 0);
 	const upcomingEntries = entries.filter(entry => entry.daysAway > 0);
+	const hasUpcomingCard = upcomingEntries.some(entry => entry.card);
 	const todayText = todayEntries.length ?
 		todayEntries.map(formatBoardEntry).join(`\n`) :
 		`No birthdays today.`;
@@ -560,7 +561,9 @@ function buildBirthdayBoardEmbed(guild, now, entries) {
 	return new EmbedBuilder()
 		.setColor(BIRTHDAY_BOARD_COLOR)
 		.setTitle(`Birthday Board`)
-		.setDescription(`Use the buttons below to add your birthday or sign an upcoming card.`)
+		.setDescription(hasUpcomingCard ?
+			`Use the buttons below to add your birthday or sign an upcoming card.` :
+			`Use the buttons below to add your birthday.`)
 		.addFields(
 			{ name: `Today`, value: truncateFieldValue(todayText) },
 			{ name: `Next Two Weeks`, value: truncateFieldValue(upcomingText) },
@@ -570,17 +573,22 @@ function buildBirthdayBoardEmbed(guild, now, entries) {
 		});
 }
 
-function buildBirthdayPanelComponents(config) {
+function buildBirthdayPanelComponents(config, entries = []) {
 	const buttons = [
 		new ButtonBuilder()
 			.setCustomId(`birthday:panel:set`)
 			.setLabel(`Set / Update Birthday`)
 			.setStyle(ButtonStyle.Primary),
-		new ButtonBuilder()
-			.setCustomId(`birthday:panel:sign`)
-			.setLabel(`Sign Upcoming Card`)
-			.setStyle(ButtonStyle.Secondary),
 	];
+
+	if (entries.some(entry => entry.daysAway > 0 && entry.card)) {
+		buttons.push(
+			new ButtonBuilder()
+				.setCustomId(`birthday:panel:sign`)
+				.setLabel(`Sign Upcoming Card`)
+				.setStyle(ButtonStyle.Secondary),
+		);
+	}
 
 	if (config.dayRoleId) {
 		buttons.push(
@@ -603,7 +611,7 @@ async function buildBirthdayBoardPayload(guild, config, options = {}) {
 
 	return {
 		allowedMentions: { parse: [] },
-		components: [buildBirthdayPanelComponents(config)],
+		components: [buildBirthdayPanelComponents(config, entries)],
 		embeds: [buildBirthdayBoardEmbed(guild, now, entries)],
 	};
 }

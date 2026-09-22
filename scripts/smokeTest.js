@@ -1565,15 +1565,27 @@ function validatePureHelpers() {
 	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
-	const birthdayPanelWithoutPingRole = buildBirthdayPanelComponents({ dayRoleId: null }).toJSON();
-	const birthdayPanelWithPingRole = buildBirthdayPanelComponents({ dayRoleId: `456` }).toJSON();
+	const birthdayPanelWithoutCard = buildBirthdayPanelComponents({ dayRoleId: null }, [
+		{ daysAway: 3, card: null },
+		{ daysAway: 0, card: {} },
+	]).toJSON();
+	const birthdayPanelWithCard = buildBirthdayPanelComponents({ dayRoleId: `456` }, [
+		{ daysAway: 3, card: {} },
+	]).toJSON();
 
 	assert(
-		birthdayPanelWithoutPingRole.components.length === 2,
-		`Birthday board unexpectedly showed the ping toggle without a Day of Birthday Role.`,
+		birthdayPanelWithoutCard.components.length === 1 &&
+		birthdayPanelWithoutCard.components[0].custom_id === `birthday:panel:set`,
+		`Birthday board showed the signing button without an upcoming card.`,
 	);
 	assert(
-		birthdayPanelWithPingRole.components.some(component =>
+		birthdayPanelWithCard.components.some(component =>
+			component.custom_id === `birthday:panel:sign` && component.label === `Sign Upcoming Card`,
+		),
+		`Birthday board did not show the signing button for an upcoming card.`,
+	);
+	assert(
+		birthdayPanelWithCard.components.some(component =>
 			component.custom_id === `birthday:panel:toggleDayRole` && component.label === `Toggle Birthday Pings`,
 		),
 		`Birthday board did not show the configured Day of Birthday Role toggle.`,
