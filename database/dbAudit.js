@@ -768,6 +768,15 @@ async function auditTable(db, tableSpec, report) {
 			});
 		}
 
+		if (expectedColumn.nullable && currentColumn.notnull) {
+			addIssue(report.safeIssues, {
+				id: `${tableSpec.name}:${expectedColumn.name}:nullable-column`,
+				message: `${tableSpec.name}.${expectedColumn.name} should allow NULL.`,
+				table: tableSpec.name,
+				type: `nullable-column`,
+			});
+		}
+
 		const currentDefault = currentColumn.dflt_value === null || currentColumn.dflt_value === undefined ?
 			null :
 			String(currentColumn.dflt_value);

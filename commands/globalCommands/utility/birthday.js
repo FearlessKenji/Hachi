@@ -42,6 +42,7 @@ const {
 	reverifyBirthdayCardDelivery,
 	reverifyBirthdayCardsForGuild,
 	reverifyBirthdayCardsForUser,
+	sendLateBirthdayCard,
 	UPCOMING_BIRTHDAY_DAYS,
 } = require(`../../../utils/birthdays.js`);
 const {
@@ -280,6 +281,7 @@ async function saveBirthdayCard(interaction, user, submittedUrl) {
 			year,
 		},
 	});
+	let card = existing;
 
 	if (existing) {
 		await reverifyBirthdayCardDelivery(existing, { force: true });
@@ -299,7 +301,7 @@ async function saveBirthdayCard(interaction, user, submittedUrl) {
 		});
 		await reverifyBirthdayCardDelivery(existing, { force: true });
 	} else {
-		const card = await BirthdayCards.create({
+		card = await BirthdayCards.create({
 			createdAt: new Date(),
 			createdBy: interaction.user.id,
 			deliveryGuildId: null,
@@ -313,6 +315,8 @@ async function saveBirthdayCard(interaction, user, submittedUrl) {
 		});
 		await reverifyBirthdayCardDelivery(card, { force: true });
 	}
+	await sendLateBirthdayCard(interaction.client, card, interaction.guild.id)
+		.catch(err => logError(`Failed to deliver a late birthday card:`, err));
 
 	const refreshed = await refreshBirthdayBoardsForUser(interaction.client, user.id);
 

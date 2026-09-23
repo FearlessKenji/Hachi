@@ -265,12 +265,14 @@ function selectBirthdayCardDeliveryGuild(card, candidates) {
 	return ordered[0]?.guildId || null;
 }
 
-async function getBirthdayCardDeliveryCandidates(card, {
-	excludeGuildIds = [],
-	notBefore = null,
-	requirePendingAnnouncement = false,
-} = {}) {
-	const excluded = new Set(excludeGuildIds.map(String));
+function pendingBirthdayCardDeliveryCandidates(candidates, notBefore = null, includeGuildId = null) {
+	return candidates.filter(candidate =>
+		candidate.lastBirthdayAnnouncementDate !== candidate.scheduledAt.toISODate() &&
+		(!notBefore || candidate.scheduledAt >= notBefore || candidate.guildId === includeGuildId),
+	);
+}
+
+async function getBirthdayCardDeliveryCandidates(card) {
 	const birthdays = await BirthdayUsers.findAll({
 		raw: true,
 		where: { userId: card.userId },
@@ -295,19 +297,14 @@ async function getBirthdayCardDeliveryCandidates(card, {
 	return birthdays.flatMap(birthday => {
 		const config = configByGuildId.get(birthday.guildId);
 
-		if (!config || !activeGuildIds.has(birthday.guildId) || excluded.has(String(birthday.guildId))) {
+		if (!config || !activeGuildIds.has(birthday.guildId)) {
 			return [];
 		}
 
 		const scheduledAt = getBirthdayDateForYear(config.timezone, card.year, birthday.month, birthday.day)
 			.set({ hour: config.hour });
 
-		if (
-			!scheduledAt.isValid ||
-			scheduledAt.year !== card.year ||
-			(notBefore && scheduledAt < notBefore) ||
-			(requirePendingAnnouncement && birthday.lastBirthdayAnnouncementDate === scheduledAt.toISODate())
-		) {
+		if (!scheduledAt.isValid || scheduledAt.year !== card.year) {
 			return [];
 		}
 
@@ -322,27 +319,34 @@ async function getBirthdayCardDeliveryCandidates(card, {
 async function reverifyBirthdayCardDelivery(card, {
 	excludeGuildIds = [],
 	force = false,
-	notBefore = null,
-	requirePendingAnnouncement = false,
+	includeGuildId = null,
+	notBefore = DateTime.now(),
+	requirePendingAnnouncement = true,
 	transferOwnership = true,
 } = {}) {
-	const candidates = await getBirthdayCardDeliveryCandidates(card, {
-		excludeGuildIds,
-		notBefore,
-		requirePendingAnnouncement,
-	});
-	const currentIsEligible = candidates.some(candidate => candidate.guildId === card.deliveryGuildId);
-	const deliveryGuildId = !force && currentIsEligible ?
-		card.deliveryGuildId :
-		selectBirthdayCardDeliveryGuild(card, candidates);
-	const ownerIsEligible = candidates.some(candidate => candidate.guildId === card.guildId);
-	const guildId = !transferOwnership || ownerIsEligible ? card.guildId : deliveryGuildId;
+	const ownershipCandidates = await getBirthdayCardDeliveryCandidates(card);
+	const remainingCandidates = ownershipCandidates.filter(candidate => !excludeGuildIds.includes(candidate.guildId));
+	const deliveryCandidates = requirePendingAnnouncement ?
+		pendingBirthdayCardDeliveryCandidates(remainingCandidates, notBefore, includeGuildId) :
+		remainingCandidates.filter(candidate => !notBefore || candidate.scheduledAt >= notBefore);
+	const currentIsEligible = deliveryCandidates.some(candidate => candidate.guildId === card.deliveryGuildId);
+	let deliveryGuildId = card.deliveryGuildId;
+
+	if (!card.notificationDeliveredAt && (force || !currentIsEligible)) {
+		deliveryGuildId = selectBirthdayCardDeliveryGuild(card, deliveryCandidates);
+	}
+	const ownerIsEligible = ownershipCandidates.some(candidate => candidate.guildId === card.guildId && !excludeGuildIds.includes(card.guildId));
+	let guildId = card.guildId;
+
+	if (transferOwnership && !ownerIsEligible) {
+		guildId = selectBirthdayCardDeliveryGuild(card, remainingCandidates);
+	}
 
 	if (card.deliveryGuildId !== deliveryGuildId || card.guildId !== guildId) {
 		await card.update({ deliveryGuildId, guildId });
 	}
 
-	return { candidates, deliveryGuildId, guildId };
+	return { candidates: deliveryCandidates, deliveryGuildId, guildId };
 }
 
 async function reverifyBirthdayCardsForUser(userId, options = {}) {
@@ -638,7 +642,9 @@ function buildDayContent(config, birthdays, cardsByUserId = new Map()) {
 		.map(birthday => {
 			const card = cardsByUserId.get(birthday.userId);
 
-			return card?.deliveryUrl ? `<@${birthday.userId}>: ${card.deliveryUrl}` : null;
+			const deliveryUrl = card?.deliveryUrl || (card?.url && deriveBirthdayDeliveryUrl(card.url));
+
+			return deliveryUrl ? `<@${birthday.userId}>: ${deliveryUrl}` : null;
 		})
 		.filter(Boolean);
 	const deliveryText = deliveryLines.length ? `\n\nBirthday card${deliveryLines.length === 1 ? `` : `s`}:\n${deliveryLines.join(`\n`)}` : ``;
@@ -774,7 +780,94 @@ async function sendPendingUpcomingBirthdayReminders(client, config, now, maxDays
 	return true;
 }
 
-async function sendPendingBirthdayAnnouncements(client, config, now) {
+async function failOverBirthdayCardNotification(client, card, failedGuildId, now) {
+	const deliveryUrl = card.deliveryUrl || deriveBirthdayDeliveryUrl(card.url);
+
+	if (!deliveryUrl) {
+		warn(`Birthday card ${card.id} has no valid delivery URL; fallback notification skipped.`);
+		return;
+	}
+
+	const candidates = (await getBirthdayCardDeliveryCandidates(card))
+		.filter(candidate => candidate.guildId !== failedGuildId && candidate.scheduledAt >= now.startOf(`hour`));
+	const remaining = [...candidates];
+
+	while (remaining.length) {
+		const nextGuildId = selectBirthdayCardDeliveryGuild(card, remaining);
+		const nextCandidate = remaining.find(candidate => candidate.guildId === nextGuildId);
+
+		await card.update({ deliveryGuildId: nextGuildId });
+
+		if (nextCandidate.scheduledAt > now) {
+			return;
+		}
+
+		// A tied server may already have posted without notifying. A separate
+		// card message makes the fallback independent of cron iteration order.
+		const config = await BirthdayConfigs.findByPk(nextGuildId);
+
+		try {
+			const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `day`), {
+				allowedMentions: { roles: [], users: [card.userId] },
+				content: `<@${card.userId}> Your birthday card: ${deliveryUrl}`,
+			});
+
+			if (sent) {
+				await card.update({ notificationDeliveredAt: new Date() });
+				return;
+			}
+		} catch (err) {
+			warn(`Fallback birthday card delivery failed for guild ${nextGuildId}:`, err);
+		}
+
+		remaining.splice(remaining.findIndex(candidate => candidate.guildId === nextGuildId), 1);
+	}
+
+	await card.update({ deliveryGuildId: null });
+}
+
+function shouldSendLateBirthdayCard(card, birthday, now) {
+	return !card.notificationDeliveredAt &&
+		!card.deliveryGuildId &&
+		card.year === now.year &&
+		birthday.lastBirthdayAnnouncementDate === now.toISODate() &&
+		getNextBirthdayDate(now, birthday).toISODate() === now.toISODate();
+}
+
+async function sendLateBirthdayCard(client, card, guildId) {
+	if (card.notificationDeliveredAt || card.deliveryGuildId) {
+		return false;
+	}
+
+	const [config, birthday] = await Promise.all([
+		BirthdayConfigs.findByPk(guildId),
+		BirthdayUsers.findOne({ raw: true, where: { guildId, userId: card.userId } }),
+	]);
+
+	if (!config || !birthday) {
+		return false;
+	}
+
+	const now = DateTime.now().setZone(config.timezone);
+	const deliveryUrl = card.deliveryUrl || deriveBirthdayDeliveryUrl(card.url);
+
+	if (!now.isValid || !deliveryUrl || !shouldSendLateBirthdayCard(card, birthday, now)) {
+		return false;
+	}
+
+	const sent = await sendBirthdayMessage(client, config, getBirthdayChannelId(config, `day`), {
+		allowedMentions: { roles: [], users: [card.userId] },
+		content: `<@${card.userId}> Your birthday card: ${deliveryUrl}`,
+	});
+
+	if (sent) {
+		await card.update({ deliveryGuildId: guildId, notificationDeliveredAt: new Date() });
+	}
+
+	return sent;
+}
+
+async function sendPendingBirthdayAnnouncements(client, config, now, { immediate = false } = {}) {
 	const todayKey = now.toISODate();
 	const birthdays = (await fetchBirthdaysForDate(config.guildId, {
 		day: now.day,
@@ -788,7 +881,11 @@ async function sendPendingBirthdayAnnouncements(client, config, now) {
 
 	const cards = await fetchBirthdayCardsForUsers(now.year, birthdays.map(birthday => birthday.userId));
 
-	await Promise.all([...cards.values()].map(card => reverifyBirthdayCardDelivery(card)));
+	await Promise.all([...cards.values()].map(card => reverifyBirthdayCardDelivery(card, {
+		force: immediate,
+		includeGuildId: immediate ? config.guildId : null,
+		notBefore: now.startOf(`hour`),
+	})));
 
 	const notifyingCards = [...cards.values()].filter(card =>
 		!card.notificationDeliveredAt && card.deliveryGuildId === config.guildId,
@@ -810,13 +907,7 @@ async function sendPendingBirthdayAnnouncements(client, config, now) {
 
 	if (!sent) {
 		await Promise.all(notifyingCards.map(card =>
-			reverifyBirthdayCardDelivery(card, {
-				excludeGuildIds: [config.guildId],
-				force: true,
-				notBefore: now.startOf(`hour`),
-				requirePendingAnnouncement: true,
-				transferOwnership: false,
-			}),
+			failOverBirthdayCardNotification(client, card, config.guildId, now),
 		));
 		return false;
 	}
@@ -854,7 +945,7 @@ async function announceNewlyStoredBirthday(client, guildId, userId) {
 	const action = getNewBirthdayAnnouncementAction(daysAway, now.hour, config.hour);
 
 	if (action === `birthday`) {
-		return sendPendingBirthdayAnnouncements(client, config, now);
+		return sendPendingBirthdayAnnouncements(client, config, now, { immediate: true });
 	}
 
 	if (action === `upcoming`) {
@@ -1018,6 +1109,7 @@ module.exports = {
 	getBirthdayNotificationUserIds,
 	getNewBirthdayAnnouncementAction,
 	getPendingUpcomingBirthdayEntries,
+	pendingBirthdayCardDeliveryCandidates,
 	getUpcomingBirthdayEntries,
 	isValidTimezone,
 	deriveBirthdayDeliveryUrl,
@@ -1031,6 +1123,8 @@ module.exports = {
 	reverifyBirthdayCardsForGuild,
 	reverifyBirthdayCardsForUser,
 	selectBirthdayCardDeliveryGuild,
+	sendLateBirthdayCard,
+	shouldSendLateBirthdayCard,
 	transferBirthdayCardsFromGuild,
 	IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 	UPCOMING_BIRTHDAY_DAYS,

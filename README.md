@@ -421,7 +421,7 @@ link automatically:
 /birthday card remove user: @member
 ```
 
-Upcoming card links are shown through an ephemeral selector. Cards are shared globally per member and birthday year across servers where that member has chosen to save their birthday; the birthday itself remains server-specific. A birthday person's own card stays hidden from them until their birthday. The earliest scheduled server sends the notifying mention with the card, while later servers render the mention and card without notifying the member again. Only the server that attached the card can replace or remove it, and ownership transfers to the next eligible server if Hachi leaves the owning server. Adding or removing a card refreshes participating birthday boards immediately when their channels are available. February 29 birthdays are celebrated on February 28 during non-leap years.
+Upcoming card links are shown through an ephemeral selector. Cards are shared globally per member and birthday year across servers where that member has chosen to save their birthday; the birthday itself remains server-specific. A birthday person's own card stays hidden from them until their birthday. The earliest scheduled server sends the notifying mention with the card, while later servers render the mention and card without notifying the member again. Only the current owning server can replace or remove the card; ownership transfers to the next eligible server if Hachi leaves the owning server or that server stops participating in the member's birthday. Adding or removing a card refreshes participating birthday boards immediately when their channels are available. February 29 birthdays are celebrated on February 28 during non-leap years.
 
 ### Profiles
 

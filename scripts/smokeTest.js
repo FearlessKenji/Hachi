@@ -1471,7 +1471,9 @@ function validatePureHelpers() {
 		getPendingUpcomingBirthdayEntries,
 		IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 		normalizeBirthdayCardUrl,
+		pendingBirthdayCardDeliveryCandidates,
 		selectBirthdayCardDeliveryGuild,
+		shouldSendLateBirthdayCard,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
@@ -1629,6 +1631,31 @@ function validatePureHelpers() {
 		]) === `400`,
 		`Birthday card delivery did not select the earliest absolute posting time.`,
 	);
+	const pendingDeliveryCandidates = pendingBirthdayCardDeliveryCandidates([
+		{ guildId: `100`, lastBirthdayAnnouncementDate: `2026-09-22`, scheduledAt: DateTime.fromISO(`2026-09-22T10:00:00Z`) },
+		{ guildId: `200`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T11:00:00Z`) },
+		{ guildId: `300`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+	], DateTime.fromISO(`2026-09-22T10:30:00Z`));
+
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, pendingDeliveryCandidates) === `200`,
+		`Birthday card notification could be assigned to a server that already posted.`,
+	);
+	assert(
+		pendingBirthdayCardDeliveryCandidates([
+			{ guildId: `100`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T10:00:00Z`) },
+		], DateTime.fromISO(`2026-09-22T10:30:00Z`), `100`).length === 1,
+		`A newly stored same-day birthday was excluded after its server posting hour.`,
+	);
+	const lateCardDate = DateTime.fromISO(`2026-09-22T18:00:00Z`);
+	const lateCard = { year: 2026, deliveryGuildId: null, notificationDeliveredAt: null };
+	const postedBirthday = { month: 9, day: 22, lastBirthdayAnnouncementDate: `2026-09-22` };
+
+	assert(shouldSendLateBirthdayCard(lateCard, postedBirthday, lateCardDate), `A card set after today's birthday post was not eligible for delivery.`);
+	assert(!shouldSendLateBirthdayCard({ ...lateCard, notificationDeliveredAt: new Date() }, postedBirthday, lateCardDate),
+		`An already delivered birthday card could be notified again.`);
+	assert(!shouldSendLateBirthdayCard(lateCard, { ...postedBirthday, day: 23 }, lateCardDate),
+		`A card was eligible for late delivery before the member's birthday.`);
 	const notificationCards = new Map([
 		[`winner`, { deliveryGuildId: `100`, notificationDeliveredAt: null }],
 		[`later`, { deliveryGuildId: `200`, notificationDeliveredAt: null }],
