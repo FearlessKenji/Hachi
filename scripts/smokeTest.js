@@ -1671,6 +1671,24 @@ function validatePureHelpers() {
 		], notificationCards, `100`).join(`,`) === `winner,no-card`,
 		`Birthday notification filtering did not limit global-card pings to the selected server.`,
 	);
+	assert(IMMEDIATE_BIRTHDAY_REMINDER_DAYS === 2, `Urgent birthday reminder window should stay at two days.`);
+	const birthdayReminderNow = DateTime.fromISO(`2026-09-01T12:00:00`, { zone: `UTC` });
+	const pendingBirthdayReminders = getPendingUpcomingBirthdayEntries([
+		{ day: 2, guildId: `guild`, month: 9, userId: `one` },
+		{ day: 3, guildId: `guild`, month: 9, userId: `two` },
+		{ day: 15, guildId: `guild`, month: 9, userId: `fourteen` },
+		{ day: 16, guildId: `guild`, month: 9, userId: `fifteen` },
+		{ day: 5, guildId: `guild`, lastUpcomingReminderDate: `2026-09-05`, month: 9, userId: `sent` },
+	], birthdayReminderNow);
+
+	assert(
+		pendingBirthdayReminders.map(entry => entry.userId).join(`,`) === `one,two,fourteen`,
+		`Upcoming birthday reminders did not include the full unannounced two-week window.`,
+	);
+	assert(getNewBirthdayAnnouncementAction(2, 1, 12) === `upcoming`, `Two-day birthday reminder was not immediate.`);
+	assert(getNewBirthdayAnnouncementAction(3, 13, 12) === null, `Non-urgent birthday reminder did not wait for the schedule.`);
+	assert(getNewBirthdayAnnouncementAction(0, 13, 12) === `birthday`, `Late same-day birthday did not announce immediately.`);
+	assert(getNewBirthdayAnnouncementAction(0, 11, 12) === null, `Early same-day birthday did not wait for the schedule.`);
 	assert(
 		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
 		`Daily Birthday Board mode did not preserve daily replacement behavior.`,
