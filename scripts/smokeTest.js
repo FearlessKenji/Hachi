@@ -1466,10 +1466,14 @@ function validatePureHelpers() {
 		deriveBirthdayDeliveryUrl,
 		formatBoardEntry,
 		getBirthdayBoardRefreshAction,
+		getBirthdayNotificationUserIds,
 		getNewBirthdayAnnouncementAction,
 		getPendingUpcomingBirthdayEntries,
 		IMMEDIATE_BIRTHDAY_REMINDER_DAYS,
 		normalizeBirthdayCardUrl,
+		pendingBirthdayCardDeliveryCandidates,
+		selectBirthdayCardDeliveryGuild,
+		shouldSendLateBirthdayCard,
 		UPCOMING_BIRTHDAY_DAYS,
 	} = requireFresh(`utils`, `birthdays.js`);
 	const { normalizeColorInput } = requireFresh(`utils`, `colors.js`);
@@ -1563,15 +1567,27 @@ function validatePureHelpers() {
 	);
 	assert(birthdayAutocompletes(`jan`).some(choice => choice.value === `January`), `Birthday autocomplete did not find January.`);
 	assert(UPCOMING_BIRTHDAY_DAYS === 14, `Birthday board upcoming window should stay at two weeks.`);
-	const birthdayPanelWithoutPingRole = buildBirthdayPanelComponents({ dayRoleId: null }).toJSON();
-	const birthdayPanelWithPingRole = buildBirthdayPanelComponents({ dayRoleId: `456` }).toJSON();
+	const birthdayPanelWithoutCard = buildBirthdayPanelComponents({ dayRoleId: null }, [
+		{ daysAway: 3, card: null },
+		{ daysAway: 0, card: {} },
+	]).toJSON();
+	const birthdayPanelWithCard = buildBirthdayPanelComponents({ dayRoleId: `456` }, [
+		{ daysAway: 3, card: {} },
+	]).toJSON();
 
 	assert(
-		birthdayPanelWithoutPingRole.components.length === 2,
-		`Birthday board unexpectedly showed the ping toggle without a Day of Birthday Role.`,
+		birthdayPanelWithoutCard.components.length === 1 &&
+		birthdayPanelWithoutCard.components[0].custom_id === `birthday:panel:set`,
+		`Birthday board showed the signing button without an upcoming card.`,
 	);
 	assert(
-		birthdayPanelWithPingRole.components.some(component =>
+		birthdayPanelWithCard.components.some(component =>
+			component.custom_id === `birthday:panel:sign` && component.label === `Sign Upcoming Card`,
+		),
+		`Birthday board did not show the signing button for an upcoming card.`,
+	);
+	assert(
+		birthdayPanelWithCard.components.some(component =>
 			component.custom_id === `birthday:panel:toggleDayRole` && component.label === `Toggle Birthday Pings`,
 		),
 		`Birthday board did not show the configured Day of Birthday Role toggle.`,
@@ -1594,6 +1610,67 @@ function validatePureHelpers() {
 	assert(getNewBirthdayAnnouncementAction(3, 13, 12) === null, `Non-urgent birthday reminder did not wait for the schedule.`);
 	assert(getNewBirthdayAnnouncementAction(0, 13, 12) === `birthday`, `Late same-day birthday did not announce immediately.`);
 	assert(getNewBirthdayAnnouncementAction(0, 11, 12) === null, `Early same-day birthday did not wait for the schedule.`);
+	const deliveryCard = { guildId: `200`, userId: `birthday-user`, year: 2026 };
+	const tiedDeliveryCandidates = [
+		{ guildId: `100`, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+		{ guildId: `200`, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+	];
+
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, tiedDeliveryCandidates) === `200`,
+		`The card-owning server did not win an equal-time birthday delivery tie.`,
+	);
+	assert(
+		selectBirthdayCardDeliveryGuild({ ...deliveryCard, guildId: `300` }, tiedDeliveryCandidates) === `100`,
+		`Equal-time birthday delivery did not fall back to the stable lowest guild ID.`,
+	);
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, [
+			...tiedDeliveryCandidates,
+			{ guildId: `400`, scheduledAt: DateTime.fromISO(`2026-09-22T11:00:00Z`) },
+		]) === `400`,
+		`Birthday card delivery did not select the earliest absolute posting time.`,
+	);
+	const pendingDeliveryCandidates = pendingBirthdayCardDeliveryCandidates([
+		{ guildId: `100`, lastBirthdayAnnouncementDate: `2026-09-22`, scheduledAt: DateTime.fromISO(`2026-09-22T10:00:00Z`) },
+		{ guildId: `200`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T11:00:00Z`) },
+		{ guildId: `300`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T12:00:00Z`) },
+	], DateTime.fromISO(`2026-09-22T10:30:00Z`));
+
+	assert(
+		selectBirthdayCardDeliveryGuild(deliveryCard, pendingDeliveryCandidates) === `200`,
+		`Birthday card notification could be assigned to a server that already posted.`,
+	);
+	assert(
+		pendingBirthdayCardDeliveryCandidates([
+			{ guildId: `100`, lastBirthdayAnnouncementDate: null, scheduledAt: DateTime.fromISO(`2026-09-22T10:00:00Z`) },
+		], DateTime.fromISO(`2026-09-22T10:30:00Z`), `100`).length === 1,
+		`A newly stored same-day birthday was excluded after its server posting hour.`,
+	);
+	const lateCardDate = DateTime.fromISO(`2026-09-22T18:00:00Z`);
+	const lateCard = { year: 2026, deliveryGuildId: null, notificationDeliveredAt: null };
+	const postedBirthday = { month: 9, day: 22, lastBirthdayAnnouncementDate: `2026-09-22` };
+
+	assert(shouldSendLateBirthdayCard(lateCard, postedBirthday, lateCardDate), `A card set after today's birthday post was not eligible for delivery.`);
+	assert(!shouldSendLateBirthdayCard({ ...lateCard, notificationDeliveredAt: new Date() }, postedBirthday, lateCardDate),
+		`An already delivered birthday card could be notified again.`);
+	assert(!shouldSendLateBirthdayCard(lateCard, { ...postedBirthday, day: 23 }, lateCardDate),
+		`A card was eligible for late delivery before the member's birthday.`);
+	const notificationCards = new Map([
+		[`winner`, { deliveryGuildId: `100`, notificationDeliveredAt: null }],
+		[`later`, { deliveryGuildId: `200`, notificationDeliveredAt: null }],
+		[`delivered`, { deliveryGuildId: `100`, notificationDeliveredAt: new Date() }],
+	]);
+
+	assert(
+		getBirthdayNotificationUserIds([
+			{ userId: `winner` },
+			{ userId: `later` },
+			{ userId: `delivered` },
+			{ userId: `no-card` },
+		], notificationCards, `100`).join(`,`) === `winner,no-card`,
+		`Birthday notification filtering did not limit global-card pings to the selected server.`,
+	);
 	assert(
 		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: false }, [], null) === `replace`,
 		`Daily Birthday Board mode did not preserve daily replacement behavior.`,

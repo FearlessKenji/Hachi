@@ -6,6 +6,20 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.10.0 - 2026-09-22
+
+### Birthdays
+
+- A birthday card is now shared across Hachi servers where the member has saved
+  their birthday, so communities can contribute to one card. The earliest
+  scheduled server notifies the member; later servers show the birthday mention
+  and card without sending another member notification. If delivery fails,
+  Hachi tries the next eligible server. Birthday Boards show
+  `Sign Upcoming Card` only while an upcoming card is available.
+- Only the server that currently owns a global card can replace or remove it.
+  Ownership transfers to the next eligible server if Hachi leaves the owning
+  server or that server no longer participates in the member's birthday.
+
 # v3.9.0 - 2026-09-11
 
 ### Birthdays

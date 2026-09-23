@@ -8,7 +8,6 @@ const path = require(`node:path`);
 const { Op } = require(`sequelize`);
 const {
 	BirthdayConfigs,
-	BirthdayCards,
 	BirthdayUsers,
 	Channels,
 	CommandMonitorWhitelists,
@@ -28,6 +27,7 @@ const {
 	sequelize,
 } = require(`../database/dbObjects.js`);
 const { debug, info, warn } = require(`./writeLog.js`);
+const { transferBirthdayCardsFromGuild } = require(`./birthdays.js`);
 
 const LEFT_SERVER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 const evidenceRoot = path.resolve(__dirname, `../data/evidence`);
@@ -97,6 +97,7 @@ async function markServerLeft(guild, { now = new Date() } = {}) {
 		guildId: guild.id,
 		leftAt: now,
 	});
+	await transferBirthdayCardsFromGuild(guild.id);
 
 	info(`Marked server as left: ${guild.name || `Unknown server`} | ID: ${guild.id}`, {
 		meta: {
@@ -154,6 +155,7 @@ async function markMissingServersLeft(guildIds, now) {
 		{ leftAt: now },
 		{ where: whereGuildIds(missingGuildIds) },
 	);
+	await Promise.all(missingGuildIds.map(guildId => transferBirthdayCardsFromGuild(guildId)));
 
 	return missingGuildIds;
 }
@@ -215,6 +217,10 @@ async function deleteEvidenceDirectories(guildIds) {
 async function deleteGuildScopedRows(guildIds) {
 	const guildWhere = whereGuildIds(guildIds);
 
+	// Global birthday cards survive server cleanup; ownership and notification
+	// responsibility move before the departed server's scoped rows are removed.
+	await Promise.all(guildIds.map(guildId => transferBirthdayCardsFromGuild(guildId)));
+
 	await sequelize.transaction(async transaction => {
 		const incidentRows = await RaidIncidents.findAll({
 			attributes: [`id`],
@@ -242,7 +248,6 @@ async function deleteGuildScopedRows(guildIds) {
 		await CommandMonitorWhitelists.destroy({ transaction, where: guildWhere });
 		await ModmailTickets.destroy({ transaction, where: guildWhere });
 		await ModmailConfigs.destroy({ transaction, where: guildWhere });
-		await BirthdayCards.destroy({ transaction, where: guildWhere });
 		await BirthdayConfigs.destroy({ transaction, where: guildWhere });
 		await BirthdayUsers.destroy({ transaction, where: guildWhere });
 		await RulesVerificationMessages.destroy({ transaction, where: guildWhere });

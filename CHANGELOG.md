@@ -4,6 +4,18 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.10.0 - 2026-09-22
+
+### Added
+
+- Added global birthday cards per member/year with deterministic notification-server selection, fallback and late-card delivery, and automatic ownership transfer when Hachi departs the owning server.
+
+### Changed
+
+- Updated the project version to `3.10.0`.
+- Updated birthday boards, signing selectors, and day-of announcements to reuse global cards while keeping birthday enrollment and announcement history server-specific; boards show the signing button only when an upcoming card exists.
+- Removed duplicate birthday reminder assertions introduced when merging `main`, restoring CI syntax, lint, and smoke checks.
+
 ## v3.9.0 - 2026-09-11
 
 ### Added

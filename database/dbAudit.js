@@ -160,7 +160,7 @@ const EXPECTED_SCHEMA = [
 		name: `birthdayCards`,
 		columns: [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
-			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`guildId`, `VARCHAR(255)`, { nullable: true, references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
 			column(`userId`, `VARCHAR(255)`),
 			column(`year`, `INTEGER`),
 			column(`url`, `TEXT`),
@@ -168,10 +168,12 @@ const EXPECTED_SCHEMA = [
 			column(`createdBy`, `VARCHAR(255)`, { nullable: true }),
 			column(`createdAt`, `DATETIME`),
 			column(`updatedAt`, `DATETIME`, { nullable: true }),
+			column(`deliveryGuildId`, `VARCHAR(255)`, { nullable: true }),
+			column(`notificationDeliveredAt`, `DATETIME`, { nullable: true }),
 		],
 		indexes: [
-			index(`birthdayCardsGuildUserYear`, [`guildId`, `userId`, `year`], { unique: true }),
-			index(`birthdayCardsGuildYear`, [`guildId`, `year`]),
+			index(`birthdayCardsUserYear`, [`userId`, `year`], { unique: true }),
+			index(`birthdayCardsDeliveryGuildYear`, [`deliveryGuildId`, `year`]),
 		],
 	},
 	{
@@ -761,6 +763,15 @@ async function auditTable(db, tableSpec, report) {
 				count: Math.max(1, nulls),
 				id: `${tableSpec.name}:${expectedColumn.name}:nullable-column`,
 				message: `${tableSpec.name}.${expectedColumn.name} should be NOT NULL.`,
+				table: tableSpec.name,
+				type: `nullable-column`,
+			});
+		}
+
+		if (expectedColumn.nullable && currentColumn.notnull) {
+			addIssue(report.safeIssues, {
+				id: `${tableSpec.name}:${expectedColumn.name}:nullable-column`,
+				message: `${tableSpec.name}.${expectedColumn.name} should allow NULL.`,
 				table: tableSpec.name,
 				type: `nullable-column`,
 			});
