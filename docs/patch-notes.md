@@ -27,8 +27,8 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
   Hachi tries the next eligible server. Birthday Boards show
   `Sign Upcoming Card` only while an upcoming card is available.
 - Only the server that currently owns a global card can replace or remove it.
-  Ownership transfers to the next eligible server if the owning server leaves
-  Hachi or no longer participates in that member's birthday.
+  Ownership transfers to the next eligible server if Hachi leaves the owning
+  server or that server no longer participates in the member's birthday.
 
 # v3.8.0 - 2026-08-29
 

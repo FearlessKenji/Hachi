@@ -9,7 +9,7 @@ Notable changes to Hachi are documented here.
 ### Added
 
 - Added per-birthday reminder tracking so every unannounced birthday inside the two-week window receives one upcoming reminder, including immediate reminders for birthdays added one or two days beforehand.
-- Added global birthday cards per member/year with deterministic notification-server selection, fallback and late-card delivery, and automatic ownership transfer when Hachi leaves the owning server.
+- Added global birthday cards per member/year with deterministic notification-server selection, fallback and late-card delivery, and automatic ownership transfer when Hachi departs the owning server.
 
 ### Changed
 
