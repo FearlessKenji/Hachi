@@ -4,6 +4,14 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.10.1 - 2026-09-29
+
+### Changed
+
+- Updated the project version to `3.10.1`.
+- Updated upcoming-only birthday boards to post daily during the two-week birthday window and once the day after, while keeping card-triggered refreshes separate from scheduled posts.
+- Updated the transitive `undici` dependency to `6.28.1` to address a WebSocket denial-of-service advisory.
+
 ## v3.10.0 - 2026-09-22
 
 ### Added

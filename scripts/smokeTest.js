@@ -1681,7 +1681,15 @@ function validatePureHelpers() {
 	);
 	assert(
 		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [{}], { edit: () => true }) === `edit`,
-		`Upcoming-only Birthday Board mode did not maintain its existing message.`,
+		`Card updates did not edit the existing upcoming-only Birthday Board.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [{}], { edit: () => true }, { scheduled: true }) === `replace`,
+		`Upcoming-only Birthday Board mode did not post a fresh daily board.`,
+	);
+	assert(
+		getBirthdayBoardRefreshAction({ boardOnlyWhenUpcoming: true }, [], null, { hadBirthdayYesterday: true, scheduled: true }) === `replace`,
+		`Upcoming-only Birthday Board mode did not post on the day after a birthday.`,
 	);
 	const birthdayCommandSource = fs.readFileSync(resolveProject(`commands`, `globalCommands`, `utility`, `birthday.js`), `utf8`);
 

@@ -6,6 +6,12 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.10.1 - 2026-09-29
+
+### Birthdays
+
+- Servers using “Upcoming birthdays only” now receive a fresh Birthday Board each day from two weeks before a birthday through the day after it.
+
 # v3.10.0 - 2026-09-22
 
 ### Birthdays
