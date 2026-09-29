@@ -560,7 +560,7 @@ function buildBirthdayBoardEmbed(guild, now, entries) {
 		`No birthdays today.`;
 	const upcomingText = upcomingEntries.length ?
 		upcomingEntries.map(formatBoardEntry).join(`\n`) :
-		`No upcoming birthdays in the next two weeks.`;
+		`No upcoming birthdays.`;
 
 	return new EmbedBuilder()
 		.setColor(BIRTHDAY_BOARD_COLOR)
@@ -955,19 +955,35 @@ async function announceNewlyStoredBirthday(client, guildId, userId) {
 	return false;
 }
 
-function getBirthdayBoardRefreshAction(config, entries, existingMessage) {
+function getBirthdayBoardRefreshAction(config, entries, existingMessage, options = {}) {
 	if (!config.boardOnlyWhenUpcoming) {
 		return `replace`;
 	}
 
-	if (!entries.length) {
+	if (!entries.length && !options.hadBirthdayYesterday) {
 		return `remove`;
+	}
+
+	if (options.scheduled) {
+		return `replace`;
 	}
 
 	return existingMessage?.edit ? `edit` : `replace`;
 }
 
-async function refreshBirthdayBoard(client, config, now) {
+async function hadBirthdayYesterday(config, now) {
+	const yesterday = now.minus({ days: 1 }).startOf(`day`);
+	const birthdays = await BirthdayUsers.findAll({
+		attributes: [`month`, `day`],
+		raw: true,
+		where: { guildId: config.guildId },
+	});
+
+	// Resolve dates through the same leap-day rule used for the upcoming board.
+	return birthdays.some(birthday => getNextBirthdayDate(yesterday, birthday).hasSame(yesterday, `day`));
+}
+
+async function refreshBirthdayBoard(client, config, now, options = {}) {
 	const channelId = getBirthdayChannelId(config, `board`);
 
 	if (!channelId) {
@@ -988,13 +1004,18 @@ async function refreshBirthdayBoard(client, config, now) {
 	}
 
 	const entries = await getUpcomingBirthdayEntries(guild, config, { now });
+	const birthdayYesterday = config.boardOnlyWhenUpcoming && !entries.length ?
+		await hadBirthdayYesterday(config, now) :
+		false;
 	const existingMessage = config.boardMessageId ?
 		await channel.messages.fetch(config.boardMessageId).catch(() => null) :
 		null;
-	const refreshAction = getBirthdayBoardRefreshAction(config, entries, existingMessage);
+	const refreshAction = getBirthdayBoardRefreshAction(config, entries, existingMessage, {
+		hadBirthdayYesterday: birthdayYesterday,
+		scheduled: options.scheduled,
+	});
 
-	// Upcoming-only mode keeps channels quiet between birthday windows and edits
-	// the active board in place so its countdowns remain current without reposting.
+	// Card changes edit the current board; the scheduled refresh posts a fresh one.
 	if (refreshAction === `remove`) {
 		if (existingMessage) {
 			await existingMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
@@ -1002,7 +1023,7 @@ async function refreshBirthdayBoard(client, config, now) {
 
 		await config.update({
 			boardMessageId: null,
-			lastBoardPostDate: now.toISODate(),
+			...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
 		});
 		return false;
 	}
@@ -1011,7 +1032,6 @@ async function refreshBirthdayBoard(client, config, now) {
 
 	if (refreshAction === `edit`) {
 		await existingMessage.edit(payload);
-		await config.update({ lastBoardPostDate: now.toISODate() });
 		return true;
 	}
 
@@ -1025,7 +1045,7 @@ async function refreshBirthdayBoard(client, config, now) {
 
 	await config.update({
 		boardMessageId: message.id,
-		lastBoardPostDate: now.toISODate(),
+		...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
 	});
 
 	return true;
@@ -1078,7 +1098,7 @@ async function processBirthdayConfig(client, config) {
 	await sendPendingBirthdayAnnouncements(client, config, now);
 
 	if (config.lastBoardPostDate !== todayKey) {
-		await refreshBirthdayBoard(client, config, now);
+		await refreshBirthdayBoard(client, config, now, { scheduled: true });
 	}
 }
 

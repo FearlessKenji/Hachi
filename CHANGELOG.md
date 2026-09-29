@@ -4,6 +4,10 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+### Changed
+
+- Updated upcoming-only birthday boards to post daily during the two-week birthday window and once the day after, while keeping card-triggered refreshes separate from scheduled posts.
+
 ## v3.10.0 - 2026-09-22
 
 ### Added
