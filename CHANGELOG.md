@@ -4,6 +4,14 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.11.0 - 2026-10-11
+
+### Changed
+
+- Updated the project version to `3.11.0`.
+- Updated direct dependencies and compatible transitive packages, including security fixes for `brace-expansion` and `moment`.
+- Raised the minimum Node.js version to `22.13.0` for updated package requirements and switched cron shutdown checks to its v4 activity property.
+
 ## v3.10.1 - 2026-09-29
 
 ### Changed
