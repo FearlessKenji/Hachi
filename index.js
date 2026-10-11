@@ -76,7 +76,7 @@ function shutdown() {
 
 	if (client.cronJobs) {
 		for (const [name, job] of Object.entries(client.cronJobs)) {
-			if (job.running) {
+			if (job.isActive) {
 				job.stop();
 				info(`${name} cron stopped.`);
 			}

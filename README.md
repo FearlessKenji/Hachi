@@ -501,7 +501,7 @@ Hachi writes runtime logs in the `logs/` folder. The `logs/` folder is ignored b
 
 - If Discord global commands do not appear immediately, wait a while. Global command updates can take time to propagate.
 - If guild commands do not appear, confirm `guildIds` includes the Discord server where you are testing and run Deploy Commands again.
-- If HachiGen reports missing Node.js tooling, install Node.js 20.17.0 or newer. npm is included with Node.js and may be needed while HachiGen installs package dependencies.
+- If HachiGen reports missing Node.js tooling, install Node.js 22.13.0 or newer. npm is included with Node.js and may be needed while HachiGen installs package dependencies.
 - If an executable icon looks stale after a rebuild, close File Explorer windows pointed at the folder or restart Windows Explorer. Windows caches icon previews aggressively.
 - If PM2 status looks stale, use Refresh in HachiGen and check the Logs page for command output.
 

@@ -6,6 +6,12 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.11.0 - 2026-10-11
+
+### Server requirements
+
+- Hachi now requires Node.js 22.13.0 or newer.
+
 # v3.10.1 - 2026-09-29
 
 ### Birthdays
