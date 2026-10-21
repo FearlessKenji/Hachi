@@ -4,6 +4,8 @@
 const js = require(`@eslint/js`);
 
 module.exports = [
+	// HachiGen creates this ignored runtime directory with generated worker code.
+	{ ignores: [`.hachigen/**`] },
 	js.configs.recommended,
 
 	{

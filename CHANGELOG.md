@@ -4,6 +4,17 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.12.0 - 2026-10-20
+
+### Added
+
+- Tracked Kick and Twitch accounts by provider ID, followed each platform's current name independently, logged each detected rename, and displayed both names under one saved entry in `/stream list`.
+
+### Fixed
+
+- Limited Kick polling to enabled channels, skipped replay lookups for unresolved slugs, and replaced repeated channel and VoD 404 errors with per-channel warnings.
+- Excluded HachiGen's ignored runtime worker directory from repository linting.
+
 ## v3.11.0 - 2026-10-11
 
 ### Changed

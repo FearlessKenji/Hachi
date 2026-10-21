@@ -7,6 +7,8 @@ const { Channels } = require(`../database/dbObjects.js`);
 const kickUser = require(`./kickUser.js`);
 const kickStreams = require(`./kickStreams.js`);
 const kickVods = require(`./kickVods.js`);
+const { getChannelsByBroadcasterIds, normalizeBroadcasterId } = require(`./kickIdentity.js`);
+const { getIdentityMap, recordStreamName } = require(`./streamNameMonitor.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const {
@@ -20,6 +22,16 @@ const {
 } = require(`./streamUtils.js`);
 const kickClientId = process.env.kickClientId;
 const provider = `Kick`;
+const unavailableChannelWarnings = new Set();
+
+async function observeKickName(chan, streamInfo) {
+	const observedUserId = normalizeBroadcasterId(streamInfo?.broadcaster_user_id);
+	if (!observedUserId || typeof streamInfo.slug !== `string` || !streamInfo.slug) {
+		return;
+	}
+
+	await recordStreamName(chan, `kick`, observedUserId, streamInfo.slug);
+}
 
 function findKickVodUrl(embed) {
 	const candidates = [
@@ -33,7 +45,7 @@ function findKickVodUrl(embed) {
 	return match || null;
 }
 
-async function updateVodMessage(chan, server, guild, client) {
+async function updateVodMessage(chan, server, guild, client, kickSlug) {
 	if (!chan.kickMessageId || !chan.kickIsLive || !chan.kickNotif) {
 		return;
 	}
@@ -58,8 +70,13 @@ async function updateVodMessage(chan, server, guild, client) {
 		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
 		return;
 	}
+	if (!kickSlug) {
+		// The channel lookup had no result, so only repair notifications that
+		// already have a replay link; do not ask the VoD endpoint for this slug.
+		return;
+	}
 
-	const vod = await kickVods.getLatest(chan.channelName);
+	const vod = await kickVods.getLatest(kickSlug);
 
 	if (!vod?.url) {
 		// Keep kickIsLive true so the next Kick cron tick retries until Kick
@@ -93,32 +110,69 @@ async function updateVodMessage(chan, server, guild, client) {
 async function getKick(client) {
 	const { kickAuthToken } = authTokens.getAuthTokens();
 	const { servers, channels, channelsByGuild } = await loadState();
-	const channelNames = channels.map(c => c.channelName);
-	const streamsData = await kickStreams.getStreams(
-		channelNames,
-		kickClientId,
-		kickAuthToken,
-	);
+	const identityMap = await getIdentityMap(channels, `kick`);
+	const channelNames = channels
+		.filter(c => c.kickNotif && !identityMap.get(c.id)?.providerUserId)
+		.map(c => c.channelName);
+	const [streamsData, channelsById] = await Promise.all([
+		kickStreams.getStreams(channelNames, kickClientId, kickAuthToken),
+		getChannelsByBroadcasterIds(
+			channels.filter(c => c.kickNotif).map(c => identityMap.get(c.id)?.providerUserId),
+			kickClientId,
+			kickAuthToken,
+		),
+	]);
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
 		const serverChannels = channelsByGuild.get(server.guildId) || [];
 		const channelPromises = serverChannels.map(async (chan) => {
-			const streamRecord = streamsData[chan.channelName];
-			const streamInfo = streamRecord?.data;
-
-			if (!streamRecord || streamRecord.error) {
-				return;
-			}
-
 			if (!chan.kickNotif) {
 				return;
 			}
 
-			if (!streamInfo?.stream?.is_live) {
+			const savedUserId = normalizeBroadcasterId(identityMap.get(chan.id)?.providerUserId);
+			const streamRecord = streamsData[chan.channelName];
+			const slugInfo = streamRecord?.data;
+			// Once a row is bound, a recycled old slug must not post for a
+			// different broadcaster. The ID response also survives a rename.
+			const streamInfo = savedUserId ?
+				(channelsById.get(savedUserId) ||
+					(normalizeBroadcasterId(slugInfo?.broadcaster_user_id) === savedUserId ? slugInfo : null)) :
+				slugInfo;
+			try {
+				await observeKickName(chan, streamInfo);
+			} catch (err) {
+				error(`Failed to record Kick channel name for ${chan.channelName}:`, err);
+			}
+
+			if (!savedUserId && (!streamRecord || streamRecord.error)) {
+				return;
+			}
+
+			if (!streamInfo) {
+				// An unresolved account is not evidence that a tracked stream ended.
+				// Inspect the existing notification without starting a new VoD lookup.
+				if (!unavailableChannelWarnings.has(chan.id)) {
+					warn(`Kick could not resolve saved entry ${chan.channelName}. If its name changed before Hachi recorded its ID, remove the stale entry and add the current name.`);
+					unavailableChannelWarnings.add(chan.id);
+				}
 				if (chan.kickIsLive) {
 					try {
-						await updateVodMessage(chan, server, guild, client);
+						await updateVodMessage(chan, server, guild, client, null);
+					} catch (err) {
+						error(`Failed to check ended Kick message for ${chan.channelName}:`, err);
+					}
+				}
+				return;
+			}
+
+			unavailableChannelWarnings.delete(chan.id);
+
+			if (!streamInfo.stream?.is_live) {
+				if (chan.kickIsLive) {
+					try {
+						await updateVodMessage(chan, server, guild, client, streamInfo.slug || (!savedUserId && chan.channelName));
 					} catch (err) {
 						error(`Failed to update ended Kick message for ${chan.channelName}:`, err);
 					}
