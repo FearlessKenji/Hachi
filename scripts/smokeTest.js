@@ -4,6 +4,7 @@ const childProcess = require(`node:child_process`);
 const fs = require(`node:fs`);
 const os = require(`node:os`);
 const path = require(`node:path`);
+const { URL } = require(`node:url`);
 
 const projectRoot = path.resolve(__dirname, `..`);
 process.chdir(projectRoot);
@@ -1865,6 +1866,410 @@ function validatePureHelpers() {
 	assert(typeof dateToString(new Date(`2026-07-07T12:00:00Z`)) === `string`, `dateToString did not return a string.`);
 }
 
+async function validateKickVodLookup() {
+	const originalFetch = global.fetch;
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const originalWarn = log.warn;
+	const originalError = log.error;
+	const warnings = [];
+	const errors = [];
+	const vodModulePath = resolveProject(`modules`, `kickVods.js`);
+
+	try {
+		log.warn = message => warnings.push(message);
+		log.error = (message, err) => errors.push({ message, err });
+		const { getLatest } = requireFresh(`modules`, `kickVods.js`);
+		const missingChannelBody = `No query results for model [App\\Models\\Channel].`;
+
+		global.fetch = async () => ({
+			ok: false,
+			status: 404,
+			text: async () => missingChannelBody,
+		});
+		assert(await getLatest(`missing_kick_channel`) === null, `A missing Kick channel should not produce a VoD.`);
+		assert(await getLatest(`missing_kick_channel`) === null, `A repeated missing Kick channel should not produce a VoD.`);
+		global.fetch = async () => ({
+			ok: false,
+			status: 404,
+			text: async () => JSON.stringify({ message: missingChannelBody }),
+		});
+		assert(await getLatest(`missing_kick_channel`) === null, `A JSON-formatted Kick 404 should not produce a VoD.`);
+		assert(warnings.length === 1 && errors.length === 0, `A missing Kick channel should warn once without an error stack.`);
+
+		let requestedUrl = null;
+		global.fetch = async url => {
+			requestedUrl = url;
+			return {
+				ok: true,
+				json: async () => ({
+					slug: `current_kick_channel`,
+					previous_livestreams: [{
+						session_title: `Test stream`,
+						video: { uuid: `test-vod` },
+					}],
+				}),
+			};
+		};
+		const vod = await getLatest(`current_kick_channel`);
+		assert(requestedUrl === `https://kick.com/api/v1/channels/current_kick_channel`, `Kick VoD lookup used the wrong channel endpoint.`);
+		assert(vod?.url === `https://kick.com/current_kick_channel/videos/test-vod`, `Kick VoD lookup did not return the replay link.`);
+		assert(vod?.title === `Test stream`, `Kick VoD lookup lost the replay title.`);
+	} finally {
+		// This test owns the fetch stub until its awaited lookups finish.
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = originalFetch;
+		log.warn = originalWarn;
+		log.error = originalError;
+		delete require.cache[require.resolve(vodModulePath)];
+	}
+}
+
+async function validateKickMissingSlugResponse() {
+	const originalFetch = global.fetch;
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = log.error;
+	const errors = [];
+	const streamUtilsPath = resolveProject(`modules`, `streamUtils.js`);
+	const kickStreamsPath = resolveProject(`modules`, `kickStreams.js`);
+
+	try {
+		log.error = (message, err) => errors.push({ message, err });
+		delete require.cache[require.resolve(streamUtilsPath)];
+		const { getStreams } = requireFresh(`modules`, `kickStreams.js`);
+		global.fetch = async () => ({
+			ok: false,
+			status: 404,
+			text: async () => `No query results for model [App\\Models\\Channel].`,
+		});
+
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const result = (await getStreams([`missing_kick_channel`], `client`, `token`)).missing_kick_channel;
+			assert(result?.data === null && result.error === false,
+				`Kick HTTP 404 should be an unresolved channel, not a failed poll.`);
+		}
+		assert(errors.length === 0, `Repeated Kick HTTP 404 responses should not produce error logs.`);
+	} finally {
+		// Keep the fetch stub scoped to this awaited provider lookup.
+		global.fetch = originalFetch;
+		log.error = originalError;
+		delete require.cache[require.resolve(kickStreamsPath)];
+		delete require.cache[require.resolve(streamUtilsPath)];
+	}
+}
+
+async function validateKickChannelRouting() {
+	const kickStreams = require(resolveProject(`modules`, `kickStreams.js`));
+	const kickUser = require(resolveProject(`modules`, `kickUser.js`));
+	const kickVods = require(resolveProject(`modules`, `kickVods.js`));
+	const kickIdentity = require(resolveProject(`modules`, `kickIdentity.js`));
+	const streamNameMonitor = require(resolveProject(`modules`, `streamNameMonitor.js`));
+	const streamUtils = require(resolveProject(`modules`, `streamUtils.js`));
+	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
+	const { Channels } = require(resolveProject(`database`, `dbObjects.js`));
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const original = {
+		fetch: global.fetch,
+		getStreams: kickStreams.getStreams,
+		getUser: kickUser.getUser,
+		getLatest: kickVods.getLatest,
+		getChannelsByBroadcasterIds: kickIdentity.getChannelsByBroadcasterIds,
+		getIdentityMap: streamNameMonitor.getIdentityMap,
+		recordStreamName: streamNameMonitor.recordStreamName,
+		loadState: streamUtils.loadState,
+		targetChannel: streamUtils.targetChannel,
+		fetchMessage: streamUtils.fetchMessage,
+		offlineEmbed: streamUtils.offlineEmbed,
+		getAuthTokens: authTokens.getAuthTokens,
+		update: Channels.update,
+		warn: log.warn,
+	};
+	const channel = {
+		id: 1,
+		channelName: `old_kick_name`,
+		kickMessageId: `message-id`,
+		kickIsLive: true,
+		kickNotif: true,
+	};
+	const twitchOnlyChannel = { ...channel, id: 2, channelName: `twitch_only_name`, kickNotif: false };
+	const server = { guildId: `guild-id` };
+	const edits = [];
+	const warnings = [];
+	const message = {
+		embeds: [{ url: `https://kick.com/old_kick_name`, fields: [] }],
+		edit: async payload => edits.push(payload),
+	};
+	const vodLookups = [];
+	const polledNames = [];
+	const updates = [];
+	const streamResponseStub = async names => {
+		polledNames.push(names);
+		return { [channel.channelName]: { data: channelData, error: false } };
+	};
+	let channelData = { slug: `current_kick_name`, stream: { is_live: false } };
+	let savedIdentities = new Map();
+	let channelsById = new Map();
+	let userLookups = 0;
+
+	try {
+		kickStreams.getStreams = streamResponseStub;
+		kickVods.getLatest = async slug => {
+			vodLookups.push(slug);
+			return { url: `https://kick.com/current_kick_name/videos/test-vod` };
+		};
+		kickIdentity.getChannelsByBroadcasterIds = async () => channelsById;
+		streamNameMonitor.getIdentityMap = async () => savedIdentities;
+		streamNameMonitor.recordStreamName = async () => null;
+		kickUser.getUser = async () => {
+			userLookups++;
+			return false;
+		};
+		streamUtils.loadState = async () => ({
+			servers: [server],
+			channels: [channel, twitchOnlyChannel],
+			channelsByGuild: new Map([[server.guildId, [channel, twitchOnlyChannel]]]),
+		});
+		streamUtils.targetChannel = () => ({ id: `discord-channel-id`, discordChannel: {} });
+		streamUtils.fetchMessage = async () => message;
+		streamUtils.offlineEmbed = () => ({});
+		authTokens.getAuthTokens = () => ({ kickAuthToken: `test-token` });
+		Channels.update = async (...args) => updates.push(args);
+		log.warn = messageText => warnings.push(messageText);
+
+		const { getKick } = requireFresh(`modules`, `getKick.js`);
+		const client = { guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) } };
+		await getKick(client);
+		assert(polledNames[0].join(`,`) === `old_kick_name`, `Kick polled a channel with notifications disabled.`);
+		assert(vodLookups.join(`,`) === `current_kick_name`, `Kick VoD lookup did not use Kick's resolved slug.`);
+		assert(edits.length === 1, `Kick did not edit the notification after finding a VoD.`);
+		assert(updates.some(([state]) => state.kickIsLive === false), `Kick VoD update did not clear live state.`);
+
+		// Exercise the provider's actual missing-slug response through the
+		// notification loop, which must leave VoD state untouched.
+		kickStreams.getStreams = original.getStreams;
+		global.fetch = async () => ({
+			ok: false,
+			status: 404,
+			text: async () => `No query results for model [App\\Models\\Channel].`,
+		});
+		vodLookups.splice(0);
+		updates.splice(0);
+		await getKick(client);
+		assert(vodLookups.length === 0, `An unrecognized Kick channel triggered a VoD lookup.`);
+		assert(updates.length === 0, `An unrecognized Kick channel cleared live state without a VoD.`);
+
+		message.embeds = [{ url: `https://kick.com/old_kick_name/videos/existing-vod`, fields: [] }];
+		await getKick(client);
+		assert(updates.some(([state]) => state.kickIsLive === false), `An existing Kick VoD did not clear stale live state.`);
+		assert(warnings.length === 1, `An unrecognized Kick channel should warn once.`);
+		kickStreams.getStreams = streamResponseStub;
+
+		// A bound ID controls both live and replay routing after a slug changes.
+		// A recycled old slug must never be treated as the configured account.
+		savedIdentities = new Map([[channel.id, { providerUserId: `42` }]]);
+		channelsById = new Map([[`42`, {
+			broadcaster_user_id: 42,
+			slug: `current_kick_name`,
+			stream: { is_live: false },
+		}]]);
+		channelData = { broadcaster_user_id: 99, slug: `old_kick_name`, stream: { is_live: true } };
+		message.embeds = [{ url: `https://kick.com/old_kick_name`, fields: [] }];
+		vodLookups.splice(0);
+		await getKick(client);
+		assert(polledNames.at(-1).length === 0, `A bound Kick channel should be polled by ID instead of its stale slug.`);
+		assert(vodLookups.join(`,`) === `current_kick_name`, `A bound Kick channel should use its ID-resolved slug for VoD.`);
+		assert(userLookups === 0, `A recycled Kick slug triggered a different account's live notification.`);
+
+		channelsById = new Map();
+		vodLookups.splice(0);
+		await getKick(client);
+		assert(vodLookups.length === 0 && userLookups === 0,
+			`A bound Kick channel should skip a mismatched slug when its ID lookup fails.`);
+	} finally {
+		// Restore the provider fetch stub even if a routing assertion fails.
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = original.fetch;
+		kickStreams.getStreams = original.getStreams;
+		kickUser.getUser = original.getUser;
+		kickVods.getLatest = original.getLatest;
+		kickIdentity.getChannelsByBroadcasterIds = original.getChannelsByBroadcasterIds;
+		streamNameMonitor.getIdentityMap = original.getIdentityMap;
+		streamNameMonitor.recordStreamName = original.recordStreamName;
+		streamUtils.loadState = original.loadState;
+		streamUtils.targetChannel = original.targetChannel;
+		streamUtils.fetchMessage = original.fetchMessage;
+		streamUtils.offlineEmbed = original.offlineEmbed;
+		authTokens.getAuthTokens = original.getAuthTokens;
+		Channels.update = original.update;
+		log.warn = original.warn;
+		delete require.cache[require.resolve(resolveProject(`modules`, `getKick.js`))];
+	}
+}
+
+async function validateStreamNameMonitoring() {
+	const { StreamChannelIdentities } = require(resolveProject(`database`, `dbObjects.js`));
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const original = {
+		identityFindAll: StreamChannelIdentities.findAll,
+		identityFindOrCreate: StreamChannelIdentities.findOrCreate,
+		info: log.info,
+	};
+	const channels = [
+		{ id: 101, guildId: `rename-guild`, channelName: `shared_name`, twitchNotif: true, kickNotif: true },
+		{ id: 102, guildId: `other-guild`, channelName: `other_name`, twitchNotif: true, kickNotif: false },
+	];
+	const identities = [];
+	const renameEvents = [];
+	const monitorPath = resolveProject(`modules`, `streamNameMonitor.js`);
+	let nextIdentityId = 1;
+
+	try {
+		log.info = (message, options) => renameEvents.push({ message: String(message), options });
+		StreamChannelIdentities.findOrCreate = async ({ where, defaults }) => {
+			let identity = identities.find(item => item.channelId === where.channelId && item.provider === where.provider);
+			if (identity) {
+				return [identity, false];
+			}
+
+			identity = {
+				id: nextIdentityId++,
+				...where,
+				...defaults,
+				async update(changes) {
+					Object.assign(this, changes);
+					return this;
+				},
+			};
+			identities.push(identity);
+			return [identity, true];
+		};
+		StreamChannelIdentities.findAll = async ({ where }) => {
+			const ids = Reflect.ownKeys(where.channelId).map(key => where.channelId[key]).find(Array.isArray) || [];
+			return identities.filter(identity => ids.includes(identity.channelId) &&
+				(where.provider === undefined || identity.provider === where.provider))
+				.map(identity => ({ ...identity }));
+		};
+		const monitor = requireFresh(`modules`, `streamNameMonitor.js`);
+
+		await monitor.recordStreamName(channels[0], `twitch`, `twitch-id-101`, `shared_name`);
+		await monitor.recordStreamName(channels[0], `kick`, `202`, `shared_name`);
+		await monitor.recordStreamName(channels[0], `twitch`, `twitch-id-101`, `SHARED_NAME`);
+		assert(renameEvents.length === 0, `Initial ID capture and case-only names should not emit a rename audit event.`);
+		await monitor.recordStreamName(channels[0], `twitch`, `twitch-id-101`, `new_twitch_name`);
+		await monitor.recordStreamName(channels[0], `kick`, `202`, `new_kick_name`);
+		await monitor.recordStreamName(channels[0], `twitch`, `twitch-id-101`, `new_twitch_name`);
+		await monitor.recordStreamName(channels[0], `kick`, `202`, `new_kick_name`);
+		await monitor.recordStreamName(channels[1], `twitch`, `twitch-id-102`, `other_current_name`);
+		await monitor.recordStreamName(channels[0], `twitch`, `different-account`, `hijacked_name`);
+		assert(renameEvents.length === 2,
+			`Only actual Twitch and Kick name changes should emit rename audit events.`);
+		assert(renameEvents[0].message.includes(`shared_name -> new_twitch_name`) &&
+			!Number.isNaN(Date.parse(renameEvents[0].options?.meta?.detectedAt)) &&
+			renameEvents[0].message.includes(renameEvents[0].options.meta.detectedAt) &&
+			renameEvents[0].options?.meta?.provider === `twitch` &&
+			renameEvents[0].options.meta.providerUserId === `twitch-id-101` &&
+			renameEvents[0].options.meta.savedEntry === `shared_name` &&
+			renameEvents[0].options.meta.guildId === `rename-guild` &&
+			renameEvents[0].options.meta.previousName === `shared_name` &&
+			renameEvents[0].options.meta.currentName === `new_twitch_name`,
+		`A Twitch rename audit event should include its provider, ID, saved alias, guild, and old/new names.`);
+		assert(renameEvents[1].message.includes(`shared_name -> new_kick_name`) &&
+			!Number.isNaN(Date.parse(renameEvents[1].options?.meta?.detectedAt)) &&
+			renameEvents[1].message.includes(renameEvents[1].options.meta.detectedAt) &&
+			renameEvents[1].options?.meta?.provider === `kick` &&
+			renameEvents[1].options.meta.providerUserId === `202` &&
+			renameEvents[1].options.meta.savedEntry === `shared_name` &&
+			renameEvents[1].options.meta.guildId === `rename-guild` &&
+			renameEvents[1].options.meta.previousName === `shared_name` &&
+			renameEvents[1].options.meta.currentName === `new_kick_name`,
+		`A Kick rename audit event should include its provider, ID, saved alias, guild, and old/new names.`);
+		assert(identities.length === 3, `Name monitoring should keep independent identities for each provider on one saved row.`);
+		assert(identities[0].currentName === `new_twitch_name` && identities[0].providerUserId === `twitch-id-101`,
+			`A reused login should not replace a saved Twitch provider ID.`);
+		assert(identities[1].currentName === `new_kick_name` && identities[1].providerUserId === `202`,
+			`A Kick rename should update only Kick's current name and preserve its provider ID.`);
+		assert(channels[0].channelName === `shared_name`, `Provider renames should preserve the saved shared alias.`);
+		const twitchMap = await monitor.getIdentityMap(channels, `twitch`);
+		assert(twitchMap.size === 2 && twitchMap.get(101).providerUserId === `twitch-id-101`,
+			`Twitch identities were not loaded by stable provider ID.`);
+		const kickMap = await monitor.getIdentityMap(channels, `kick`);
+		assert(kickMap.size === 1 && kickMap.get(101).currentName === `new_kick_name` &&
+			twitchMap.get(101).currentName === `new_twitch_name`,
+		`One saved row should retain different current Twitch and Kick names.`);
+	} finally {
+		StreamChannelIdentities.findAll = original.identityFindAll;
+		StreamChannelIdentities.findOrCreate = original.identityFindOrCreate;
+		log.info = original.info;
+		delete require.cache[require.resolve(monitorPath)];
+	}
+}
+
+function validateStreamListProviderNames() {
+	const { buildChannelList } = requireFresh(`commands`, `globalCommands`, `utility`, `stream.js`);
+	const channels = [{
+		id: 101,
+		channelName: `shared_name`,
+		isSelf: false,
+		twitchNotif: true,
+		kickNotif: true,
+	}];
+	const twitchIdentities = new Map([[101, { currentName: `new_twitch_name` }]]);
+	const kickIdentities = new Map([[101, { currentName: `new_kick_name` }]]);
+	const lines = buildChannelList(channels, twitchIdentities, kickIdentities);
+
+	assert(lines.length === 1 && lines[0].includes(`shared_name`),
+		`/stream list should keep one configured row with its saved alias.`);
+	assert(lines[0].includes(`Twitch`) && lines[0].includes(`new_twitch_name`) &&
+		lines[0].includes(`Kick`) && lines[0].includes(`new_kick_name`),
+	`/stream list should show each platform's independently updated name.`);
+}
+
+async function validateProviderIdentityLookups() {
+	const originalFetch = global.fetch;
+	try {
+		const { getTwitchUsers } = requireFresh(`modules`, `twitchIdentity.js`);
+		const { getChannelsByBroadcasterIds } = requireFresh(`modules`, `kickIdentity.js`);
+		const requestedUrls = [];
+		global.fetch = async url => {
+			const parsed = new URL(url);
+			requestedUrls.push(parsed);
+			if (parsed.hostname === `api.twitch.tv`) {
+				return { ok: true, json: async () => ({ data: [
+					{ id: `42`, login: `new_twitch_name` },
+					{ id: `55`, login: `fresh_name` },
+					{ id: `999`, login: `unrelated_name` },
+				] }) };
+			}
+			return { ok: true, json: async () => ({ data: [
+				{ broadcaster_user_id: 72, slug: `new_kick_name` },
+				{ broadcaster_user_id: 999, slug: `unrelated_kick_name` },
+			] }) };
+		};
+
+		const twitchUsers = await getTwitchUsers([
+			{ id: 1, channelName: `old_twitch_name` },
+			{ id: 2, channelName: `fresh_name` },
+			{ id: 3, channelName: `missing_name` },
+		], new Map([[1, { providerUserId: `42` }]]), `client`, `token`);
+		const twitchRequest = requestedUrls.find(url => url.hostname === `api.twitch.tv`);
+		assert(twitchRequest.searchParams.getAll(`id`).includes(`42`) &&
+			!twitchRequest.searchParams.getAll(`login`).includes(`old_twitch_name`),
+		`Twitch should resolve previously saved accounts by ID after their login changes.`);
+		assert(twitchUsers.get(1)?.login === `new_twitch_name` && twitchUsers.get(2)?.id === `55` && !twitchUsers.has(3),
+			`Twitch identity lookup matched an unrequested account or lost a resolved account.`);
+
+		const kickChannels = await getChannelsByBroadcasterIds([`72`, `72`, `73`], `client`, `token`);
+		const kickRequest = requestedUrls.find(url => url.hostname === `api.kick.com`);
+		assert(kickRequest.searchParams.getAll(`broadcaster_user_id`).join(`,`) === `72,73`,
+			`Kick should deduplicate and look up saved broadcaster IDs.`);
+		assert(kickChannels.get(`72`)?.slug === `new_kick_name` && !kickChannels.has(`999`) && !kickChannels.has(`73`),
+			`Kick identity lookup associated an unrelated channel with a saved ID.`);
+	} finally {
+		// This test owns the fetch stub until both awaited provider lookups finish.
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = originalFetch;
+	}
+}
+
 function validateGitHygiene() {
 	const nodeModulesResult = runGit([`ls-files`, `node_modules`]);
 
@@ -1945,6 +2350,12 @@ async function main() {
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
 	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
+	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
+	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
+	await test(`Kick VoD lookup uses resolved slugs and preserves missing-channel state`, validateKickChannelRouting);
+	await test(`stream renames preserve one alias and independent provider names`, validateStreamNameMonitoring);
+	await test(`/stream list shows independent Twitch and Kick names on one row`, validateStreamListProviderNames);
+	await test(`Kick and Twitch resolve renamed accounts by stable provider ID`, validateProviderIdentityLookups);
 	await test(`git hygiene checks pass`, validateGitHygiene);
 
 	if (dbObjects?.sequelize) {

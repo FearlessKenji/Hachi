@@ -29,6 +29,7 @@ const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 // aware of the full table set on startup.
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
+const StreamChannelIdentities = require(`./models/streamChannelIdentities.js`)(sequelize, Sequelize.DataTypes);
 
 const ReactionRoleMessages = require(`./models/reactionRoleMessages.js`)(
 	sequelize,
@@ -115,6 +116,21 @@ Servers.hasMany(Channels, {
 	foreignKey: `guildId`,
 	sourceKey: `guildId`,
 	onDelete: `RESTRICT`,
+	onUpdate: `CASCADE`,
+});
+
+// Identity records belong to a configured stream row and disappear with it.
+Channels.hasMany(StreamChannelIdentities, {
+	foreignKey: `channelId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+StreamChannelIdentities.belongsTo(Channels, {
+	foreignKey: `channelId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
 	onUpdate: `CASCADE`,
 });
 
@@ -358,6 +374,7 @@ module.exports = {
 	sequelize,
 	Servers,
 	Channels,
+	StreamChannelIdentities,
 	ReactionRoleMessages,
 	ReactionRoleItems,
 	RulesVerificationMessages,

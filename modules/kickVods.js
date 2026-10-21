@@ -3,6 +3,7 @@
 // After a Kick stream ends, Hachi asks Kick for the most recent video so it can
 // update the prior live notification with a replay link when one is available.
 const { error, warn } = require(`../utils/writeLog.js`);
+const missingChannelWarnings = new Set();
 
 function isSecurityPolicyBlock(status, text) {
 	return status === 403 && /security policy/iu.test(String(text || ``));
@@ -30,10 +31,18 @@ async function getLatest(channelName) {
 					url: null,
 				};
 			}
+			if (res.status === 404) {
+				if (!missingChannelWarnings.has(channelName)) {
+					warn(`Kick's VoD endpoint returned HTTP 404 for ${channelName}; the replay lookup will be retried.`);
+					missingChannelWarnings.add(channelName);
+				}
+				return null;
+			}
 
 			throw new Error(`HTTP ${res.status} - ${text}`);
 		}
 
+		missingChannelWarnings.delete(channelName);
 		const data = await res.json();
 		const livestream = data.previous_livestreams?.find(stream => stream.video?.uuid);
 

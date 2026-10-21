@@ -19,6 +19,7 @@ const {
 } = require(`discord.js`);
 
 const { Servers, Channels } = require(`../../../database/dbObjects.js`);
+const { getIdentityMap } = require(`../../../modules/streamNameMonitor.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
 // pendingAdds tracks the short-lived /stream add wizard. pendingStreamSetups
@@ -93,11 +94,13 @@ function buildAddContent(pendingAdd) {
 		`## Add Stream`;
 
 	return `${title}
-- Name: **${pendingAdd.channelName}**
+- Saved entry name: **${pendingAdd.channelName}**
 - Discord: ${formatDiscord(pendingAdd.discordUrl)}
 - Twitch Notifications: ${formatYesNo(pendingAdd.twitchNotif)}
 - Kick Notifications: ${formatYesNo(pendingAdd.kickNotif)}
-- Your Stream: ${formatYesNo(pendingAdd.isSelf)}${submitMessage}`;
+- Your Stream: ${formatYesNo(pendingAdd.isSelf)}
+Hachi follows each platform's current name after it learns the account ID. The saved entry name stays the same.
+Editing this entry keeps its linked accounts; remove and add it again to track a different account.${submitMessage}`;
 }
 
 function buildStreamSetupHomeContent(settings) {
@@ -545,10 +548,17 @@ async function removeChannel(interaction) {
 	});
 }
 
-function buildChannelList(channels) {
-	return channels.map(chan =>
-		`- **${chan.channelName}** ${chan.isSelf ? `(self)` : `(affiliate)`} ${chan.twitchNotif ? `(Twitch notify)` : ``} ${chan.kickNotif ? `(Kick notify)` : ``}`,
-	);
+function buildChannelList(channels, twitchIdentities, kickIdentities) {
+	return channels.map(chan => {
+		const names = [];
+		if (chan.twitchNotif) {
+			names.push(`Twitch: **${twitchIdentities.get(chan.id)?.currentName || chan.channelName}**`);
+		}
+		if (chan.kickNotif) {
+			names.push(`Kick: **${kickIdentities.get(chan.id)?.currentName || chan.channelName}**`);
+		}
+		return `- Saved as **${chan.channelName}** ${chan.isSelf ? `(self)` : `(affiliate)`}: ${names.join(`, `) || `Notifications off`}`;
+	});
 }
 
 async function listChannels(interaction) {
@@ -565,8 +575,12 @@ async function listChannels(interaction) {
 		return;
 	}
 
+	const [twitchIdentities, kickIdentities] = await Promise.all([
+		getIdentityMap(channels, `twitch`),
+		getIdentityMap(channels, `kick`),
+	]);
 	await interaction.reply({
-		content: `**Stream Channels:**\n${buildChannelList(channels).join(`\n`)}`,
+		content: `**Stream Channels:**\n${buildChannelList(channels, twitchIdentities, kickIdentities).join(`\n`)}`,
 		flags: MessageFlags.Ephemeral,
 	});
 }
@@ -626,10 +640,10 @@ module.exports = {
 		.addSubcommand(subcommand =>
 			subcommand
 				.setName(`add`)
-				.setDescription(`Add or edit a channel. Tab to add optional Discord invite link.`)
+				.setDescription(`Add or edit a saved stream entry.`)
 				.addStringOption(option =>
 					option.setName(`name`)
-						.setDescription(`Username.`)
+						.setDescription(`Saved entry name. Use /stream list to see current platform names.`)
 						.setRequired(true),
 				)
 				.addStringOption(option =>
@@ -643,7 +657,7 @@ module.exports = {
 				.setDescription(`Remove a channel from the list.`)
 				.addStringOption(option =>
 					option.setName(`name`)
-						.setDescription(`Username to remove.`)
+						.setDescription(`Saved entry name from /stream list.`)
 						.setRequired(true),
 				),
 		)
@@ -713,4 +727,5 @@ module.exports = {
 	},
 
 	openSetupPanel,
+	buildChannelList,
 };

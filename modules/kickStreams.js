@@ -14,6 +14,7 @@ async function getStreams(channelNames, clientID, authKey) {
 			'Authorization': `Bearer ${authKey}`,
 		},
 		pickData: data => data.data?.[0],
+		notFoundIsEmpty: true,
 	});
 }
 

@@ -247,12 +247,18 @@ function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl }) {
 	return embed;
 }
 
-async function fetchBatch({ names, provider, urlFor, headers, pickData }) {
+async function fetchBatch({ names, provider, urlFor, headers, pickData, notFoundIsEmpty = false }) {
 	const uniqueNames = [...new Set(names)];
 	const results = await Promise.all(
 		uniqueNames.map(async (name) => {
 			try {
 				const res = await fetch(urlFor(name), { headers });
+
+				// Kick returns 404 when a saved slug no longer resolves. Let the
+				// caller report that stale entry once instead of logging every poll.
+				if (notFoundIsEmpty && res.status === 404) {
+					return { name, data: null, error: false };
+				}
 
 				if (!res.ok) {
 					const text = await res.text();

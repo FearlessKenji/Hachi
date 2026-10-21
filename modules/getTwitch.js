@@ -6,8 +6,10 @@
 const { Channels } = require(`../database/dbObjects.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const twitchChannel = require(`./twitchChannel.js`);
+const { getTwitchUsers } = require(`./twitchIdentity.js`);
 const twitchStreams = require(`./twitchStreams.js`);
 const twitchVods = require(`./twitchVods.js`);
+const { getIdentityMap, recordStreamName } = require(`./streamNameMonitor.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const {
 	fetchMessage,
@@ -21,7 +23,7 @@ const {
 const twitchClientId = process.env.twitchClientId;
 const provider = `Twitch`;
 
-async function updateVodMessage(chan, server, guild, client) {
+async function updateVodMessage(chan, server, guild, client, twitchUser) {
 	const { twitchAuthToken } = authTokens.getAuthTokens();
 
 	if (!chan.twitchMessageId || !chan.twitchStreamId || !chan.twitchNotif) {
@@ -35,18 +37,18 @@ async function updateVodMessage(chan, server, guild, client) {
 		return;
 	}
 
-	const channel = await twitchChannel.getChannel(
+	const userId = twitchUser?.id || (await twitchChannel.getChannel(
 		chan.channelName,
 		twitchClientId,
 		twitchAuthToken,
-	);
+	))?.id;
 
-	if (!channel) {
+	if (!userId) {
 		return;
 	}
 
 	const vod = await twitchVods.getForStream(
-		channel.id,
+		userId,
 		chan.twitchStreamId,
 		twitchClientId,
 		twitchAuthToken,
@@ -91,7 +93,31 @@ async function updateVodMessage(chan, server, guild, client) {
 async function getTwitch(client) {
 	const { twitchAuthToken } = authTokens.getAuthTokens();
 	const { servers, channels, channelsByGuild } = await loadState();
-	const channelNames = channels.map(c => c.channelName);
+	const twitchChannels = channels.filter(chan => chan.twitchNotif);
+	const identityMap = await getIdentityMap(twitchChannels, `twitch`);
+	const twitchUsers = await getTwitchUsers(twitchChannels, identityMap, twitchClientId, twitchAuthToken);
+	await Promise.all(twitchChannels.map(async chan => {
+		const user = twitchUsers.get(chan.id);
+		if (user) {
+			try {
+				await recordStreamName(chan, `twitch`, user.id, user.login.toLowerCase());
+			} catch (err) {
+				error(`Failed to record Twitch account identity for ${chan.channelName}:`, err);
+			}
+		}
+	}));
+
+	const loginsByChannel = new Map();
+	for (const chan of twitchChannels) {
+		const user = twitchUsers.get(chan.id);
+		// Once a row is bound to an ID, an unavailable lookup must not make a
+		// recycled old login appear to be the same broadcaster.
+		if (user || !identityMap.get(chan.id)?.providerUserId) {
+			loginsByChannel.set(chan.id, user?.login.toLowerCase() || chan.channelName);
+		}
+	}
+
+	const channelNames = [...loginsByChannel.values()];
 	const streamsData = await twitchStreams.getStreams(
 		channelNames,
 		twitchClientId,
@@ -102,18 +128,26 @@ async function getTwitch(client) {
 		const guild = client.guilds.cache.get(server.guildId);
 		const serverChannels = channelsByGuild.get(server.guildId) || [];
 		const channelPromises = serverChannels.map(async (chan) => {
-			const streamRecord = streamsData[chan.channelName];
+			const login = loginsByChannel.get(chan.id);
+			if (!login) {
+				return;
+			}
+
+			const twitchUser = twitchUsers.get(chan.id);
+			const streamRecord = streamsData[login];
 			const streamInfo = streamRecord?.data;
 
 			if (!streamRecord || streamRecord.error) {
 				return;
 			}
 
-			if (!streamInfo || !chan.twitchNotif) {
-				if (!streamInfo) {
-					await updateVodMessage(chan, server, guild, client);
-				}
+			if (streamInfo && twitchUser && String(streamInfo.user_id) !== twitchUser.id) {
+				warn(`Twitch stream identity did not match configured account for ${chan.channelName}.`);
+				return;
+			}
 
+			if (!streamInfo) {
+				await updateVodMessage(chan, server, guild, client, twitchUser);
 				return;
 			}
 
@@ -125,12 +159,12 @@ async function getTwitch(client) {
 			}
 
 			const channel = await twitchChannel.getChannel(
-				chan.channelName,
+				login,
 				twitchClientId,
 				twitchAuthToken,
 			);
 
-			if (!channel) {
+			if (!channel || (twitchUser && String(channel.id) !== twitchUser.id)) {
 				return;
 			}
 

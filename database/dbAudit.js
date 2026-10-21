@@ -65,6 +65,19 @@ const EXPECTED_SCHEMA = [
 		],
 	},
 	{
+		name: `streamChannelIdentities`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`channelId`, `INTEGER`, { references: `channels (id) ON DELETE CASCADE ON UPDATE CASCADE` }),
+			column(`provider`, `VARCHAR(255)`),
+			column(`providerUserId`, `VARCHAR(255)`),
+			column(`currentName`, `VARCHAR(255)`),
+		],
+		indexes: [
+			index(`streamChannelIdentitiesChannelProvider`, [`channelId`, `provider`], { unique: true }),
+		],
+	},
+	{
 		name: `reactionRoleMessages`,
 		columns: [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
