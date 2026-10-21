@@ -6,12 +6,19 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.12.1 - 2026-10-21
+
+### Stream Notifications
+
+- Scheduled stream checks no longer overlap with the previous check for the same platform, reducing database lock errors when many accounts are monitored.
+- Twitch stream checks now request channels in batches, reducing API requests and logging a failed batch once.
+
 # v3.12.0 - 2026-10-20
 
 ### Stream Notifications
 
 - After Hachi records an account's Kick or Twitch ID, it follows that account's new name on that platform and logs when it detects a rename, including the account details. `/stream list` shows each enabled platform's latest resolved name under the same saved entry.
-- Hachi now polls only entries with Kick notifications enabled. Stale Kick slugs no longer cause repeated 404 errors during channel or replay lookups.
+- Hachi checks only entries with Kick notifications enabled. When a saved Kick name no longer resolves, it logs one warning and skips replay lookups until the channel resolves.
 
 # v3.11.0 - 2026-10-11
 
