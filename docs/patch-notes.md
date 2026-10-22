@@ -18,7 +18,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 ### Stream Notifications
 
 - After Hachi records an account's Kick or Twitch ID, it follows that account's new name on that platform and logs when it detects a rename, including the account details. `/stream list` shows each enabled platform's latest resolved name under the same saved entry.
-- Hachi checks only entries with Kick notifications enabled. When a saved Kick name no longer resolves, it logs one warning and skips replay lookups until the channel resolves.
+- Hachi now polls only entries with Kick notifications enabled. Stale Kick slugs no longer cause repeated 404 errors during channel or replay lookups.
 
 # v3.11.0 - 2026-10-11
 
