@@ -17,12 +17,22 @@ module.exports = (client) => {
 	let activityIndex = -1;
 
 	return {
-		Twitch: new CronJob(config.twitchCron, async () => {
-			await getTwitch(client);
+		// Slow provider or database calls must finish before the next tick starts;
+		// overlapping stream polls amplify SQLite contention and API traffic.
+		Twitch: CronJob.from({
+			cronTime: config.twitchCron,
+			onTick: async () => {
+				await getTwitch(client);
+			},
+			waitForCompletion: true,
 		}),
 
-		Kick: new CronJob(config.kickCron, async () => {
-			await getKick(client);
+		Kick: CronJob.from({
+			cronTime: config.kickCron,
+			onTick: async () => {
+				await getKick(client);
+			},
+			waitForCompletion: true,
 		}),
 
 		Birthday: new CronJob(config.birthdayCron, async () => {

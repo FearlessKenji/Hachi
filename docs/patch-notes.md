@@ -6,6 +6,13 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.12.1 - 2026-10-21
+
+### Stream Notifications
+
+- Scheduled stream checks no longer overlap with the previous check for the same platform, reducing database lock errors when many accounts are monitored.
+- Twitch stream checks now request channels in batches, reducing API requests and logging a failed batch once.
+
 # v3.12.0 - 2026-10-20
 
 ### Stream Notifications

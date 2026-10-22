@@ -4,6 +4,14 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.12.1 - 2026-10-21
+
+### Fixed
+
+- Serialized Kick and Twitch identity writes without per-channel SQLite transactions and prevented successive polls of the same provider from overlapping.
+- Batched Twitch stream lookups to reduce simultaneous API requests and consolidated failed-batch logging.
+- Skipped local database smoke checks while SQLite runtime sidecars are present and excluded those sidecars from Git.
+
 ## v3.12.0 - 2026-10-20
 
 ### Added

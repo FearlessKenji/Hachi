@@ -877,11 +877,21 @@ function validateDatabaseModels() {
 	return dbObjects;
 }
 
+function hasRuntimeDatabaseSidecar(dbPath) {
+	return [`-journal`, `-wal`, `-shm`].some(suffix => fs.existsSync(`${dbPath}${suffix}`));
+}
+
 async function auditLocalDatabaseIfPresent() {
 	const dbPath = resolveProject(`database`, `database.sqlite`);
 
 	if (!fs.existsSync(dbPath)) {
 		warn(`database/database.sqlite not found; skipped local database audit.`);
+		return;
+	}
+	if (hasRuntimeDatabaseSidecar(dbPath)) {
+		// A journal may contain an unfinished transaction. Opening the live
+		// database during smoke testing could trigger recovery or contend with Hachi.
+		warn(`SQLite runtime sidecar present; skipped local database audit.`);
 		return;
 	}
 
@@ -1011,6 +1021,10 @@ function validateConfigCheckIfConfigured() {
 
 	if (!fs.existsSync(configPath)) {
 		warn(`config/config.json not found; skipped configCheck smoke validation.`);
+		return;
+	}
+	if (hasRuntimeDatabaseSidecar(databasePath)) {
+		warn(`SQLite runtime sidecar present; skipped live configCheck smoke validation.`);
 		return;
 	}
 
@@ -1957,6 +1971,84 @@ async function validateKickMissingSlugResponse() {
 	}
 }
 
+async function validateTwitchStreamBatchLookup() {
+	const originalFetch = global.fetch;
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = log.error;
+	const errors = [];
+	const twitchStreamsPath = resolveProject(`modules`, `twitchStreams.js`);
+	const names = Array.from({ length: 101 }, (_, index) => `stream_${index}`);
+	const urls = [];
+	let activeRequests = 0;
+	let maxActiveRequests = 0;
+
+	try {
+		log.error = (message, err) => errors.push({ message, err });
+		const { getStreams } = requireFresh(`modules`, `twitchStreams.js`);
+		global.fetch = async url => {
+			activeRequests += 1;
+			maxActiveRequests = Math.max(maxActiveRequests, activeRequests);
+			urls.push(new URL(url));
+			try {
+				await Promise.resolve();
+				let data = [{ user_login: `stream_100`, id: `live-100` }];
+				if (urls.length === 1) {
+					data = [
+						{ user_login: `stream_0`, id: `live-0` },
+						{ user_login: `STREAM_97`, id: `live-97` },
+					];
+				}
+
+				return {
+					ok: true,
+					json: async () => ({ data }),
+				};
+			} finally {
+				activeRequests -= 1;
+			}
+		};
+		const streams = await getStreams(names, `client`, `token`);
+		assert(urls.length === 2 && maxActiveRequests === 1,
+			`Twitch stream polling should issue sequential requests for groups of at most 100 logins.`);
+		assert(urls[0].searchParams.getAll(`user_login`).length === 100 &&
+			urls[1].searchParams.getAll(`user_login`).join(`,`) === `stream_100` &&
+			urls.every(url => url.searchParams.get(`first`) === `100`),
+		`Twitch stream polling should request every login and enough results for a full batch.`);
+		assert(streams.stream_0.data?.id === `live-0` && streams.stream_97.data?.id === `live-97` &&
+			streams.stream_100.data?.id === `live-100`,
+		`Twitch stream results should map returned streams by login, regardless of response order or case.`);
+		assert(streams.stream_1.data === null && streams.stream_1.error === false,
+			`An omitted Twitch login should be treated as offline.`);
+		assert(errors.length === 0, `Successful Twitch batches should not log errors.`);
+
+		urls.length = 0;
+		global.fetch = async url => {
+			urls.push(new URL(url));
+			if (urls.length === 1) {
+				throw new Error(`socket disconnected`);
+			}
+
+			return {
+				ok: true,
+				json: async () => ({ data: [{ user_login: `stream_100`, id: `live-100` }] }),
+			};
+		};
+		const partial = await getStreams(names, `client`, `token`);
+		assert(errors.length === 1 && urls.length === 2,
+			`A failed Twitch batch should log once and allow later batches to run.`);
+		assert(partial.stream_0.error && partial.stream_99.error && partial.stream_0.data === null,
+			`Every login in a failed Twitch batch should be marked as unavailable.`);
+		assert(!partial.stream_100.error && partial.stream_100.data?.id === `live-100`,
+			`A later successful Twitch batch should retain its stream data.`);
+	} finally {
+		// Keep the fetch stub scoped to these awaited provider lookups.
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = originalFetch;
+		log.error = originalError;
+		delete require.cache[require.resolve(twitchStreamsPath)];
+	}
+}
+
 async function validateKickChannelRouting() {
 	const kickStreams = require(resolveProject(`modules`, `kickStreams.js`));
 	const kickUser = require(resolveProject(`modules`, `kickUser.js`));
@@ -2110,7 +2202,7 @@ async function validateStreamNameMonitoring() {
 	const log = require(resolveProject(`utils`, `writeLog.js`));
 	const original = {
 		identityFindAll: StreamChannelIdentities.findAll,
-		identityFindOrCreate: StreamChannelIdentities.findOrCreate,
+		identityFindCreateFind: StreamChannelIdentities.findCreateFind,
 		info: log.info,
 	};
 	const channels = [
@@ -2124,7 +2216,7 @@ async function validateStreamNameMonitoring() {
 
 	try {
 		log.info = (message, options) => renameEvents.push({ message: String(message), options });
-		StreamChannelIdentities.findOrCreate = async ({ where, defaults }) => {
+		StreamChannelIdentities.findCreateFind = async ({ where, defaults }) => {
 			let identity = identities.find(item => item.channelId === where.channelId && item.provider === where.provider);
 			if (identity) {
 				return [identity, false];
@@ -2197,9 +2289,79 @@ async function validateStreamNameMonitoring() {
 		`One saved row should retain different current Twitch and Kick names.`);
 	} finally {
 		StreamChannelIdentities.findAll = original.identityFindAll;
-		StreamChannelIdentities.findOrCreate = original.identityFindOrCreate;
+		StreamChannelIdentities.findCreateFind = original.identityFindCreateFind;
 		log.info = original.info;
 		delete require.cache[require.resolve(monitorPath)];
+	}
+}
+
+async function validateConcurrentStreamIdentityWrites() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const { databaseFileStatus } = requireFresh(`database`, `dbEncryption.js`);
+	const dbObjects = require(resolveProject(`database`, `dbObjects.js`));
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-stream-identities-`));
+	const dbPath = path.join(tempDir, `identities.sqlite`);
+	const monitorPath = resolveProject(`modules`, `streamNameMonitor.js`);
+	const originalModel = dbObjects.StreamChannelIdentities;
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	let sequelize = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-stream-identities-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		sequelize = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			storage: dbPath,
+			logging: false,
+		});
+		const TestIdentities = require(resolveProject(`database`, `models`, `streamChannelIdentities.js`))(
+			sequelize,
+			Sequelize.DataTypes,
+		);
+		await sequelize.sync();
+		dbObjects.StreamChannelIdentities = TestIdentities;
+		const { recordStreamName } = requireFresh(`modules`, `streamNameMonitor.js`);
+		const channels = Array.from({ length: 8 }, (_, index) => ({
+			id: index + 1,
+			guildId: `identity-write-test`,
+			channelName: `streamer_${index + 1}`,
+		}));
+
+		// The Twitch poll records many previously unseen IDs at once. Use the
+		// encrypted runtime adapter so transaction lock errors cannot hide behind mocks.
+		const writes = await Promise.allSettled(channels.map(channel => recordStreamName(
+			channel,
+			`twitch`,
+			`user-${channel.id}`,
+			channel.channelName,
+		)));
+		const failedWrites = writes.filter(result => result.status === `rejected`);
+		assert(failedWrites.length === 0,
+			`Concurrent Twitch identity capture failed: ${failedWrites.map(result => result.reason?.message).join(`; `)}`);
+
+		const identities = await TestIdentities.findAll({ raw: true });
+		assert(identities.length === channels.length,
+			`Concurrent Twitch identity capture did not persist every channel.`);
+		for (const channel of channels) {
+			assert(identities.some(identity => identity.channelId === channel.id &&
+				identity.provider === `twitch` &&
+				identity.providerUserId === `user-${channel.id}`),
+			`Concurrent Twitch identity capture lost ${channel.channelName}.`);
+		}
+		assert(databaseFileStatus(dbPath).encryptedLikely,
+			`Concurrent identity test database was not encrypted.`);
+	} finally {
+		dbObjects.StreamChannelIdentities = originalModel;
+		delete require.cache[require.resolve(monitorPath)];
+		if (sequelize) {
+			await sequelize.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }
 
@@ -2346,14 +2508,16 @@ async function main() {
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
-	await test(`local database audit is clean when database exists`, auditLocalDatabaseIfPresent);
+	await test(`local database audit runs when safe and available`, auditLocalDatabaseIfPresent);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
-	await test(`configCheck validates local config when present`, validateConfigCheckIfConfigured);
+	await test(`configCheck validates local config when safe and available`, validateConfigCheckIfConfigured);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
 	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
+	await test(`Twitch stream lookups batch logins and contain batch failures`, validateTwitchStreamBatchLookup);
 	await test(`Kick VoD lookup uses resolved slugs and preserves missing-channel state`, validateKickChannelRouting);
 	await test(`stream renames preserve one alias and independent provider names`, validateStreamNameMonitoring);
+	await test(`concurrent Twitch identity capture persists every channel`, validateConcurrentStreamIdentityWrites);
 	await test(`/stream list shows independent Twitch and Kick names on one row`, validateStreamListProviderNames);
 	await test(`Kick and Twitch resolve renamed accounts by stable provider ID`, validateProviderIdentityLookups);
 	await test(`git hygiene checks pass`, validateGitHygiene);
