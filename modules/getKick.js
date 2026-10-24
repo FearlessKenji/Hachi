@@ -1,9 +1,9 @@
 // High-level Kick notification loop.
 //
-// The Kick cron calls getKick(client). This file mirrors the Twitch flow: load
-// configured channels, batch provider calls, update Discord messages, and persist
-// live/offline state.
-const { Channels } = require(`../database/dbObjects.js`);
+// A channel row tracks its current live announcement. An ended announcement
+// moves to PendingStreamVods after its Discord edit, letting later streams use
+// new messages while older replays keep retrying until found or timed out.
+const { Channels, KickLiveSessions, PendingStreamVods } = require(`../database/dbObjects.js`);
 const kickUser = require(`./kickUser.js`);
 const kickStreams = require(`./kickStreams.js`);
 const kickVods = require(`./kickVods.js`);
@@ -13,16 +13,19 @@ const authTokens = require(`../auth/authTokens.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const {
 	fetchMessage,
+	formatStreamTime,
 	liveEmbed,
 	loadState,
 	offlineEmbed,
 	roleMention,
 	syncMessage,
 	targetChannel,
+	vodWaitExpired,
 } = require(`./streamUtils.js`);
 const kickClientId = process.env.kickClientId;
 const provider = `Kick`;
 const unavailableChannelWarnings = new Set();
+const unavailableReplayChannels = new Set();
 
 async function observeKickName(chan, streamInfo) {
 	const observedUserId = normalizeBroadcasterId(streamInfo?.broadcaster_user_id);
@@ -45,7 +48,74 @@ function findKickVodUrl(embed) {
 	return match || null;
 }
 
-async function updateVodMessage(chan, server, guild, client, kickSlug) {
+function isEndedKickMessage(message) {
+	return message?.content === `The Kick stream has ended.` ||
+		message?.embeds?.[0]?.title?.endsWith(`was live`);
+}
+
+function getStartLabel(embed) {
+	// Pre-upgrade messages retain only the displayed start minute. New messages
+	// also keep their exact start in KickLiveSessions for rapid restarts.
+	const label = embed?.footer?.text?.match(/^Started (.+?)\. (?:Last edited|Stream ended(?: at)?) /u)?.[1];
+	return label && label !== `unknown time` ? label : null;
+}
+
+function liveSessionFor(chan, sessionsByChannel) {
+	const session = sessionsByChannel.get(chan.id);
+	return session?.messageId === chan.kickMessageId ? session : null;
+}
+
+async function retireKickLiveSession(chan, liveSession) {
+	if (liveSession) {
+		await KickLiveSessions.destroy({ where: { channelId: chan.id } });
+	}
+}
+
+async function queueEndedKickMessage(chan, discordChannelId, existingMessage, kickSlug, providerUserId, liveSession) {
+	const existingEmbed = existingMessage.embeds[0];
+	const unavailableVod = existingEmbed?.fields?.some(field =>
+		field.name === provider && field.value === `No VoD available`);
+	if (findKickVodUrl(existingEmbed) || unavailableVod) {
+		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		await retireKickLiveSession(chan, liveSession);
+		return;
+	}
+	const startLabel = getStartLabel(existingEmbed);
+	const isAwaitingVod = existingEmbed?.fields?.some(field =>
+		field.name === provider && field.value === `Fetching VoD...`);
+	if (!isAwaitingVod) {
+		// Edit before queueing, so a failed Discord edit cannot be mistaken for
+		// an announcement that was already marked ended.
+		const pendingEmbed = offlineEmbed({ provider, existingEmbed, vodUrl: null });
+		await existingMessage.edit({
+			content: `The Kick stream has ended.`,
+			embeds: [pendingEmbed],
+		});
+	}
+
+	// Avoid a per-message SQLite transaction when several streams end together.
+	await PendingStreamVods.findCreateFind({
+		where: { messageId: chan.kickMessageId },
+		defaults: {
+			channelId: chan.id,
+			provider,
+			discordChannelId: String(discordChannelId),
+			messageId: chan.kickMessageId,
+			streamId: null,
+			providerUserId: providerUserId || null,
+			providerName: kickSlug,
+			startLabel,
+			providerStartTime: liveSession?.startTime || null,
+			endedAt: new Date(),
+		},
+	});
+	await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+	await retireKickLiveSession(chan, liveSession);
+}
+
+// An unresolved channel is not enough evidence to end its announcement.
+// Only a resolved offline state can move the message into the replay queue.
+async function checkEndedKickMessage(chan, server, guild, client, kickSlug, providerUserId, liveSession) {
 	if (!chan.kickMessageId || !chan.kickIsLive || !chan.kickNotif) {
 		return;
 	}
@@ -61,42 +131,109 @@ async function updateVodMessage(chan, server, guild, client, kickSlug) {
 
 	if (!existingMessage) {
 		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		await retireKickLiveSession(chan, liveSession);
 		return;
 	}
 
 	const existingVodUrl = findKickVodUrl(existingMessage.embeds[0]);
+	const unavailableVod = existingMessage.embeds[0]?.fields?.some(field =>
+		field.name === provider && field.value === `No VoD available`);
 
-	if (existingVodUrl) {
+	if (existingVodUrl || unavailableVod) {
 		await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+		await retireKickLiveSession(chan, liveSession);
 		return;
 	}
 	if (!kickSlug) {
-		// The channel lookup had no result, so only repair notifications that
-		// already have a replay link; do not ask the VoD endpoint for this slug.
+		// Keep the live state until the account can be resolved again.
 		return;
 	}
 
-	const vod = await kickVods.getLatest(kickSlug);
+	await queueEndedKickMessage(chan, discordChannelId, existingMessage, kickSlug, providerUserId, liveSession);
+}
 
-	if (!vod?.url) {
-		// Keep kickIsLive true so the next Kick cron tick retries until Kick
-		// exposes a replay URL. The live embed should only become an ended embed
-		// when Hachi can include a real VoD link.
+async function processPendingKickVods(client, channelsById) {
+	// Queue rows belong to Discord messages, not the current channel session.
+	// Process them even when the same broadcaster has already gone live again.
+	let pendingRows;
+	try {
+		pendingRows = await PendingStreamVods.findAll({ where: { provider } });
+	} catch (err) {
+		error(`Failed to load pending Kick replay updates:`, err);
 		return;
 	}
 
-	const embed = offlineEmbed({
-		provider,
-		existingEmbed: existingMessage.embeds[0],
-		vodUrl: vod.url,
-		imageUrl: vod.thumbnail,
-	});
+	const replayLookups = new Map();
+	for (const pending of pendingRows) {
+		try {
+			let discordChannel = client.channels?.cache?.get(pending.discordChannelId);
+			if (!discordChannel && typeof client.channels?.fetch === `function`) {
+				try {
+					discordChannel = await client.channels.fetch(pending.discordChannelId);
+				} catch {
+					// The channel may only be temporarily inaccessible; retain the row.
+				}
+			}
+			if (!discordChannel) {
+				if (!unavailableReplayChannels.has(pending.discordChannelId)) {
+					warn(`Kick replay update cannot find Discord channel ${pending.discordChannelId}.`);
+					unavailableReplayChannels.add(pending.discordChannelId);
+				}
+				continue;
+			}
+			unavailableReplayChannels.delete(pending.discordChannelId);
 
-	await existingMessage.edit({
-		content: `The Kick stream has ended.`,
-		embeds: [embed],
-	});
-	await Channels.update({ kickIsLive: false }, { where: { id: chan.id } });
+			const message = await fetchMessage(discordChannel, pending.messageId);
+			const replayField = message?.embeds[0]?.fields?.find(field => field.name === provider)?.value;
+			if (!message || findKickVodUrl(message.embeds[0]) || replayField === `No VoD available`) {
+				await pending.destroy();
+				continue;
+			}
+
+			const currentName = channelsById.get(normalizeBroadcasterId(pending.providerUserId))?.slug;
+			const slug = currentName || pending.providerName;
+			if (!slug) {
+				// No provider response means there is no evidence to apply the cutoff.
+				continue;
+			}
+			// Several guilds can announce the same stream; share one replay lookup
+			// for their matching pending messages during this cron tick.
+			const lookupKey = JSON.stringify([slug, pending.providerStartTime || pending.startLabel]);
+			if (!replayLookups.has(lookupKey)) {
+				replayLookups.set(lookupKey, await kickVods.getLatest(
+					slug, pending.startLabel, pending.providerStartTime,
+				));
+			}
+			const vod = replayLookups.get(lookupKey);
+			if (vod?.retryable) {
+				// A failed request cannot establish that no replay was published.
+				continue;
+			}
+			if (!vod?.url) {
+				if (vodWaitExpired(pending.endedAt)) {
+					// Give the provider a final chance on the cutoff poll before ending retries.
+					const embed = offlineEmbed({ provider, existingEmbed: message.embeds[0], vodUnavailable: true });
+					await message.edit({ content: `The Kick stream has ended.`, embeds: [embed] });
+					await pending.destroy();
+				}
+				continue;
+			}
+
+			const embed = offlineEmbed({
+				provider,
+				existingEmbed: message.embeds[0],
+				vodUrl: vod.url,
+				imageUrl: vod.thumbnail,
+			});
+			await message.edit({
+				content: `The Kick stream has ended.`,
+				embeds: [embed],
+			});
+			await pending.destroy();
+		} catch (err) {
+			error(`Failed to update pending Kick replay for message ${pending.messageId}:`, err);
+		}
+	}
 }
 
 /**
@@ -109,7 +246,12 @@ async function updateVodMessage(chan, server, guild, client, kickSlug) {
  */
 async function getKick(client) {
 	const { kickAuthToken } = authTokens.getAuthTokens();
-	const { servers, channels, channelsByGuild } = await loadState();
+	const [streamState, liveSessions] = await Promise.all([
+		loadState(),
+		KickLiveSessions.findAll({ raw: true }),
+	]);
+	const { servers, channels, channelsByGuild } = streamState;
+	const sessionsByChannel = new Map(liveSessions.map(session => [session.channelId, session]));
 	const identityMap = await getIdentityMap(channels, `kick`);
 	const channelNames = channels
 		.filter(c => c.kickNotif && !identityMap.get(c.id)?.providerUserId)
@@ -159,7 +301,9 @@ async function getKick(client) {
 				}
 				if (chan.kickIsLive) {
 					try {
-						await updateVodMessage(chan, server, guild, client, null);
+						await checkEndedKickMessage(
+							chan, server, guild, client, null, null, liveSessionFor(chan, sessionsByChannel),
+						);
 					} catch (err) {
 						error(`Failed to check ended Kick message for ${chan.channelName}:`, err);
 					}
@@ -172,7 +316,15 @@ async function getKick(client) {
 			if (!streamInfo.stream?.is_live) {
 				if (chan.kickIsLive) {
 					try {
-						await updateVodMessage(chan, server, guild, client, streamInfo.slug || (!savedUserId && chan.channelName));
+						await checkEndedKickMessage(
+							chan,
+							server,
+							guild,
+							client,
+							streamInfo.slug || (!savedUserId && chan.channelName),
+							savedUserId || normalizeBroadcasterId(streamInfo.broadcaster_user_id),
+							liveSessionFor(chan, sessionsByChannel),
+						);
 					} catch (err) {
 						error(`Failed to update ended Kick message for ${chan.channelName}:`, err);
 					}
@@ -218,10 +370,33 @@ async function getKick(client) {
 			const content = `${roleText}${user.name} just went live on Kick streaming ${streamInfo.category.name}!`;
 
 			try {
-				await syncMessage({
+				const previousMessage = chan.kickIsLive ?
+					await fetchMessage(discordChannel, chan.kickMessageId) :
+					null;
+				const liveSession = liveSessionFor(chan, sessionsByChannel);
+				const currentExactStart = kickVods.parseKickStartTime(streamInfo.stream.start_time);
+				const previousStart = getStartLabel(previousMessage?.embeds[0]);
+				const currentStart = formatStreamTime(streamInfo.stream.start_time);
+				const isNewStream = liveSession && currentExactStart ?
+					new Date(liveSession.startTime).getTime() !== currentExactStart.getTime() :
+					Boolean(previousStart && currentStart !== `unknown time` && previousStart !== currentStart);
+				const previousEnded = isEndedKickMessage(previousMessage);
+				if (previousMessage && (isNewStream || previousEnded)) {
+					// A new stream can begin between polls. Queue the old replay before
+					// replacing the tracked live message ID with the new announcement.
+					await queueEndedKickMessage(
+						chan,
+						discordChannelId,
+						previousMessage,
+						streamInfo.slug || chan.channelName,
+						savedUserId || normalizeBroadcasterId(streamInfo.broadcaster_user_id),
+						liveSession,
+					);
+				}
+				const syncedMessage = await syncMessage({
 					discordChannel,
 					messageId: chan.kickMessageId,
-					shouldEdit: chan.kickIsLive,
+					shouldEdit: chan.kickIsLive && !isNewStream && !previousEnded,
 					content,
 					embed: sendEmbed,
 					onSend: message => Channels.update(
@@ -229,6 +404,19 @@ async function getKick(client) {
 						{ where: { id: chan.id } },
 					),
 				});
+				const sessionMatchesMessage = liveSession && syncedMessage?.id &&
+					liveSession.messageId === syncedMessage.id &&
+					new Date(liveSession.startTime).getTime() === currentExactStart?.getTime();
+				if (currentExactStart && syncedMessage?.id && !sessionMatchesMessage) {
+					// The exact start survives bot restarts; the embed footer alone cannot
+					// distinguish two sessions that began in the same minute. Write only
+					// when the announcement changes to avoid SQLite churn each poll.
+					await KickLiveSessions.upsert({
+						channelId: chan.id,
+						messageId: syncedMessage.id,
+						startTime: currentExactStart,
+					});
+				}
 			} catch (err) {
 				error(`Failed to send/edit kick message for ${chan.channelName}:`, err);
 			}
@@ -236,6 +424,8 @@ async function getKick(client) {
 
 		await Promise.allSettled(channelPromises);
 	}
+
+	await processPendingKickVods(client, channelsById);
 }
 
 module.exports = {

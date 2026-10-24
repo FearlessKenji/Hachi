@@ -30,6 +30,8 @@ const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
 const StreamChannelIdentities = require(`./models/streamChannelIdentities.js`)(sequelize, Sequelize.DataTypes);
+const PendingStreamVods = require(`./models/pendingStreamVods.js`)(sequelize, Sequelize.DataTypes);
+const KickLiveSessions = require(`./models/kickLiveSessions.js`)(sequelize, Sequelize.DataTypes);
 
 const ReactionRoleMessages = require(`./models/reactionRoleMessages.js`)(
 	sequelize,
@@ -128,6 +130,37 @@ Channels.hasMany(StreamChannelIdentities, {
 });
 
 StreamChannelIdentities.belongsTo(Channels, {
+	foreignKey: `channelId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+// Pending replay lookups outlive each stream, but not its notification config.
+Channels.hasMany(PendingStreamVods, {
+	foreignKey: `channelId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+PendingStreamVods.belongsTo(Channels, {
+	foreignKey: `channelId`,
+	targetKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+// A configured channel owns one active Kick session; older ones move into the
+// per-message replay queue before this exact start time is replaced.
+Channels.hasOne(KickLiveSessions, {
+	foreignKey: `channelId`,
+	sourceKey: `id`,
+	onDelete: `CASCADE`,
+	onUpdate: `CASCADE`,
+});
+
+KickLiveSessions.belongsTo(Channels, {
 	foreignKey: `channelId`,
 	targetKey: `id`,
 	onDelete: `CASCADE`,
@@ -375,6 +408,8 @@ module.exports = {
 	Servers,
 	Channels,
 	StreamChannelIdentities,
+	PendingStreamVods,
+	KickLiveSessions,
 	ReactionRoleMessages,
 	ReactionRoleItems,
 	RulesVerificationMessages,

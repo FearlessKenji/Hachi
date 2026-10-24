@@ -1,9 +1,10 @@
 // High-level Twitch notification loop.
 //
-// The Twitch cron calls getTwitch(client). This file loads configured channels,
-// batches Twitch API requests, updates live/offline Discord messages, and writes
-// new stream state back to the database.
-const { Channels } = require(`../database/dbObjects.js`);
+// A channel row tracks its current live announcement. When that stream ends,
+// Hachi edits the message immediately and moves its replay lookup into
+// PendingStreamVods. Each cron tick retries those saved messages independently,
+// so a new broadcast cannot replace an older pending replay.
+const { Channels, PendingStreamVods } = require(`../database/dbObjects.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const twitchChannel = require(`./twitchChannel.js`);
 const { getTwitchUsers } = require(`./twitchIdentity.js`);
@@ -19,13 +20,20 @@ const {
 	roleMention,
 	syncMessage,
 	targetChannel,
+	vodWaitExpired,
 } = require(`./streamUtils.js`);
 const twitchClientId = process.env.twitchClientId;
 const provider = `Twitch`;
+const endedContent = `The Twitch stream has ended.`;
 
-async function updateVodMessage(chan, server, guild, client, twitchUser) {
-	const { twitchAuthToken } = authTokens.getAuthTokens();
+function hasCompletedTwitchVod(message) {
+	return message?.content === endedContent && message.embeds?.[0]?.fields?.some(field =>
+		field.name === provider && field.value?.startsWith(`[Watch VoD](`));
+}
 
+// First end the visible announcement, then persist its stream ID for later
+// replay lookup. Clear the channel's live ID only after the queue write succeeds.
+async function queueEndedTwitchMessage(chan, server, guild, client, twitchUser, twitchIdentity) {
 	if (!chan.twitchMessageId || !chan.twitchStreamId || !chan.twitchNotif) {
 		return;
 	}
@@ -37,49 +45,142 @@ async function updateVodMessage(chan, server, guild, client, twitchUser) {
 		return;
 	}
 
-	const userId = twitchUser?.id || (await twitchChannel.getChannel(
-		chan.channelName,
-		twitchClientId,
-		twitchAuthToken,
-	))?.id;
+	try {
+		const existingMessage = discordChannel.messages.cache.get(chan.twitchMessageId) ||
+			await discordChannel.messages.fetch(chan.twitchMessageId);
+		const existingEmbed = existingMessage.embeds[0];
+		if (hasCompletedTwitchVod(existingMessage)) {
+			await Channels.update({ twitchStreamId: null }, { where: { id: chan.id } });
+			return;
+		}
 
-	if (!userId) {
-		return;
-	}
+		// Mark the stream ended before asking Twitch for its archive. A missing or
+		// delayed VoD must not leave the Discord announcement claiming it is live.
+		if (existingMessage.content !== endedContent || !existingEmbed?.title?.endsWith(`was live`)) {
+			const pendingEmbed = offlineEmbed({ provider, existingEmbed });
+			await existingMessage.edit({ content: endedContent, embeds: [pendingEmbed] });
+		}
 
-	const vod = await twitchVods.getForStream(
-		userId,
-		chan.twitchStreamId,
-		twitchClientId,
-		twitchAuthToken,
-	);
-
-	if (!vod?.url) {
-		return;
-	}
-
-	const existingMessage = await fetchMessage(discordChannel, chan.twitchMessageId);
-
-	if (!existingMessage) {
+		const startLabel = /^Started (.+?)\. (?:Last edited|Stream ended)/u
+			.exec(existingEmbed?.footer?.text || ``)?.[1] || null;
+		await PendingStreamVods.findCreateFind({
+			where: { messageId: chan.twitchMessageId },
+			defaults: {
+				channelId: chan.id,
+				provider,
+				discordChannelId,
+				messageId: chan.twitchMessageId,
+				streamId: chan.twitchStreamId,
+				providerUserId: twitchUser?.id || twitchIdentity?.providerUserId || null,
+				providerName: twitchUser?.login || twitchIdentity?.currentName || chan.channelName,
+				startLabel,
+				endedAt: new Date(),
+			},
+		});
+		// The queue now owns replay lookup for this announcement. Free the
+		// channel row so a subsequent live session can get a new message.
 		await Channels.update({ twitchStreamId: null }, { where: { id: chan.id } });
-		return;
+	} catch (err) {
+		// Only a confirmed deleted message ends retries. Permission and network
+		// failures must keep the saved stream ID for the next poll.
+		if (Number(err?.code) === 10008) {
+			await Channels.update({ twitchStreamId: null }, { where: { id: chan.id } });
+			return;
+		}
+		throw err;
 	}
+}
 
-	const imageUrl = vod.thumbnail_url ?
-		vod.thumbnail_url.replace(`%{width}`, `640`).replace(`%{height}`, `360`) :
-		null;
+async function finishUnavailableTwitchVod(pending, existingMessage) {
+	// A six-hour wait is measured from the first confirmed offline edit. Keep its
+	// footer timestamp while replacing the pending label and retiring the row.
 	const embed = offlineEmbed({
 		provider,
 		existingEmbed: existingMessage.embeds[0],
-		vodUrl: vod.url,
-		imageUrl,
+		vodUnavailable: true,
 	});
+	await existingMessage.edit({ content: endedContent, embeds: [embed] });
+	await PendingStreamVods.destroy({ where: { id: pending.id } });
+}
 
-	await existingMessage.edit({
-		content: `The Twitch stream has ended.`,
-		embeds: [embed],
-	});
-	await Channels.update({ twitchStreamId: null }, { where: { id: chan.id } });
+async function processPendingTwitchVod(pending, client, twitchAuthToken, vodLookups) {
+	try {
+		const discordChannel = client.channels.cache.get(pending.discordChannelId) ||
+			await client.channels.fetch(pending.discordChannelId);
+		if (!discordChannel) {
+			throw new Error(`Discord channel ${pending.discordChannelId} is unavailable.`);
+		}
+
+		const existingMessage = await fetchMessage(discordChannel, pending.messageId);
+		if (!existingMessage) {
+			await PendingStreamVods.destroy({ where: { id: pending.id } });
+			return;
+		}
+		const replayField = existingMessage.embeds[0]?.fields?.find(field => field.name === provider)?.value;
+		if (hasCompletedTwitchVod(existingMessage) || replayField === `No VoD available`) {
+			await PendingStreamVods.destroy({ where: { id: pending.id } });
+			return;
+		}
+
+		const userId = pending.providerUserId ||
+			(await twitchChannel.getChannel(
+				pending.providerName,
+				twitchClientId,
+				twitchAuthToken,
+			))?.id;
+		if (!userId || !pending.streamId) {
+			// Without a stable stream lookup, absence cannot be confirmed.
+			return;
+		}
+
+		// Several guilds can await the same broadcaster's archive. Share one
+		// lookup per stream per poll so retries do not multiply Twitch requests.
+		const vodKey = `${userId}:${pending.streamId}`;
+		if (!vodLookups.has(vodKey)) {
+			vodLookups.set(vodKey, twitchVods.getForStream(
+				userId,
+				pending.streamId,
+				twitchClientId,
+				twitchAuthToken,
+			));
+		}
+		const vod = await vodLookups.get(vodKey);
+		if (vod?.retryable) {
+			return;
+		}
+		if (!vod?.url) {
+			if (vodWaitExpired(pending.endedAt)) {
+				await finishUnavailableTwitchVod(pending, existingMessage);
+			}
+			return;
+		}
+
+		const imageUrl = vod.thumbnail_url ?
+			vod.thumbnail_url.replace(`%{width}`, `640`).replace(`%{height}`, `360`) :
+			null;
+		const embed = offlineEmbed({
+			provider,
+			existingEmbed: existingMessage.embeds[0],
+			vodUrl: vod.url,
+			imageUrl,
+		});
+		await existingMessage.edit({ content: endedContent, embeds: [embed] });
+		await PendingStreamVods.destroy({ where: { id: pending.id } });
+	} catch (err) {
+		if (Number(err?.code) === 10008) {
+			await PendingStreamVods.destroy({ where: { id: pending.id } });
+			return;
+		}
+		error(`Failed to update pending Twitch VoD message ${pending.messageId}:`, err);
+	}
+}
+
+async function processPendingTwitchVods(client, twitchAuthToken) {
+	// Include rows from older streams even if their channel is live again.
+	const pendingVods = await PendingStreamVods.findAll({ where: { provider }, raw: true });
+	const vodLookups = new Map();
+	await Promise.all(pendingVods.map(pending =>
+		processPendingTwitchVod(pending, client, twitchAuthToken, vodLookups)));
 }
 
 /**
@@ -147,8 +248,22 @@ async function getTwitch(client) {
 			}
 
 			if (!streamInfo) {
-				await updateVodMessage(chan, server, guild, client, twitchUser);
+				try {
+					await queueEndedTwitchMessage(chan, server, guild, client, twitchUser, identityMap.get(chan.id));
+				} catch (err) {
+					error(`Failed to update ended Twitch message for ${chan.channelName}:`, err);
+				}
 				return;
+			}
+			if (chan.twitchStreamId && chan.twitchStreamId !== streamInfo.id) {
+				// A stream can end and restart between polls. Save the prior message
+				// for replay retries before replacing this channel's tracked stream.
+				try {
+					await queueEndedTwitchMessage(chan, server, guild, client, twitchUser, identityMap.get(chan.id));
+				} catch (err) {
+					error(`Failed to end previous Twitch message for ${chan.channelName}:`, err);
+					return;
+				}
 			}
 
 			const { id: discordChannelId, discordChannel } = targetChannel(client, chan, server, `selfTwitchChannelId`);
@@ -204,6 +319,8 @@ async function getTwitch(client) {
 
 		await Promise.allSettled(channelPromises);
 	}
+
+	await processPendingTwitchVods(client, twitchAuthToken);
 }
 
 module.exports = { getTwitch };

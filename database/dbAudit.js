@@ -78,6 +78,35 @@ const EXPECTED_SCHEMA = [
 		],
 	},
 	{
+		name: `pendingStreamVods`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`channelId`, `INTEGER`, { references: `channels (id) ON DELETE CASCADE ON UPDATE CASCADE` }),
+			column(`provider`, `VARCHAR(255)`),
+			column(`discordChannelId`, `VARCHAR(255)`),
+			column(`messageId`, `VARCHAR(255)`),
+			column(`streamId`, `VARCHAR(255)`, { nullable: true }),
+			column(`providerUserId`, `VARCHAR(255)`, { nullable: true }),
+			column(`providerName`, `VARCHAR(255)`, { nullable: true }),
+			column(`startLabel`, `VARCHAR(255)`, { nullable: true }),
+			column(`providerStartTime`, `DATETIME`, { nullable: true }),
+			column(`endedAt`, `DATETIME`),
+		],
+		indexes: [
+			index(`pendingStreamVodsMessageId`, [`messageId`], { unique: true }),
+			index(`pendingStreamVodsProviderChannel`, [`provider`, `channelId`]),
+		],
+	},
+	{
+		name: `kickLiveSessions`,
+		columns: [
+			column(`channelId`, `INTEGER`, { primaryKey: true, references: `channels (id) ON DELETE CASCADE ON UPDATE CASCADE` }),
+			column(`messageId`, `VARCHAR(255)`),
+			column(`startTime`, `DATETIME`),
+		],
+		indexes: [],
+	},
+	{
 		name: `reactionRoleMessages`,
 		columns: [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
