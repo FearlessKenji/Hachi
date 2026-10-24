@@ -4,6 +4,13 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.12.2 - 2026-10-24
+
+### Fixed
+
+- Updated Twitch and Kick announcements immediately on confirmed stream end, with per-message VoD retries across later streams, exact Kick start-time matching, a six-hour unavailable cutoff after a valid provider check, stable end timestamps, and retries after transient API or Discord errors.
+- Updated the `undici` override to a patched 6.x release after the dependency audit reported denial-of-service advisories.
+
 ## v3.12.1 - 2026-10-21
 
 ### Fixed

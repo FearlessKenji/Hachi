@@ -9,6 +9,8 @@ const { error } = require(`../utils/writeLog.js`);
 
 const STREAM_TIME_ZONE = `America/New_York`;
 const HTTP_ERROR_BODY_LIMIT = 240;
+// Retry age begins when Hachi confirms the stream ended, not when it started.
+const VOD_WAIT_MS = 6 * 60 * 60 * 1000;
 
 const streamTimeFormatter = new Intl.DateTimeFormat(`en-US`, {
 	day: `numeric`,
@@ -56,16 +58,26 @@ function summarizeHttpErrorBody(body) {
 }
 
 function offlineFooter(existingEmbed) {
-	const endTime = formatStreamTime(new Date());
-
-	if (!existingEmbed?.footer?.text) {
-		return `Stream ended ${endTime}.`;
+	const previousFooter = existingEmbed?.footer?.text;
+	// A replay may arrive on a later poll. Keep the time recorded by the first
+	// offline edit rather than changing it each time the replay lookup runs.
+	if (previousFooter && /Stream ended .+\.$/u.test(previousFooter)) {
+		return previousFooter;
 	}
 
-	return existingEmbed.footer.text.replace(
-		/(?:Last edited|Stream ended) .*\.$/,
-		`Stream ended ${endTime}.`,
-	);
+	const endedText = `Stream ended ${formatStreamTime(new Date())}.`;
+	if (!previousFooter) {
+		return endedText;
+	}
+	if (/Last edited .+\.$/u.test(previousFooter)) {
+		return previousFooter.replace(/Last edited .+\.$/u, endedText);
+	}
+	return `${previousFooter} ${endedText}`;
+}
+
+function vodWaitExpired(endedAt, now = new Date()) {
+	const endedTime = new Date(endedAt).getTime();
+	return Number.isFinite(endedTime) && now.getTime() - endedTime >= VOD_WAIT_MS;
 }
 
 function groupChannels(channels) {
@@ -128,7 +140,16 @@ async function fetchMessage(discordChannel, messageId) {
 		return cachedMessage;
 	}
 
-	return discordChannel.messages.fetch(messageId).catch(() => null);
+	try {
+		return await discordChannel.messages.fetch(messageId);
+	} catch (err) {
+		// Only a deleted message is gone for good. A transient Discord error must
+		// leave the saved stream state intact so the next poll can retry.
+		if (Number(err?.code) === 10008) {
+			return null;
+		}
+		throw err;
+	}
 }
 
 async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, onSend }) {
@@ -202,33 +223,35 @@ function liveEmbed({
 	return embed;
 }
 
-function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl }) {
-	if (!vodUrl) {
-		throw new Error(`${provider} offline embed requires a VoD URL.`);
-	}
-
+// One embed shape serves the pending, linked, and unavailable replay states.
+// Keep the recorded end footer stable as the provider field changes.
+function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl, vodUnavailable = false }) {
 	const embed = existingEmbed ?
 		EmbedBuilder.from(existingEmbed) :
 		new EmbedBuilder();
 	const existingFields = existingEmbed?.fields?.length ?
 		existingEmbed.fields :
-		[
-			{
-				name: provider,
-				value: `[Watch VoD](${vodUrl})`,
-			},
-		];
+		[{ name: provider, value: `Fetching VoD...` }];
+	let vodFieldValue = `Fetching VoD...`;
+	if (vodUrl) {
+		vodFieldValue = `[Watch VoD](${vodUrl})`;
+	} else if (vodUnavailable) {
+		vodFieldValue = `No VoD available`;
+	}
 	const fields = existingFields.map(field => {
 		if (field.name === provider) {
 			return {
 				name: provider,
-				value: `[Watch VoD](${vodUrl})`,
+				value: vodFieldValue,
 				inline: field.inline,
 			};
 		}
 
 		return field;
 	});
+	if (!fields.some(field => field.name === provider)) {
+		fields.push({ name: provider, value: vodFieldValue });
+	}
 	const title = existingEmbed?.title ?
 		existingEmbed.title.replace(`is now live`, `was live`) :
 		`${provider} stream was live`;
@@ -236,13 +259,10 @@ function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl }) {
 
 	embed
 		.setTitle(title)
-		.setURL(vodUrl)
+		.setURL(vodUrl || null)
 		.setFields(fields)
-		.setFooter({ text: footerText });
-
-	if (imageUrl) {
-		embed.setImage(imageUrl);
-	}
+		.setFooter({ text: footerText })
+		.setImage(imageUrl || null);
 
 	return embed;
 }
@@ -281,6 +301,7 @@ async function fetchBatch({ names, provider, urlFor, headers, pickData, notFound
 module.exports = {
 	fetchBatch,
 	fetchMessage,
+	formatStreamTime,
 	groupChannels,
 	liveEmbed,
 	loadState,
@@ -288,4 +309,5 @@ module.exports = {
 	roleMention,
 	syncMessage,
 	targetChannel,
+	vodWaitExpired,
 };

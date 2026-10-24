@@ -13,7 +13,7 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 
 - Twitch and Kick live notifications with configurable Discord channels and role pings
 - Stream message updates while a streamer remains live
-- VoD/end-of-stream updates when a previous live message can be matched
+- End-of-stream updates that show replay availability and add VoD links when found
 - Twitch VIP role sync through Twitch device-code authorization
 - Per-server notification setup for self streams and affiliate streams
 - Birthday storage, birthday month lists, one-week reminders, posts on birthdays, a birthday board, and staff-managed RecoCards links

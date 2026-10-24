@@ -6,8 +6,10 @@ const { error } = require(`../utils/writeLog.js`);
 
 async function getForStream(userId, streamId, clientID, authKey) {
 	try {
+		// A delayed archive may appear after several newer streams. Search the
+		// largest single page Twitch permits before giving up until the next poll.
 		const res = await fetch(
-			`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=5`,
+			`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=100`,
 			{
 				headers: {
 					'Client-ID': clientID,
@@ -26,7 +28,8 @@ async function getForStream(userId, streamId, clientID, authKey) {
 		return videos.find(video => video.stream_id === streamId) || null;
 	} catch (err) {
 		error(`Failed to fetch Twitch VOD for stream ${streamId}:`, err);
-		return null;
+		// An API failure cannot confirm that a replay is absent at the cutoff.
+		return { retryable: true, url: null };
 	}
 }
 

@@ -873,6 +873,14 @@ function validateDatabaseModels() {
 	assert(Object.keys(dbObjects.Servers.associations).length > 0, `Servers model has no associations.`);
 	assert(Object.keys(dbObjects.RaidIncidents.associations).length > 0, `RaidIncidents model has no associations.`);
 	assert(Object.keys(dbObjects.TwitchRoleConfigs.associations).length > 0, `TwitchRoleConfigs model has no associations.`);
+	assert(Object.keys(dbObjects.PendingStreamVods.associations).length > 0,
+		`PendingStreamVods model is not tied to configured stream channels.`);
+	assert(Object.keys(dbObjects.KickLiveSessions.associations).length > 0 &&
+		dbObjects.KickLiveSessions.primaryKeyAttributes.join(`,`) === `channelId`,
+	`Each Kick channel should have one durable exact live-start record.`);
+	assert(dbObjects.PendingStreamVods.options.indexes.some(index =>
+		index.unique && index.fields.join(`,`) === `messageId`),
+	`Pending replay rows must be unique per Discord announcement.`);
 
 	return dbObjects;
 }
@@ -898,8 +906,15 @@ async function auditLocalDatabaseIfPresent() {
 	const { auditDatabase } = requireFresh(`database`, `dbAudit.js`);
 	const result = await auditDatabase({ dbPath });
 	const acceptedStatuses = new Set([`ok`, `compatible-drift`]);
+	// Startup sequelize.sync creates these new tables. A local database that has
+	// not booted the updated bot yet may report only these expected gaps.
+	const newTables = new Set([`pendingStreamVods`, `kickLiveSessions`]);
+	const newTablesNotYetCreated = result.status === `migration-required` &&
+		result.safeIssues.length > 0 &&
+		result.safeIssues.every(issue => issue.type === `missing-table` && newTables.has(issue.table));
 
-	assert(acceptedStatuses.has(result.status), `Database audit status is ${result.status}: ${result.detail}`);
+	assert(acceptedStatuses.has(result.status) || newTablesNotYetCreated,
+		`Database audit status is ${result.status}: ${result.detail}`);
 }
 
 function validatePackageMetadata() {
@@ -1517,8 +1532,7 @@ function validatePureHelpers() {
 		getEventSubWebSocketUrlRejectionReason,
 		normalizeEventSubWebSocketUrl,
 	} = requireFresh(`modules`, `twitchRoleEventSub.js`);
-	const { offlineEmbed } = requireFresh(`modules`, `streamUtils.js`);
-	const getKickSource = fs.readFileSync(resolveProject(`modules`, `getKick.js`), `utf8`);
+	const { offlineEmbed, vodWaitExpired } = requireFresh(`modules`, `streamUtils.js`);
 	const serverLifecycle = requireFresh(`utils`, `serverLifecycle.js`);
 	const {
 		getTimezoneChoicesForRegion,
@@ -1786,22 +1800,49 @@ function validatePureHelpers() {
 
 	assert(fragmentRejectionReason === `URL includes a fragment`, `Twitch EventSub WebSocket rejection reason should explain fragments.`);
 	assert(!fragmentRejectionReason.includes(`sensitive_smoke`), `Twitch EventSub WebSocket rejection reason should not include query values.`);
-	let missingVodRejected = false;
-
-	try {
-		offlineEmbed({
-			existingEmbed: { fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/piratesoftware)` }] },
-			imageUrl: null,
-			provider: `Kick`,
+	for (const [provider, streamUrl, vodUrl] of [
+		[`Twitch`, `https://www.twitch.tv/piratesoftware`, `https://www.twitch.tv/videos/smoke_vod`],
+		[`Kick`, `https://kick.com/piratesoftware`, `https://kick.com/piratesoftware/videos/smoke_vod`],
+	]) {
+		const pendingEmbed = offlineEmbed({
+			existingEmbed: {
+				title: `PirateSoftware is now live`,
+				url: streamUrl,
+				fields: [{ name: provider, value: `[Watch stream](${streamUrl})` }],
+				footer: { text: `Started 10/23/2026, 4:09 AM EDT. Last edited 10/23/2026, 4:46 PM EDT.` },
+			},
+			provider,
 			vodUrl: null,
-		});
-	} catch (error) {
-		missingVodRejected = /requires a VoD URL/u.test(error.message);
-	}
+		}).toJSON();
 
-	assert(missingVodRejected, `Offline stream embeds should require a VoD URL.`);
-	assert(getKickSource.includes(`Keep kickIsLive true so the next Kick cron tick retries`), `Kick VoD misses should keep retrying instead of clearing live state.`);
-	assert(!getKickSource.includes(`without a VoD link`), `Kick offline updates should not edit embeds without a VoD link.`);
+		assert(pendingEmbed.title === `PirateSoftware was live`, `${provider} pending VoD embed still claims the stream is live.`);
+		assert(pendingEmbed.fields.find(field => field.name === provider)?.value === `Fetching VoD...`,
+			`${provider} pending VoD embed did not show its retry status.`);
+		assert(pendingEmbed.footer.text.startsWith(`Started 10/23/2026, 4:09 AM EDT. Stream ended `) &&
+			!pendingEmbed.footer.text.includes(`Stream ended at `) &&
+			!pendingEmbed.footer.text.includes(`Last edited`), `${provider} offline footer did not record the stream end.`);
+		assert(!pendingEmbed.url, `${provider} pending VoD embed linked to an unavailable replay.`);
+		const unavailableEmbed = offlineEmbed({
+			provider,
+			existingEmbed: pendingEmbed,
+			vodUnavailable: true,
+		}).toJSON();
+		assert(unavailableEmbed.fields.find(field => field.name === provider)?.value === `No VoD available` &&
+			unavailableEmbed.footer.text === pendingEmbed.footer.text && !unavailableEmbed.url,
+		`${provider} expired VoD embed did not preserve the end time and remove the pending status.`);
+
+		const completeEmbed = offlineEmbed({ provider, existingEmbed: pendingEmbed, vodUrl }).toJSON();
+
+		assert(completeEmbed.fields.find(field => field.name === provider)?.value === `[Watch VoD](${vodUrl})`,
+			`${provider} replay embed did not replace its pending status with the VoD link.`);
+		assert(completeEmbed.url === vodUrl, `${provider} replay embed did not link its title to the VoD.`);
+		assert(completeEmbed.footer.text === pendingEmbed.footer.text,
+			`${provider} replay update changed the previously recorded end time.`);
+	}
+	const endedAt = new Date(`2026-10-23T12:00:00Z`);
+	assert(!vodWaitExpired(endedAt, new Date(`2026-10-23T17:59:59Z`)) &&
+		vodWaitExpired(endedAt, new Date(`2026-10-23T18:00:00Z`)),
+	`The missing VoD status should begin six hours after the detected end.`);
 	const latestPatchNotes = parseLatestPatchNotes(`# Unreleased
 
 - Draft manager note.
@@ -1900,14 +1941,17 @@ async function validateKickVodLookup() {
 			status: 404,
 			text: async () => missingChannelBody,
 		});
-		assert(await getLatest(`missing_kick_channel`) === null, `A missing Kick channel should not produce a VoD.`);
-		assert(await getLatest(`missing_kick_channel`) === null, `A repeated missing Kick channel should not produce a VoD.`);
+		assert((await getLatest(`missing_kick_channel`))?.retryable,
+			`A missing Kick endpoint should defer the VoD cutoff.`);
+		assert((await getLatest(`missing_kick_channel`))?.retryable,
+			`A repeated missing Kick endpoint should remain retryable.`);
 		global.fetch = async () => ({
 			ok: false,
 			status: 404,
 			text: async () => JSON.stringify({ message: missingChannelBody }),
 		});
-		assert(await getLatest(`missing_kick_channel`) === null, `A JSON-formatted Kick 404 should not produce a VoD.`);
+		assert((await getLatest(`missing_kick_channel`))?.retryable,
+			`A JSON-formatted Kick 404 should defer the VoD cutoff.`);
 		assert(warnings.length === 1 && errors.length === 0, `A missing Kick channel should warn once without an error stack.`);
 
 		let requestedUrl = null;
@@ -1919,6 +1963,7 @@ async function validateKickVodLookup() {
 					slug: `current_kick_channel`,
 					previous_livestreams: [{
 						session_title: `Test stream`,
+						start_time: `2026-10-23 08:09:00`,
 						video: { uuid: `test-vod` },
 					}],
 				}),
@@ -1928,6 +1973,37 @@ async function validateKickVodLookup() {
 		assert(requestedUrl === `https://kick.com/api/v1/channels/current_kick_channel`, `Kick VoD lookup used the wrong channel endpoint.`);
 		assert(vod?.url === `https://kick.com/current_kick_channel/videos/test-vod`, `Kick VoD lookup did not return the replay link.`);
 		assert(vod?.title === `Test stream`, `Kick VoD lookup lost the replay title.`);
+		assert(vod?.startTime === `2026-10-23 08:09:00`, `Kick VoD lookup lost the past stream start time.`);
+		global.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				slug: `current_kick_channel`,
+				previous_livestreams: [
+					{ session_title: `Just ended`, video: null },
+					{ session_title: `Older stream`, video: { uuid: `older-vod` } },
+				],
+			}),
+		});
+		assert(await getLatest(`current_kick_channel`) === null,
+			`Kick should wait for the newest stream's replay instead of linking an older VoD.`);
+
+		global.fetch = async () => ({
+			ok: true,
+			json: async () => ({
+				slug: `current_kick_channel`,
+				previous_livestreams: [
+					{ start_time: `2026-10-23 08:09:40`, video: { uuid: `newer-replay` } },
+					{ start_time: `2026-10-23 08:09:10`, video: { uuid: `original-replay` } },
+				],
+			}),
+		});
+		const sameMinuteLabel = `10/23/2026, 4:09 AM EDT`;
+		const exactReplay = await getLatest(
+			`current_kick_channel`, sameMinuteLabel, new Date(`2026-10-23T08:09:10Z`));
+		assert(exactReplay?.url === `https://kick.com/current_kick_channel/videos/original-replay`,
+			`An exact Kick start time should select its replay among same-minute streams.`);
+		assert(await getLatest(`current_kick_channel`, sameMinuteLabel) === null,
+			`An ambiguous legacy Kick start minute should not link an arbitrary replay.`);
 	} finally {
 		// This test owns the fetch stub until its awaited lookups finish.
 		// eslint-disable-next-line require-atomic-updates
@@ -2049,6 +2125,265 @@ async function validateTwitchStreamBatchLookup() {
 	}
 }
 
+async function validateStreamMessageFetch() {
+	const { fetchMessage } = requireFresh(`modules`, `streamUtils.js`);
+	const discordChannel = {
+		messages: {
+			cache: new Map(),
+			fetch: async () => {
+				const error = new Error(`Unknown Message`);
+				error.code = 10008;
+				throw error;
+			},
+		},
+	};
+
+	assert(await fetchMessage(discordChannel, `deleted-message`) === null,
+		`A deleted stream announcement should be treated as missing.`);
+	discordChannel.messages.fetch = async () => {
+		throw new Error(`Temporary Discord failure`);
+	};
+	let transientErrorPropagated = false;
+	try {
+		await fetchMessage(discordChannel, `retry-message`);
+	} catch (error) {
+		transientErrorPropagated = error.message === `Temporary Discord failure`;
+	}
+	assert(transientErrorPropagated, `A transient Discord fetch failure should preserve the stream's retry state.`);
+}
+
+function createPendingVodStore() {
+	const rows = new Map();
+	let nextId = 1;
+	const findCreateFind = async ({ where, defaults }) => {
+		const existing = rows.get(where.messageId);
+		if (existing) {
+			return [existing, false];
+		}
+		const row = { id: nextId++, ...defaults, ...where };
+		row.destroy = async () => rows.delete(row.messageId);
+		rows.set(row.messageId, row);
+		return [row, true];
+	};
+
+	return {
+		rows,
+		findCreateFind,
+		findAll: async ({ where }) => [...rows.values()].filter(row =>
+			Object.entries(where || {}).every(([key, value]) => row[key] === value)),
+		destroy: async ({ where }) => {
+			let removed = 0;
+			for (const [messageId, row] of rows) {
+				if (Object.entries(where || {}).every(([key, value]) => row[key] === value)) {
+					rows.delete(messageId);
+					removed++;
+				}
+			}
+			return removed;
+		},
+	};
+}
+
+function createKickSessionStore() {
+	const rows = new Map();
+	return {
+		rows,
+		findAll: async () => [...rows.values()].map(row => ({ ...row })),
+		upsert: async row => {
+			rows.set(row.channelId, { ...row });
+		},
+		destroy: async ({ where }) => Number(rows.delete(where.channelId)),
+	};
+}
+
+async function validateTwitchPendingVodUpdate() {
+	const twitchStreams = require(resolveProject(`modules`, `twitchStreams.js`));
+	const twitchVods = require(resolveProject(`modules`, `twitchVods.js`));
+	const twitchChannel = require(resolveProject(`modules`, `twitchChannel.js`));
+	const twitchIdentity = require(resolveProject(`modules`, `twitchIdentity.js`));
+	const streamNameMonitor = require(resolveProject(`modules`, `streamNameMonitor.js`));
+	const streamUtils = require(resolveProject(`modules`, `streamUtils.js`));
+	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
+	const { Channels, PendingStreamVods } = require(resolveProject(`database`, `dbObjects.js`));
+	const original = {
+		getStreams: twitchStreams.getStreams,
+		getForStream: twitchVods.getForStream,
+		getChannel: twitchChannel.getChannel,
+		getTwitchUsers: twitchIdentity.getTwitchUsers,
+		getIdentityMap: streamNameMonitor.getIdentityMap,
+		recordStreamName: streamNameMonitor.recordStreamName,
+		loadState: streamUtils.loadState,
+		targetChannel: streamUtils.targetChannel,
+		syncMessage: streamUtils.syncMessage,
+		getAuthTokens: authTokens.getAuthTokens,
+		update: Channels.update,
+		pendingFindCreateFind: PendingStreamVods.findCreateFind,
+		pendingFindAll: PendingStreamVods.findAll,
+		pendingDestroy: PendingStreamVods.destroy,
+	};
+	const channel = {
+		id: 1,
+		channelName: `piratesoftware`,
+		twitchMessageId: `twitch-message-id`,
+		twitchStreamId: `stream-1`,
+		twitchNotif: true,
+	};
+	const server = { guildId: `twitch-guild-id` };
+	const edits = [];
+	const updates = [];
+	const vodLookups = [];
+	const liveSyncs = [];
+	const message = {
+		content: `PirateSoftware just went live`,
+		embeds: [{
+			title: `PirateSoftware is now live`,
+			url: `https://www.twitch.tv/piratesoftware`,
+			fields: [{ name: `Twitch`, value: `[Watch stream](https://www.twitch.tv/piratesoftware)` }],
+			footer: { text: `Started 10/23/2026, 4:09 AM EDT. Last edited 10/23/2026, 4:46 PM EDT.` },
+		}],
+		edit: async payload => {
+			edits.push(payload);
+			message.content = payload.content;
+			message.embeds = payload.embeds.map(embed => embed.toJSON?.() || embed);
+		},
+	};
+	const discordChannel = { messages: { cache: new Map([[channel.twitchMessageId, message]]) } };
+	const pendingStore = createPendingVodStore();
+	let vodResult = null;
+	let streamData = null;
+	let newMessageCount = 0;
+
+	try {
+		twitchStreams.getStreams = async () => ({ piratesoftware: { data: streamData, error: false } });
+		twitchVods.getForStream = async (userId, streamId) => {
+			vodLookups.push({ userId, streamId });
+			return vodResult;
+		};
+		twitchChannel.getChannel = async () => ({
+			id: `user-1`,
+			broadcaster_login: `piratesoftware`,
+			display_name: `PirateSoftware`,
+			title: `A new stream`,
+			game_name: `Noita`,
+			thumbnail_url: `https://example.com/profile.jpg`,
+		});
+		twitchIdentity.getTwitchUsers = async () => new Map([[channel.id, { id: `user-1`, login: `piratesoftware` }]]);
+		streamNameMonitor.getIdentityMap = async () => new Map();
+		streamNameMonitor.recordStreamName = async () => null;
+		streamUtils.loadState = async () => ({
+			servers: [server],
+			channels: [channel],
+			channelsByGuild: new Map([[server.guildId, [channel]]]),
+		});
+		streamUtils.targetChannel = () => ({ id: `twitch-discord-channel-id`, discordChannel });
+		streamUtils.syncMessage = async options => {
+			liveSyncs.push(options);
+			if (!options.shouldEdit) {
+				const newMessage = {
+					id: `new-twitch-message-${++newMessageCount}`,
+					content: options.content,
+					embeds: [options.embed.toJSON()],
+					edit: async payload => {
+						newMessage.content = payload.content;
+						newMessage.embeds = payload.embeds.map(embed => embed.toJSON?.() || embed);
+					},
+				};
+				discordChannel.messages.cache.set(newMessage.id, newMessage);
+				await options.onSend(newMessage);
+			}
+		};
+		authTokens.getAuthTokens = () => ({ twitchAuthToken: `smoke-token` });
+		Channels.update = async (state, options) => {
+			updates.push([state, options]);
+			Object.assign(channel, state);
+		};
+		PendingStreamVods.findCreateFind = pendingStore.findCreateFind;
+		PendingStreamVods.findAll = pendingStore.findAll;
+		PendingStreamVods.destroy = pendingStore.destroy;
+
+		const { getTwitch } = requireFresh(`modules`, `getTwitch.js`);
+		const client = {
+			guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) },
+			channels: { cache: new Map([[`twitch-discord-channel-id`, discordChannel]]) },
+		};
+		await getTwitch(client);
+		assert(edits.length === 1 && message.content === `The Twitch stream has ended.` &&
+			message.embeds[0].fields.find(field => field.name === `Twitch`)?.value === `Fetching VoD...`,
+		`Twitch did not mark the stream ended while its VoD was unavailable.`);
+		assert(channel.twitchStreamId === null && pendingStore.rows.has(`twitch-message-id`) &&
+			pendingStore.rows.get(`twitch-message-id`).streamId === `stream-1`,
+		`Twitch did not queue the original stream for replay retries.`);
+		const pendingFooter = message.embeds[0].footer.text;
+		await getTwitch(client);
+		assert(vodLookups.length === 2 && edits.length === 1 && pendingStore.rows.size === 1,
+			`Twitch should retry a queued VoD without repeatedly editing or queuing the message.`);
+
+		streamData = {
+			id: `stream-2`, user_id: `user-1`, viewer_count: 10, started_at: `2026-10-23T21:00:00Z`,
+		};
+		await getTwitch(client);
+		assert(liveSyncs.at(-1)?.shouldEdit === false && channel.twitchMessageId === `new-twitch-message-1` &&
+			pendingStore.rows.has(`twitch-message-id`),
+		`A new Twitch stream replaced the old replay queue instead of posting a new announcement.`);
+		const newLiveMessage = discordChannel.messages.cache.get(channel.twitchMessageId);
+
+		vodResult = { url: `https://www.twitch.tv/videos/smoke-vod`, thumbnail_url: null };
+		await getTwitch(client);
+		assert(edits.length === 2 &&
+			message.embeds[0].fields.find(field => field.name === `Twitch`)?.value ===
+			`[Watch VoD](https://www.twitch.tv/videos/smoke-vod)`,
+		`Twitch did not replace the pending status after finding a VoD.`);
+		assert(message.embeds[0].footer.text === pendingFooter,
+			`Twitch changed its recorded end time when the VoD became available.`);
+		assert(pendingStore.rows.size === 0 && channel.twitchStreamId === `stream-2` &&
+			newLiveMessage.content.includes(`just went live`),
+		`Completing an older Twitch replay changed the new live announcement or left the queue uncleared.`);
+
+		// The next stream can start between polls; the prior live message must
+		// become a separate pending replay before its replacement is posted.
+		vodResult = null;
+		streamData = {
+			id: `stream-3`, user_id: `user-1`, viewer_count: 11, started_at: `2026-10-23T22:00:00Z`,
+		};
+		await getTwitch(client);
+		assert(newLiveMessage.content === `The Twitch stream has ended.` &&
+			pendingStore.rows.has(`new-twitch-message-1`) &&
+			pendingStore.rows.get(`new-twitch-message-1`).streamId === `stream-2` &&
+			channel.twitchMessageId === `new-twitch-message-2`,
+		`Twitch did not queue a prior stream that ended between polls.`);
+		const expiredTwitchRow = pendingStore.rows.get(`new-twitch-message-1`);
+		expiredTwitchRow.endedAt = new Date(Date.now() - 6 * 60 * 60 * 1000 - 1000);
+		const endedFooter = newLiveMessage.embeds[0].footer.text;
+		vodResult = { retryable: true, url: null };
+		await getTwitch(client);
+		assert(pendingStore.rows.has(`new-twitch-message-1`) &&
+			newLiveMessage.embeds[0].fields.find(field => field.name === `Twitch`)?.value === `Fetching VoD...`,
+		`A Twitch provider error should defer the expired replay cutoff.`);
+		vodResult = null;
+		await getTwitch(client);
+		assert(newLiveMessage.embeds[0].fields.find(field => field.name === `Twitch`)?.value ===
+			`No VoD available` && newLiveMessage.embeds[0].footer.text === endedFooter &&
+			!pendingStore.rows.has(`new-twitch-message-1`) && channel.twitchStreamId === `stream-3`,
+		`Twitch did not finish an expired replay without changing the current live stream.`);
+	} finally {
+		twitchStreams.getStreams = original.getStreams;
+		twitchVods.getForStream = original.getForStream;
+		twitchChannel.getChannel = original.getChannel;
+		twitchIdentity.getTwitchUsers = original.getTwitchUsers;
+		streamNameMonitor.getIdentityMap = original.getIdentityMap;
+		streamNameMonitor.recordStreamName = original.recordStreamName;
+		streamUtils.loadState = original.loadState;
+		streamUtils.targetChannel = original.targetChannel;
+		streamUtils.syncMessage = original.syncMessage;
+		authTokens.getAuthTokens = original.getAuthTokens;
+		Channels.update = original.update;
+		PendingStreamVods.findCreateFind = original.pendingFindCreateFind;
+		PendingStreamVods.findAll = original.pendingFindAll;
+		PendingStreamVods.destroy = original.pendingDestroy;
+		delete require.cache[require.resolve(resolveProject(`modules`, `getTwitch.js`))];
+	}
+}
+
 async function validateKickChannelRouting() {
 	const kickStreams = require(resolveProject(`modules`, `kickStreams.js`));
 	const kickUser = require(resolveProject(`modules`, `kickUser.js`));
@@ -2057,7 +2392,7 @@ async function validateKickChannelRouting() {
 	const streamNameMonitor = require(resolveProject(`modules`, `streamNameMonitor.js`));
 	const streamUtils = require(resolveProject(`modules`, `streamUtils.js`));
 	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
-	const { Channels } = require(resolveProject(`database`, `dbObjects.js`));
+	const { Channels, KickLiveSessions, PendingStreamVods } = require(resolveProject(`database`, `dbObjects.js`));
 	const log = require(resolveProject(`utils`, `writeLog.js`));
 	const original = {
 		fetch: global.fetch,
@@ -2071,8 +2406,15 @@ async function validateKickChannelRouting() {
 		targetChannel: streamUtils.targetChannel,
 		fetchMessage: streamUtils.fetchMessage,
 		offlineEmbed: streamUtils.offlineEmbed,
+		syncMessage: streamUtils.syncMessage,
 		getAuthTokens: authTokens.getAuthTokens,
 		update: Channels.update,
+		pendingFindCreateFind: PendingStreamVods.findCreateFind,
+		pendingFindAll: PendingStreamVods.findAll,
+		pendingDestroy: PendingStreamVods.destroy,
+		kickSessionFindAll: KickLiveSessions.findAll,
+		kickSessionUpsert: KickLiveSessions.upsert,
+		kickSessionDestroy: KickLiveSessions.destroy,
 		warn: log.warn,
 	};
 	const channel = {
@@ -2087,12 +2429,28 @@ async function validateKickChannelRouting() {
 	const edits = [];
 	const warnings = [];
 	const message = {
-		embeds: [{ url: `https://kick.com/old_kick_name`, fields: [] }],
-		edit: async payload => edits.push(payload),
+		id: `message-id`,
+		content: `Old Kick just went live`,
+		embeds: [{
+			title: `Old Kick is now live`,
+			url: `https://kick.com/old_kick_name`,
+			fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/old_kick_name)` }],
+			footer: { text: `Started 10/23/2026, 4:09 AM EDT. Last edited 10/23/2026, 4:46 PM EDT.` },
+		}],
+		edit: async payload => {
+			edits.push(payload);
+			message.content = payload.content;
+			message.embeds = payload.embeds.map(embed => embed.toJSON?.() || embed);
+		},
 	};
+	const messageMap = new Map([[message.id, message]]);
+	const discordChannel = { messages: { cache: messageMap } };
 	const vodLookups = [];
+	const vodLookupArguments = [];
 	const polledNames = [];
 	const updates = [];
+	const pendingStore = createPendingVodStore();
+	const kickSessionStore = createKickSessionStore();
 	const streamResponseStub = async names => {
 		polledNames.push(names);
 		return { [channel.channelName]: { data: channelData, error: false } };
@@ -2101,12 +2459,24 @@ async function validateKickChannelRouting() {
 	let savedIdentities = new Map();
 	let channelsById = new Map();
 	let userLookups = 0;
+	let vodResult = null;
+	let liveSync = null;
+	let newMessageCount = 0;
 
 	try {
 		kickStreams.getStreams = streamResponseStub;
-		kickVods.getLatest = async slug => {
+		kickVods.getLatest = async (slug, startLabel, providerStartTime) => {
 			vodLookups.push(slug);
-			return { url: `https://kick.com/current_kick_name/videos/test-vod` };
+			vodLookupArguments.push({ slug, startLabel, providerStartTime });
+			if (vodResult?.startTime) {
+				const vodStart = new Date(`${vodResult.startTime.replace(` `, `T`)}Z`);
+				if (providerStartTime ?
+					vodStart.getTime() !== new Date(providerStartTime).getTime() :
+					streamUtils.formatStreamTime(vodStart) !== startLabel) {
+					return null;
+				}
+			}
+			return vodResult;
 		};
 		kickIdentity.getChannelsByBroadcasterIds = async () => channelsById;
 		streamNameMonitor.getIdentityMap = async () => savedIdentities;
@@ -2120,20 +2490,102 @@ async function validateKickChannelRouting() {
 			channels: [channel, twitchOnlyChannel],
 			channelsByGuild: new Map([[server.guildId, [channel, twitchOnlyChannel]]]),
 		});
-		streamUtils.targetChannel = () => ({ id: `discord-channel-id`, discordChannel: {} });
-		streamUtils.fetchMessage = async () => message;
-		streamUtils.offlineEmbed = () => ({});
+		streamUtils.targetChannel = () => ({ id: `discord-channel-id`, discordChannel });
+		streamUtils.fetchMessage = async (_target, messageId) => messageMap.get(messageId) || null;
+		streamUtils.syncMessage = async options => {
+			liveSync = options;
+			if (!options.shouldEdit) {
+				const newMessage = {
+					id: `new-kick-message-${++newMessageCount}`,
+					content: options.content,
+					embeds: [options.embed.toJSON()],
+					edit: async payload => {
+						newMessage.content = payload.content;
+						newMessage.embeds = payload.embeds.map(embed => embed.toJSON?.() || embed);
+					},
+				};
+				messageMap.set(newMessage.id, newMessage);
+				await options.onSend(newMessage);
+				return newMessage;
+			}
+			return messageMap.get(options.messageId);
+		};
 		authTokens.getAuthTokens = () => ({ kickAuthToken: `test-token` });
-		Channels.update = async (...args) => updates.push(args);
+		Channels.update = async (state, options) => {
+			updates.push([state, options]);
+			Object.assign(channel, state);
+		};
+		PendingStreamVods.findCreateFind = pendingStore.findCreateFind;
+		PendingStreamVods.findAll = pendingStore.findAll;
+		PendingStreamVods.destroy = pendingStore.destroy;
+		KickLiveSessions.findAll = kickSessionStore.findAll;
+		KickLiveSessions.upsert = kickSessionStore.upsert;
+		KickLiveSessions.destroy = kickSessionStore.destroy;
 		log.warn = messageText => warnings.push(messageText);
 
 		const { getKick } = requireFresh(`modules`, `getKick.js`);
-		const client = { guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) } };
+		const client = {
+			guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) },
+			channels: { cache: new Map([[`discord-channel-id`, discordChannel]]) },
+		};
 		await getKick(client);
 		assert(polledNames[0].join(`,`) === `old_kick_name`, `Kick polled a channel with notifications disabled.`);
 		assert(vodLookups.join(`,`) === `current_kick_name`, `Kick VoD lookup did not use Kick's resolved slug.`);
-		assert(edits.length === 1, `Kick did not edit the notification after finding a VoD.`);
-		assert(updates.some(([state]) => state.kickIsLive === false), `Kick VoD update did not clear live state.`);
+		assert(edits.length === 1 && message.content === `The Kick stream has ended.` &&
+			message.embeds[0].fields.find(field => field.name === `Kick`)?.value === `Fetching VoD...`,
+		`Kick did not mark the stream ended while the VoD was unavailable.`);
+		assert(channel.kickIsLive === false && pendingStore.rows.has(message.id) &&
+			pendingStore.rows.get(message.id).startLabel === `10/23/2026, 4:09 AM EDT`,
+		`Kick did not queue the original announcement after marking it ended.`);
+		const pendingFooter = message.embeds[0].footer.text;
+		await getKick(client);
+		assert(vodLookups.length === 2 && edits.length === 1 && pendingStore.rows.size === 1,
+			`Kick should retry a queued VoD without repeatedly editing or queuing the message.`);
+		vodResult = {
+			url: `https://kick.com/current_kick_name/videos/older-vod`,
+			startTime: `2026-10-22 08:09:00`,
+		};
+		await getKick(client);
+		assert(edits.length === 1 && pendingStore.rows.size === 1,
+			`Kick linked an older replay while the just-ended stream was still processing.`);
+		vodResult = {
+			url: `https://kick.com/current_kick_name/videos/test-vod`,
+			startTime: `2026-10-23 08:09:00`,
+		};
+		await getKick(client);
+		assert(edits.length === 2 &&
+			message.embeds[0].fields.find(field => field.name === `Kick`)?.value ===
+			`[Watch VoD](https://kick.com/current_kick_name/videos/test-vod)`,
+		`Kick did not replace the pending status after finding a VoD.`);
+		assert(message.embeds[0].footer.text === pendingFooter,
+			`Kick changed its recorded end time when the VoD became available.`);
+		assert(pendingStore.rows.size === 0 && channel.kickIsLive === false,
+			`Kick did not remove the completed replay queue entry.`);
+		message.embeds[0].fields.find(field => field.name === `Kick`).value = `Fetching VoD...`;
+		message.embeds[0].url = null;
+		vodResult = null;
+		await pendingStore.findCreateFind({
+			where: { messageId: message.id },
+			defaults: {
+				channelId: channel.id,
+				provider: `Kick`,
+				discordChannelId: `discord-channel-id`,
+				providerName: `current_kick_name`,
+				startLabel: `10/23/2026, 4:09 AM EDT`,
+				endedAt: new Date(Date.now() - 6 * 60 * 60 * 1000 - 1000),
+			},
+		});
+		vodResult = { retryable: true, url: null };
+		await getKick(client);
+		assert(pendingStore.rows.has(message.id) &&
+			message.embeds[0].fields.find(field => field.name === `Kick`)?.value === `Fetching VoD...`,
+		`A Kick provider error should defer the expired replay cutoff.`);
+		vodResult = null;
+		await getKick(client);
+		assert(message.embeds[0].fields.find(field => field.name === `Kick`)?.value ===
+			`No VoD available` && message.embeds[0].footer.text === pendingFooter &&
+			pendingStore.rows.size === 0,
+		`Kick did not finish an expired replay while preserving its end time.`);
 
 		// Exercise the provider's actual missing-slug response through the
 		// notification loop, which must leave VoD state untouched.
@@ -2143,13 +2595,22 @@ async function validateKickChannelRouting() {
 			status: 404,
 			text: async () => `No query results for model [App\\Models\\Channel].`,
 		});
+		Object.assign(message, {
+			content: `Old Kick just went live`,
+			embeds: [{
+				title: `Old Kick is now live`,
+				url: `https://kick.com/old_kick_name`,
+				fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/old_kick_name)` }],
+			}],
+		});
+		Object.assign(channel, { kickIsLive: true, kickMessageId: message.id });
 		vodLookups.splice(0);
 		updates.splice(0);
 		await getKick(client);
 		assert(vodLookups.length === 0, `An unrecognized Kick channel triggered a VoD lookup.`);
 		assert(updates.length === 0, `An unrecognized Kick channel cleared live state without a VoD.`);
 
-		message.embeds = [{ url: `https://kick.com/old_kick_name/videos/existing-vod`, fields: [] }];
+		Object.assign(message, { embeds: [{ url: `https://kick.com/old_kick_name/videos/existing-vod`, fields: [] }] });
 		await getKick(client);
 		assert(updates.some(([state]) => state.kickIsLive === false), `An existing Kick VoD did not clear stale live state.`);
 		assert(warnings.length === 1, `An unrecognized Kick channel should warn once.`);
@@ -2164,17 +2625,94 @@ async function validateKickChannelRouting() {
 			stream: { is_live: false },
 		}]]);
 		channelData = { broadcaster_user_id: 99, slug: `old_kick_name`, stream: { is_live: true } };
-		message.embeds = [{ url: `https://kick.com/old_kick_name`, fields: [] }];
+		Object.assign(message, {
+			content: `Old Kick just went live`,
+			embeds: [{
+				title: `Old Kick is now live`,
+				url: `https://kick.com/old_kick_name`,
+				fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/old_kick_name)` }],
+				footer: { text: `Started 10/23/2026, 4:09 AM EDT. Last edited 10/23/2026, 4:46 PM EDT.` },
+			}],
+		});
+		Object.assign(channel, { kickIsLive: true, kickMessageId: message.id });
 		vodLookups.splice(0);
 		await getKick(client);
 		assert(polledNames.at(-1).length === 0, `A bound Kick channel should be polled by ID instead of its stale slug.`);
 		assert(vodLookups.join(`,`) === `current_kick_name`, `A bound Kick channel should use its ID-resolved slug for VoD.`);
 		assert(userLookups === 0, `A recycled Kick slug triggered a different account's live notification.`);
 
-		channelsById = new Map();
-		vodLookups.splice(0);
+		// A new live session can begin between polls. Queue the previous message
+		// before sending a distinct announcement for the new session.
+		Object.assign(message, {
+			content: `Old Kick just went live`,
+			embeds: [{
+				title: `Old Kick is now live`,
+				url: `https://kick.com/old_kick_name`,
+				fields: [{ name: `Kick`, value: `[Watch stream](https://kick.com/old_kick_name)` }],
+				footer: { text: `Started 10/23/2026, 4:09 AM EDT. Last edited 10/23/2026, 4:46 PM EDT.` },
+			}],
+		});
+		Object.assign(channel, { kickIsLive: true, kickMessageId: message.id });
+		vodResult = null;
+		channelsById = new Map([[`42`, {
+			broadcaster_user_id: 42,
+			slug: `current_kick_name`,
+			stream_title: `New Kick stream`,
+			category: { name: `Noita` },
+			stream: {
+				is_live: true,
+				viewer_count: 10,
+				thumbnail: `https://example.com/kick-thumbnail.jpg`,
+				start_time: `2026-10-23T20:00:10Z`,
+			},
+		}]]);
+		kickUser.getUser = async () => {
+			userLookups++;
+			return { name: `Current Kick`, profile_picture: `https://example.com/profile.jpg` };
+		};
 		await getKick(client);
-		assert(vodLookups.length === 0 && userLookups === 0,
+		assert(liveSync?.shouldEdit === false &&
+			channel.kickMessageId === `new-kick-message-1` &&
+			message.content === `The Kick stream has ended.` && pendingStore.rows.has(message.id),
+		`A new Kick stream reused an ended announcement instead of sending a new one.`);
+		const newLiveMessage = messageMap.get(channel.kickMessageId);
+		assert(kickSessionStore.rows.get(channel.id)?.messageId === newLiveMessage.id &&
+			new Date(kickSessionStore.rows.get(channel.id).startTime).getTime() ===
+			Date.parse(`2026-10-23T20:00:10Z`),
+		`Kick did not persist the exact start time beside the active announcement.`);
+		vodResult = {
+			url: `https://kick.com/current_kick_name/videos/test-vod`,
+			startTime: `2026-10-23 08:09:00`,
+		};
+		await getKick(client);
+		assert(pendingStore.rows.size === 0 &&
+			message.embeds[0].fields.find(field => field.name === `Kick`)?.value ===
+			`[Watch VoD](https://kick.com/current_kick_name/videos/test-vod)` &&
+			newLiveMessage.content.includes(`just went live`),
+		`Kick did not finish an older replay while preserving the new live announcement.`);
+		vodResult = null;
+		// Both starts display as 4:00 PM EDT, so the exact persisted time must
+		// distinguish this restart from a routine live-message refresh.
+		channelsById.get(`42`).stream.start_time = `2026-10-23T20:00:40Z`;
+		await getKick(client);
+		assert(newLiveMessage.content === `The Kick stream has ended.` &&
+			pendingStore.rows.has(newLiveMessage.id) &&
+			channel.kickMessageId === `new-kick-message-2` &&
+			new Date(pendingStore.rows.get(newLiveMessage.id).providerStartTime).getTime() ===
+			Date.parse(`2026-10-23T20:00:10Z`) &&
+			vodLookupArguments.at(-1)?.providerStartTime,
+		`Kick did not retain the prior replay when a stream restarted between polls.`);
+		pendingStore.rows.get(newLiveMessage.id).endedAt = new Date(Date.now() - 6 * 60 * 60 * 1000 - 1000);
+		await getKick(client);
+		assert(newLiveMessage.embeds[0].fields.find(field => field.name === `Kick`)?.value ===
+			`No VoD available` && !pendingStore.rows.has(newLiveMessage.id) && channel.kickIsLive,
+		`The expired Kick replay changed the current live stream or stayed pending.`);
+
+		channelsById.clear();
+		vodLookups.splice(0);
+		const userLookupsBeforeFailedId = userLookups;
+		await getKick(client);
+		assert(vodLookups.length === 0 && userLookups === userLookupsBeforeFailedId,
 			`A bound Kick channel should skip a mismatched slug when its ID lookup fails.`);
 	} finally {
 		// Restore the provider fetch stub even if a routing assertion fails.
@@ -2186,12 +2724,21 @@ async function validateKickChannelRouting() {
 		kickIdentity.getChannelsByBroadcasterIds = original.getChannelsByBroadcasterIds;
 		streamNameMonitor.getIdentityMap = original.getIdentityMap;
 		streamNameMonitor.recordStreamName = original.recordStreamName;
-		streamUtils.loadState = original.loadState;
-		streamUtils.targetChannel = original.targetChannel;
-		streamUtils.fetchMessage = original.fetchMessage;
-		streamUtils.offlineEmbed = original.offlineEmbed;
+		Object.assign(streamUtils, {
+			loadState: original.loadState,
+			targetChannel: original.targetChannel,
+			fetchMessage: original.fetchMessage,
+			offlineEmbed: original.offlineEmbed,
+			syncMessage: original.syncMessage,
+		});
 		authTokens.getAuthTokens = original.getAuthTokens;
 		Channels.update = original.update;
+		PendingStreamVods.findCreateFind = original.pendingFindCreateFind;
+		PendingStreamVods.findAll = original.pendingFindAll;
+		PendingStreamVods.destroy = original.pendingDestroy;
+		KickLiveSessions.findAll = original.kickSessionFindAll;
+		KickLiveSessions.upsert = original.kickSessionUpsert;
+		KickLiveSessions.destroy = original.kickSessionDestroy;
 		log.warn = original.warn;
 		delete require.cache[require.resolve(resolveProject(`modules`, `getKick.js`))];
 	}
@@ -2515,6 +3062,8 @@ async function main() {
 	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
 	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
 	await test(`Twitch stream lookups batch logins and contain batch failures`, validateTwitchStreamBatchLookup);
+	await test(`stream announcement fetches distinguish deletion from transient errors`, validateStreamMessageFetch);
+	await test(`Twitch announcements end before replay availability and preserve end times`, validateTwitchPendingVodUpdate);
 	await test(`Kick VoD lookup uses resolved slugs and preserves missing-channel state`, validateKickChannelRouting);
 	await test(`stream renames preserve one alias and independent provider names`, validateStreamNameMonitoring);
 	await test(`concurrent Twitch identity capture persists every channel`, validateConcurrentStreamIdentityWrites);

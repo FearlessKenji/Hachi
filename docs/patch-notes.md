@@ -6,6 +6,12 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.12.2 - 2026-10-24
+
+### Stream Notifications
+
+- Twitch and Kick announcements now show that a stream has ended when Hachi detects it offline. The embed says `Fetching VoD...` while Hachi retries, including after a new stream starts. It shows `Watch VoD` when it finds a replay, or `No VoD available` after six hours and a successful check finds none.
+
 # v3.12.1 - 2026-10-21
 
 ### Stream Notifications
