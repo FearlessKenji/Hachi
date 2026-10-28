@@ -192,6 +192,12 @@ async function getPendingRules(interaction, setupId) {
 		});
 		return null;
 	}
+	// The modal can remain open after an admin loses Manage Server access.
+	if (!hasPermission(interaction, PermissionFlagsBits.ManageGuild)) {
+		clearPendingRules(setupId);
+		await interaction.reply({ content: `You need Manage Server to post rules.`, flags: MessageFlags.Ephemeral });
+		return null;
+	}
 
 	return pending;
 }

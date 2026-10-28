@@ -150,6 +150,17 @@ async function openPublicHelpPicker(interaction, catalog) {
 }
 
 async function postPublicHelp(interaction, panelId, pendingPanel) {
+	// The picker may remain open after moderator permissions are revoked.
+	if (!canPostPublicHelp(interaction.memberPermissions)) {
+		pendingPublicHelpPanels.delete(panelId);
+		await interaction.update({
+			content: `You no longer have permission to post public help.`,
+			components: [],
+			embeds: [],
+		});
+		return;
+	}
+
 	const categories = getCatalogByIds(pendingPanel.catalog, pendingPanel.selectedIds);
 
 	if (!categories.length) {

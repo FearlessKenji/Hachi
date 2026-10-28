@@ -273,32 +273,38 @@ async function getTwitch(client) {
 				return;
 			}
 
-			const channel = await twitchChannel.getChannel(
-				login,
-				twitchClientId,
-				twitchAuthToken,
-			);
-
-			if (!channel || (twitchUser && String(channel.id) !== twitchUser.id)) {
+			// The batched Users and Streams responses already contain the live
+			// broadcaster details. Search only when the Users lookup was unavailable.
+			let searchedChannel = null;
+			if (!twitchUser) {
+				searchedChannel = await twitchChannel.getChannel(
+					login,
+					twitchClientId,
+					twitchAuthToken,
+				);
+			}
+			if (!twitchUser && (!searchedChannel || String(searchedChannel.id) !== String(streamInfo.user_id))) {
 				return;
 			}
-
-			const streamUrl = `https://www.twitch.tv/${channel.broadcaster_login}`;
+			const broadcasterLogin = streamInfo.user_login || searchedChannel?.broadcaster_login || login;
+			const displayName = streamInfo.user_name || searchedChannel?.display_name || twitchUser?.display_name || login;
+			const profileImageUrl = twitchUser?.profile_image_url || searchedChannel?.thumbnail_url || null;
+			const streamUrl = `https://www.twitch.tv/${broadcasterLogin}`;
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x9146FF,
-				name: channel.display_name,
-				title: channel.title,
+				name: displayName,
+				title: streamInfo.title,
 				url: streamUrl,
-				category: channel.game_name,
+				category: streamInfo.game_name,
 				viewers: streamInfo.viewer_count,
-				thumbnail: channel.thumbnail_url,
-				image: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${channel.broadcaster_login}-640x360.jpg?cacheBypass=${Date.now()}`,
+				thumbnail: profileImageUrl,
+				image: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${broadcasterLogin}-640x360.jpg?cacheBypass=${Date.now()}`,
 				discordUrl: chan.discordUrl,
 				startedAt: streamInfo.started_at,
 			});
 			const roleText = roleMention(chan, server, `selfTwitchRoleId`);
-			const content = `${roleText}${channel.display_name} just went live on Twitch streaming ${channel.game_name}!`;
+			const content = `${roleText}${displayName} just went live on Twitch streaming ${streamInfo.game_name}!`;
 
 			try {
 				await syncMessage({
@@ -317,7 +323,13 @@ async function getTwitch(client) {
 			}
 		});
 
-		await Promise.allSettled(channelPromises);
+		const channelResults = await Promise.allSettled(channelPromises);
+		for (const [index, result] of channelResults.entries()) {
+			if (result.status === `rejected`) {
+				const channel = serverChannels[index];
+				error(`Failed to process Twitch channel ${channel.channelName} (row ${channel.id}) in guild ${server.guildId}:`, result.reason);
+			}
+		}
 	}
 
 	await processPendingTwitchVods(client, twitchAuthToken);

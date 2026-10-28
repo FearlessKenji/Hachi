@@ -6,6 +6,47 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.12.3 - 2026-10-28
+
+### Stream Notifications
+
+- New streamer entries fill safe gaps in row IDs without renumbering saved entries. Adding an existing streamer with a new Discord URL updates that link.
+- Twitch live alerts can post when channel search is unavailable if user and stream lookups succeed. Kick live alerts can post without profile details when the channel lookup verifies the live stream.
+
+### Server Setup
+
+- Administrative controls for Modmail, raid protection, rules, security, streams, birthdays, reaction roles, and `/setup` now recheck current permissions before applying configuration changes.
+- Invalid schedule expressions now identify the affected setting during startup.
+
+### Reaction Roles
+
+- New reaction-role panels become active only after every reaction is added. When an edited panel's old messages cannot be removed, Hachi keeps the replacement and warns when manual cleanup may be needed.
+- When converting a message to reaction roles, an explicit role mention now matches only that role.
+
+### Help
+
+- `/help` now shows commands only when the member has all permissions they require and lists Twitch actions under their applicable permissions. Public help will not post if its creator no longer has a qualifying moderation permission when pressing **Post Help**.
+
+### Modmail
+
+- Members cannot open a second Modmail ticket while one is already open in that server. Retrying after ten minutes can recover an interrupted ticket setup; failed ticket-channel deletions are retried.
+
+### Patch Notes
+
+- Interrupted patch-note deliveries resume from saved progress when Discord confirms the last message. Uncertain sends wait for review instead of risking a duplicate.
+
+### Raid Protection
+
+- Incident reports keep separate attachment records when different uploads have the same filename and size.
+
+### Logs
+
+- Log archives dated 30 or more days ago are now removed during cleanup.
+
+### Timestamps
+
+- Titles in `/timestamp` cannot ping members or roles.
+
 # v3.12.2 - 2026-10-24
 
 ### Stream Notifications

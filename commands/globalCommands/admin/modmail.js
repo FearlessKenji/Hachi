@@ -86,6 +86,10 @@ async function handleSetup(interaction, setupId, action) {
 	if (!settings || settings.userId !== interaction.user.id || settings.guildId !== interaction.guild.id) {
 		return interaction.reply({ content: `This setup panel has expired. Run \`/modmail setup\` again.`, flags: MessageFlags.Ephemeral });
 	}
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingSetups.delete(setupId);
+		return interaction.update({ content: `You need Manage Server to set up modmail.`, embeds: [], components: [] });
+	}
 
 	if (action === `ping`) {
 		settings.pingRoleIds = interaction.values;

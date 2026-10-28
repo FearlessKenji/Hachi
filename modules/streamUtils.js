@@ -5,10 +5,8 @@
 // server/channel state efficiently for each cron tick.
 const { EmbedBuilder } = require(`discord.js`);
 const { Servers, Channels } = require(`../database/dbObjects.js`);
-const { error } = require(`../utils/writeLog.js`);
 
 const STREAM_TIME_ZONE = `America/New_York`;
-const HTTP_ERROR_BODY_LIMIT = 240;
 // Retry age begins when Hachi confirms the stream ended, not when it started.
 const VOD_WAIT_MS = 6 * 60 * 60 * 1000;
 
@@ -41,20 +39,6 @@ function formatStreamTime(input) {
 
 function liveFooter(startedAt) {
 	return `Started ${formatStreamTime(startedAt)}. Last edited ${formatStreamTime(new Date())}.`;
-}
-
-// Upstream proxies can return multi-kilobyte HTML error pages. Keep enough
-// response context to diagnose the failure without flooding PM2 logs.
-function summarizeHttpErrorBody(body) {
-	const compactBody = String(body || ``).replace(/\s+/gu, ` `).trim();
-
-	if (!compactBody) {
-		return ``;
-	}
-
-	return compactBody.length > HTTP_ERROR_BODY_LIMIT ?
-		`${compactBody.slice(0, HTTP_ERROR_BODY_LIMIT)}…` :
-		compactBody;
 }
 
 function offlineFooter(existingEmbed) {
@@ -267,39 +251,7 @@ function offlineEmbed({ provider, existingEmbed, vodUrl, imageUrl, vodUnavailabl
 	return embed;
 }
 
-async function fetchBatch({ names, provider, urlFor, headers, pickData, notFoundIsEmpty = false }) {
-	const uniqueNames = [...new Set(names)];
-	const results = await Promise.all(
-		uniqueNames.map(async (name) => {
-			try {
-				const res = await fetch(urlFor(name), { headers });
-
-				// Kick returns 404 when a saved slug no longer resolves. Let the
-				// caller report that stale entry once instead of logging every poll.
-				if (notFoundIsEmpty && res.status === 404) {
-					return { name, data: null, error: false };
-				}
-
-				if (!res.ok) {
-					const text = await res.text();
-					const detail = summarizeHttpErrorBody(text);
-					throw new Error(`HTTP ${res.status}${detail ? ` - ${detail}` : ``}`);
-				}
-
-				const data = await res.json();
-				return { name, data: pickData(data) ?? null, error: false };
-			} catch (err) {
-				error(`Failed to fetch ${provider} data for ${name}:`, err);
-				return { name, data: null, error: true };
-			}
-		}),
-	);
-
-	return Object.fromEntries(results.map(result => [result.name, result]));
-}
-
 module.exports = {
-	fetchBatch,
 	fetchMessage,
 	formatStreamTime,
 	groupChannels,

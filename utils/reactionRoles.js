@@ -233,19 +233,21 @@ async function getPanelItems(panelId) {
 	});
 }
 
-async function reactToMessageForPanel(message, panel, items) {
+async function reactToMessageForPanel(message, items) {
 	for (let index = 0; index < items.length; index += 1) {
 		const item = items[index];
 		const emoji = item.emoji || getDefaultEmoji(index);
 
 		if (!emoji) {
-			continue;
+			throw new Error(`Reaction-role item ${item.id || index + 1} has no usable emoji.`);
 		}
 
 		try {
 			await message.react(emoji);
 		} catch (err) {
 			warn(`Failed to add reaction-role emoji ${emoji} to message ${message.id}: ${err.message}`);
+			// A panel without its expected reactions cannot be treated as complete.
+			throw new Error(`Could not add reaction-role emoji ${emoji} to message ${message.id}.`, { cause: err });
 		}
 	}
 }
@@ -276,7 +278,7 @@ async function refreshPanelMessage(client, panel) {
 	const items = await getPanelItems(panel.id);
 	const payloadOptions = await getPanelPayloadOptions(panel);
 	await message.edit(buildPanelPayload(panel, items, payloadOptions));
-	await reactToMessageForPanel(message, panel, items);
+	await reactToMessageForPanel(message, items);
 
 	return true;
 }
@@ -323,21 +325,27 @@ async function getPanelGroup(panel) {
 }
 
 async function deletePanelMessages(client, panels) {
+	const undeletedPanels = [];
 	for (const panel of panels) {
 		const channel = await fetchPanelChannel(client, panel);
 
 		if (!channel?.messages || !panel.messageId) {
+			undeletedPanels.push(panel);
 			continue;
 		}
 
-		const message = await channel.messages.fetch(panel.messageId).catch(() => null);
-
-		if (!message) {
-			continue;
+		try {
+			const message = await channel.messages.fetch(panel.messageId);
+			await message.delete();
+		} catch (err) {
+			if (Number(err?.code) === 10008) {
+				continue;
+			}
+			warn(`Failed to delete reaction-role message ${panel.messageId}: ${err.message}`);
+			undeletedPanels.push(panel);
 		}
-
-		await message.delete().catch(err => warn(`Failed to delete reaction-role message ${panel.messageId}: ${err.message}`));
 	}
+	return undeletedPanels;
 }
 
 async function syncReactionRolePanel(client, panel) {

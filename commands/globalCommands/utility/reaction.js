@@ -296,6 +296,17 @@ async function getPendingPanel(interaction, setupId) {
 		return null;
 	}
 
+	// Draft controls can remain visible after the creator loses a required role.
+	if (!canManageReactionRoles(interaction)) {
+		pendingPanels.delete(setupId);
+		await interaction.update({
+			content: `You no longer have both Manage Server and Manage Roles. Reaction-role setup closed.`,
+			components: [],
+			embeds: [],
+		});
+		return null;
+	}
+
 	return pending;
 }
 
@@ -383,6 +394,7 @@ async function getTargetChannel(interaction, pending) {
 async function createPanelChunk(interaction, pending, channel, roles, panelIndex, totalPanels, groupKey) {
 	const placeholderMessageId = `pending:${interaction.id}:${panelIndex}`;
 	let panel = null;
+	let message = null;
 
 	try {
 		panel = await ReactionRoleMessages.create({
@@ -393,7 +405,8 @@ async function createPanelChunk(interaction, pending, channel, roles, panelIndex
 			imageUrl: pending.imageUrl,
 			messageId: placeholderMessageId,
 			panelIndex,
-			status: `active`,
+			// A partly posted panel must never grant roles until every reaction exists.
+			status: `disabled`,
 			thumbnailUrl: pending.thumbnailUrl,
 			title: pending.title,
 		});
@@ -418,16 +431,34 @@ async function createPanelChunk(interaction, pending, channel, roles, panelIndex
 			items.push(item);
 		}
 
-		const message = await channel.send(buildPanelPayload(panel, items, { panelIndex, totalPanels }));
+		message = await channel.send(buildPanelPayload(panel, items, { panelIndex, totalPanels }));
 		await panel.update({ messageId: message.id });
 		await ReactionRoleItems.update(
 			{ messageId: message.id },
 			{ where: { reactionRoleMessageId: panel.id } },
 		);
-		await reactToMessageForPanel(message, panel, items);
+		await reactToMessageForPanel(message, items);
+		await panel.update({ status: `active` });
 
 		return { message, panel };
 	} catch (err) {
+		if (message) {
+			try {
+				await message.delete();
+			} catch (cleanupError) {
+				if (Number(cleanupError?.code) !== 10008) {
+					// Preserve a disabled database record when the posted message cannot
+					// be removed, so it can be located without assigning roles.
+					error(`Failed to remove incomplete reaction-role message ${message.id}:`, cleanupError);
+					if (panel) {
+						await panel.update({ messageId: message.id, status: `disabled` }).catch(recordError =>
+							error(`Failed to disable incomplete reaction-role panel ${panel.id}:`, recordError));
+					}
+					throw new Error(`Panel setup failed and message ${message.id} could not be removed. Remove it manually.`, { cause: cleanupError });
+				}
+			}
+		}
+
 		if (panel) {
 			await deletePanelRecords([panel.id]);
 		}
@@ -442,15 +473,21 @@ async function disableAndDeletePanels(client, panels) {
 		.filter(id => id);
 
 	if (!ids.length) {
-		return;
+		return [];
 	}
 
 	await ReactionRoleMessages.update(
 		{ status: `disabled` },
 		{ where: { id: ids } },
 	);
-	await deletePanelMessages(client, panels);
-	await deletePanelRecords(ids);
+	const undeletedPanels = await deletePanelMessages(client, panels);
+	const undeletedIds = new Set(undeletedPanels.map(panel => panel.id));
+	const deletedIds = ids.filter(id => !undeletedIds.has(id));
+	if (deletedIds.length) {
+		await deletePanelRecords(deletedIds);
+	}
+	// Retain disabled records for messages whose deletion could not be confirmed.
+	return undeletedPanels;
 }
 
 async function clearSetupMessage(message) {
@@ -468,6 +505,10 @@ async function clearSetupMessage(message) {
 }
 
 async function createSubmittedPanels(interaction, pending) {
+	if (!canManageReactionRoles(interaction)) {
+		throw new Error(`You need both Manage Server and Manage Roles to create reaction-role panels.`);
+	}
+
 	if (!pending.roles.length) {
 		throw new Error(`Add at least one role before submitting.`);
 	}
@@ -483,30 +524,51 @@ async function createSubmittedPanels(interaction, pending) {
 
 	try {
 		for (let index = 0; index < chunks.length; index += 1) {
-			const { panel } = await createPanelChunk(interaction, pending, channel, chunks[index], index, chunks.length, groupKey);
-			createdPanels.push(panel);
+			createdPanels.push(await createPanelChunk(interaction, pending, channel, chunks[index], index, chunks.length, groupKey));
 		}
-
-		if (pending.editPanelIds?.length) {
-			const oldPanels = await ReactionRoleMessages.findAll({
-				where: { id: pending.editPanelIds },
-			});
-			await disableAndDeletePanels(interaction.client, oldPanels);
-		}
-
-		return {
-			channel,
-			count: chunks.length,
-		};
 	} catch (err) {
-		if (createdPanels.length) {
-			await disableAndDeletePanels(interaction.client, createdPanels).catch(cleanupErr => {
-				error(`Failed to clean up partial reaction-role panel creation:`, cleanupErr);
-			});
+		const undeletedMessageIds = [];
+		for (const { panel, message } of createdPanels) {
+			await panel.update({ status: `disabled` }).catch(cleanupError =>
+				error(`Failed to disable partial reaction-role panel ${panel.id}:`, cleanupError));
+			try {
+				await message.delete();
+			} catch (cleanupError) {
+				if (Number(cleanupError?.code) !== 10008) {
+					// Keep the disabled record when a posted chunk cannot be removed.
+					error(`Failed to clean up partial reaction-role message ${message.id}:`, cleanupError);
+					undeletedMessageIds.push(message.id);
+					continue;
+				}
+			}
+			await deletePanelRecords([panel.id]).catch(cleanupError =>
+				error(`Failed to remove partial reaction-role records for message ${message.id}:`, cleanupError));
+		}
+		if (undeletedMessageIds.length) {
+			throw new Error(`Panel creation failed and message(s) ${undeletedMessageIds.join(`, `)} could not be cleaned up. Remove them manually.`, { cause: err });
 		}
 
 		throw err;
 	}
+
+	let oldPanelCleanupWarning = ``;
+	if (pending.editPanelIds?.length) {
+		let oldPanels = [];
+		try {
+			oldPanels = await ReactionRoleMessages.findAll({ where: { id: pending.editPanelIds } });
+			const undeletedOldPanels = await disableAndDeletePanels(interaction.client, oldPanels);
+			if (undeletedOldPanels.length) {
+				oldPanelCleanupWarning = ` Previous panel message(s) ${undeletedOldPanels.map(panel => panel.messageId).join(`, `)} could not be removed; remove them manually.`;
+			}
+		} catch (cleanupError) {
+			// A replacement is already live. Keep it when retiring the old panel fails.
+			error(`Failed to retire previous reaction-role panels:`, cleanupError);
+			const previousMessageIds = oldPanels.map(panel => panel.messageId).join(`, `);
+			oldPanelCleanupWarning = ` Previous panel cleanup failed${previousMessageIds ? ` for message(s) ${previousMessageIds}` : ``}; review those panels manually.`;
+		}
+	}
+
+	return { channel, count: chunks.length, oldPanelCleanupWarning };
 }
 
 async function submitPendingPanel(interaction, setupId) {
@@ -530,7 +592,8 @@ async function submitPendingPanel(interaction, setupId) {
 		pendingPanels.delete(setupId);
 
 		await interaction.editReply({
-			content: `${pending.isEditing ? `Updated` : `Created`} ${result.count} reaction-role message(s) in <#${result.channel.id}>.`,
+			content: `${pending.isEditing ? `Updated` : `Created`} ${result.count} reaction-role message(s) in <#${result.channel.id}>.` +
+				result.oldPanelCleanupWarning,
 		});
 		await clearSetupMessage(interaction.message);
 	} catch (err) {
@@ -763,10 +826,10 @@ module.exports = {
 	},
 
 	async handleComponent(interaction) {
-		const [, scope, id, action] = interaction.customId.split(`:`);
+		const [, setupId, action] = interaction.customId.split(`:`);
 
 		try {
-			await handleSetupComponent(interaction, scope, id, action);
+			await handleSetupComponent(interaction, setupId, action);
 		} catch (err) {
 			error(`Failed to handle reaction-role component:`, err);
 
@@ -790,7 +853,8 @@ module.exports = {
 			const status = pending.statusMessage ? `\n${pending.statusMessage}` : ``;
 
 			await interaction.editReply({
-				content: `Created ${result.count} reaction-role message(s) in <#${result.channel.id}>.${status}`,
+				content: `Created ${result.count} reaction-role message(s) in <#${result.channel.id}>.${status}` +
+					result.oldPanelCleanupWarning,
 			});
 		} catch (err) {
 			error(`Failed to create reaction-role panel from context menu:`, err);

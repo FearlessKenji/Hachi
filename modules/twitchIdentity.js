@@ -2,6 +2,7 @@
 // Login lookups bind older rows that have not yet recorded an ID.
 const { error } = require(`../utils/writeLog.js`);
 const { URL } = require(`node:url`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 
 const MAX_USERS_PER_REQUEST = 100;
 
@@ -36,7 +37,7 @@ async function getTwitchUsers(channels, identityMap, clientID, authKey) {
 		}
 
 		try {
-			const response = await fetch(url, {
+			const response = await fetchProviderApi(url, {
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

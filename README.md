@@ -16,7 +16,7 @@ Developer architecture notes are available in the [Developer Guide](docs/develop
 - End-of-stream updates that show replay availability and add VoD links when found
 - Twitch VIP role sync through Twitch device-code authorization
 - Per-server notification setup for self streams and affiliate streams
-- Birthday storage, birthday month lists, one-week reminders, posts on birthdays, a birthday board, and staff-managed RecoCards links
+- Birthday storage, birthday month lists, two-week reminders, posts on birthdays, a birthday board, and staff-managed RecoCards links
 - Reaction-role panel creation, editing, message conversion, and cleanup when messages or channels are deleted
 - Per-server profile customization with avatar, banner, bio, and nickname fields
 - Rules embeds with optional reaction verification

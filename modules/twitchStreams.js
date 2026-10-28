@@ -2,6 +2,7 @@
 // offline channels, so callers can distinguish an offline stream from an API error.
 const { error } = require(`../utils/writeLog.js`);
 const { URLSearchParams } = require(`node:url`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 
 const TWITCH_STREAM_BATCH_SIZE = 100;
 
@@ -22,7 +23,7 @@ async function getStreams(channelNames, clientID, authKey) {
 		}
 
 		try {
-			const response = await fetch(`https://api.twitch.tv/helix/streams?${query}`, {
+			const response = await fetchProviderApi(`https://api.twitch.tv/helix/streams?${query}`, {
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

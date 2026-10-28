@@ -1,7 +1,9 @@
 // Message create event.
 //
-// Most bot behavior is slash-command based, but this event supports security
-// monitoring for public application-command responses from other apps.
+// Public messages pass through command-response monitoring, Modmail entry
+// cleanup, raid observation, and social-link handling here. Each feature checks
+// its own eligibility before taking action; the routing order keeps Hachi's
+// managed Modmail panel from being mistaken for an ordinary user message.
 const {
 	ApplicationIntegrationType,
 	EmbedBuilder,

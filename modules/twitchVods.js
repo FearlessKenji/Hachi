@@ -3,12 +3,13 @@
 // After a stream ends, Hachi tries to find the VoD for the stream ID so the
 // original live message can be edited with a replay link.
 const { error } = require(`../utils/writeLog.js`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 
 async function getForStream(userId, streamId, clientID, authKey) {
 	try {
 		// A delayed archive may appear after several newer streams. Search the
 		// largest single page Twitch permits before giving up until the next poll.
-		const res = await fetch(
+		const res = await fetchProviderApi(
 			`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=100`,
 			{
 				headers: {

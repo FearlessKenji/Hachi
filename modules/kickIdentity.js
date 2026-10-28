@@ -3,6 +3,7 @@
 // depend on the same slug lookup used for live notifications.
 const { URL } = require(`node:url`);
 const { error } = require(`../utils/writeLog.js`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 
 const maxIdsPerRequest = 50;
 
@@ -23,7 +24,7 @@ async function getChannelsByBroadcasterIds(userIds, clientID, authKey) {
 		}
 
 		try {
-			const res = await fetch(url.toString(), {
+			const res = await fetchProviderApi(url.toString(), {
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

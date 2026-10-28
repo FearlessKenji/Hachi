@@ -38,6 +38,9 @@ if (!branch || branch === `main`) {
 
 console.log(`Preparing release from branch ${branch}.`);
 
+const releaseVersion = require(`../package.json`).version;
+run(process.execPath, [`scripts/validateReleaseMetadata.js`, `hachi-v${releaseVersion}`]);
+
 const npmEntryPoint = process.env.npm_execpath;
 
 if (!npmEntryPoint) {

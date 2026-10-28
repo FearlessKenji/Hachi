@@ -11,6 +11,7 @@ const {
 	TwitchVerificationPanels,
 } = require(`../database/dbObjects.js`);
 const { disablePanelsForDeletedChannel } = require(`../utils/reactionRoles.js`);
+const { invalidateEntryChannelCache } = require(`../utils/modmail.js`);
 const { error, info } = require(`../utils/writeLog.js`);
 
 module.exports = {
@@ -39,6 +40,10 @@ module.exports = {
 				{ entryChannelId: null, panelMessageId: null },
 				{ where: { guildId: channel.guild.id, entryChannelId: channel.id } },
 			);
+			if (clearedModmailEntries[0]) {
+				// This direct database update bypasses Modmail's setup cache invalidation.
+				invalidateEntryChannelCache(channel.guild.id);
+			}
 			const clearedModmailCategories = await ModmailConfigs.update(
 				{ ticketCategoryId: null },
 				{ where: { guildId: channel.guild.id, ticketCategoryId: channel.id } },
