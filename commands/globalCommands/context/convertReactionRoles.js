@@ -250,6 +250,9 @@ function findMatchingRole(parsedLine, roleIndex, guild) {
 		if (role && roleIndex.roles.some(assignableRole => assignableRole.id === role.id)) {
 			return role;
 		}
+		// An explicit mention identifies one role. Do not substitute a similarly
+		// named role when that exact role is unavailable or unassignable.
+		return null;
 	}
 
 	const normalizedLabel = normalizeRoleText(parsedLine.label);

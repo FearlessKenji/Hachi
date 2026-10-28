@@ -416,13 +416,18 @@ module.exports = {
 		category: `streams`,
 		entries: [
 			{
-				command: `/twitch verify`,
-				description: `verify your Twitch account for VIP role sync.`,
+				command: `/twitch verify/status`,
+				description: `verify your Twitch account or view role sync status.`,
 			},
 			{
-				command: `/twitch connect/roles/panel/sync`,
-				description: `configure Twitch VIP role sync.`,
-				permissions: [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageRoles],
+				command: `/twitch connect/panel/disconnect`,
+				description: `manage the Twitch broadcaster and verification panel.`,
+				permissions: [PermissionFlagsBits.ManageGuild],
+			},
+			{
+				command: `/twitch roles/sync`,
+				description: `configure and sync Twitch VIP roles.`,
+				permissions: [PermissionFlagsBits.ManageRoles],
 			},
 		],
 	},

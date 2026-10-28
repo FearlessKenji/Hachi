@@ -264,6 +264,41 @@ async function getKick(client) {
 			kickAuthToken,
 		),
 	]);
+	const serversByGuildId = new Map(servers.map(server => [server.guildId, server]));
+	const resolvedChannels = new Map();
+	const liveBroadcasterIds = new Set();
+	for (const chan of channels) {
+		if (!chan.kickNotif) {
+			continue;
+		}
+		const savedUserId = normalizeBroadcasterId(identityMap.get(chan.id)?.providerUserId);
+		const streamRecord = streamsData[chan.channelName];
+		const slugInfo = streamRecord?.data;
+		// A bound row may use its old slug only when that response has the
+		// same broadcaster ID; a recycled slug must not change its identity.
+		const streamInfo = savedUserId ?
+			(channelsById.get(savedUserId) ||
+				(normalizeBroadcasterId(slugInfo?.broadcaster_user_id) === savedUserId ? slugInfo : null)) :
+			slugInfo;
+		resolvedChannels.set(chan.id, { savedUserId, streamRecord, streamInfo });
+		const server = serversByGuildId.get(chan.guildId);
+		if (streamInfo?.stream?.is_live && server &&
+			targetChannel(client, chan, server, `selfKickChannelId`).discordChannel) {
+			const liveUserId = normalizeBroadcasterId(streamInfo.broadcaster_user_id);
+			if (liveUserId) {
+				liveBroadcasterIds.add(liveUserId);
+			}
+		}
+	}
+	// Profiles are shared across servers during this poll, including when the
+	// same broadcaster has an announcement in more than one guild.
+	const usersByIdPromise = liveBroadcasterIds.size ?
+		kickUser.getUsersByIds([...liveBroadcasterIds], kickClientId, kickAuthToken)
+			.catch(err => {
+				error(`Failed to fetch Kick user profiles:`, err);
+				return new Map();
+			}) :
+		Promise.resolve(new Map());
 
 	for (const server of servers) {
 		const guild = client.guilds.cache.get(server.guildId);
@@ -273,15 +308,7 @@ async function getKick(client) {
 				return;
 			}
 
-			const savedUserId = normalizeBroadcasterId(identityMap.get(chan.id)?.providerUserId);
-			const streamRecord = streamsData[chan.channelName];
-			const slugInfo = streamRecord?.data;
-			// Once a row is bound, a recycled old slug must not post for a
-			// different broadcaster. The ID response also survives a rename.
-			const streamInfo = savedUserId ?
-				(channelsById.get(savedUserId) ||
-					(normalizeBroadcasterId(slugInfo?.broadcaster_user_id) === savedUserId ? slugInfo : null)) :
-				slugInfo;
+			const { savedUserId, streamRecord, streamInfo } = resolvedChannels.get(chan.id);
 			try {
 				await observeKickName(chan, streamInfo);
 			} catch (err) {
@@ -340,34 +367,32 @@ async function getKick(client) {
 				return;
 			}
 
-			const user = await kickUser.getUser(
-				streamInfo.broadcaster_user_id,
-				chan.channelName,
-				kickClientId,
-				kickAuthToken,
-			);
-
-			if (!user) {
+			const broadcasterId = normalizeBroadcasterId(streamInfo.broadcaster_user_id);
+			if (!broadcasterId || typeof streamInfo.slug !== `string` || !streamInfo.slug) {
 				return;
 			}
+			const user = (await usersByIdPromise).get(broadcasterId);
+			// The channel lookup already established the broadcaster's ID and live
+			// status. A missing profile must not suppress its announcement.
+			const displayName = user?.name || streamInfo.slug;
 
 			const streamUrl = `https://www.kick.com/${streamInfo.slug}`;
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x00E701,
-				name: user.name,
+				name: displayName,
 				title: streamInfo.stream_title,
 				url: streamUrl,
 				category: streamInfo.category.name,
 				viewers: streamInfo.stream.viewer_count,
-				thumbnail: user.profile_picture,
+				thumbnail: user?.profile_picture,
 				image: `${streamInfo.stream.thumbnail}?cacheBypass=${Date.now()}`,
 				discordUrl: chan.discordUrl,
 				startedAt: streamInfo.stream.start_time,
 				discordInline: true,
 			});
 			const roleText = roleMention(chan, server, `selfKickRoleId`);
-			const content = `${roleText}${user.name} just went live on Kick streaming ${streamInfo.category.name}!`;
+			const content = `${roleText}${displayName} just went live on Kick streaming ${streamInfo.category.name}!`;
 
 			try {
 				const previousMessage = chan.kickIsLive ?
@@ -422,7 +447,13 @@ async function getKick(client) {
 			}
 		});
 
-		await Promise.allSettled(channelPromises);
+		const channelResults = await Promise.allSettled(channelPromises);
+		for (const [index, result] of channelResults.entries()) {
+			if (result.status === `rejected`) {
+				const channel = serverChannels[index];
+				error(`Failed to process Kick channel ${channel.channelName} (row ${channel.id}) in guild ${server.guildId}:`, result.reason);
+			}
+		}
 	}
 
 	await processPendingKickVods(client, channelsById);

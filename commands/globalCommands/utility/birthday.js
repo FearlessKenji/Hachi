@@ -774,6 +774,11 @@ async function getPendingBirthdaySetup(interaction, setupId) {
 		});
 		return null;
 	}
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingBirthdaySetups.delete(setupId);
+		await interaction.update({ content: `You need Manage Server to set up birthday posts.`, components: [], embeds: [] });
+		return null;
+	}
 
 	return pendingSetup;
 }

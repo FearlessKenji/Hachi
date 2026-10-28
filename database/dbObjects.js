@@ -28,6 +28,7 @@ const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 // associations are declared. This keeps sequelize.sync and schema reconciliation
 // aware of the full table set on startup.
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
+const AnnouncementDeliveryProgress = require(`./models/announcementDeliveryProgress.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
 const StreamChannelIdentities = require(`./models/streamChannelIdentities.js`)(sequelize, Sequelize.DataTypes);
 const PendingStreamVods = require(`./models/pendingStreamVods.js`)(sequelize, Sequelize.DataTypes);
@@ -103,6 +104,15 @@ const RaidIncidentFiles = require(`./models/raidIncidentFiles.js`)(
 );
 const ModmailConfigs = require(`./models/modmailConfigs.js`)(sequelize, Sequelize.DataTypes);
 const ModmailTickets = require(`./models/modmailTickets.js`)(sequelize, Sequelize.DataTypes);
+
+// A checkpoint belongs to its guild and survives process restarts while a
+// multi-message patch-note release is still being delivered.
+Servers.hasOne(AnnouncementDeliveryProgress, {
+	foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `CASCADE`, onUpdate: `CASCADE`,
+});
+AnnouncementDeliveryProgress.belongsTo(Servers, {
+	foreignKey: `guildId`, targetKey: `guildId`, onDelete: `CASCADE`, onUpdate: `CASCADE`,
+});
 
 // Live Notification Associations
 // Channel rows are tied to a server record, but server deletion is restricted so
@@ -406,6 +416,7 @@ ModmailTickets.belongsTo(Servers, { foreignKey: `guildId`, targetKey: `guildId`,
 module.exports = {
 	sequelize,
 	Servers,
+	AnnouncementDeliveryProgress,
 	Channels,
 	StreamChannelIdentities,
 	PendingStreamVods,

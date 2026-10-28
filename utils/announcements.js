@@ -5,9 +5,10 @@
 // latest Hachi update to opted-in servers.
 const fs = require(`node:fs`);
 const path = require(`node:path`);
+const crypto = require(`node:crypto`);
 const { Op } = require(`sequelize`);
 const { MessageFlags, PermissionFlagsBits } = require(`discord.js`);
-const { Servers } = require(`../database/dbObjects.js`);
+const { AnnouncementDeliveryProgress, Servers, sequelize } = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
 
 const PATCH_NOTES_PATH = path.resolve(__dirname, `..`, `docs`, `patch-notes.md`);
@@ -16,6 +17,9 @@ const MANAGER_WARNING_LIMIT = 3;
 const MANAGER_WARNING_INTERVAL_MS = 15 * 60 * 1000;
 const MANAGER_WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const RELEASE_HEADING_PATTERN = /^#\s+(v?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)(?:\s|$)/u;
+const DELIVERY_PROGRESS_VERSION = 1;
+const MAX_RECOVERY_HISTORY_PAGES = 50;
+const announcementDeliveryTails = new Map();
 
 const CLEARED_WARNING_STATE = {
 	hachiAnnouncementWarningCount: 0,
@@ -231,16 +235,28 @@ async function updateAnnouncementSettings(guildId, values) {
 }
 
 async function saveAnnouncementChannel(guildId, channelId) {
-	return updateAnnouncementSettings(guildId, {
-		hachiAnnouncementChannelId: normalizeAnnouncementId(channelId),
-		...CLEARED_WARNING_STATE,
+	return serializeGuildAnnouncement(guildId, async () => {
+		const normalizedChannelId = normalizeAnnouncementId(channelId);
+		const existing = await getAnnouncementSettings(guildId);
+		const settings = await updateAnnouncementSettings(guildId, {
+			hachiAnnouncementChannelId: normalizedChannelId,
+			...CLEARED_WARNING_STATE,
+		});
+		if (existing.hachiAnnouncementChannelId !== normalizedChannelId) {
+			await AnnouncementDeliveryProgress.destroy({ where: { guildId: settings.guildId } });
+		}
+		return settings;
 	});
 }
 
 async function clearAnnouncementChannel(guildId) {
-	return updateAnnouncementSettings(guildId, {
-		hachiAnnouncementChannelId: null,
-		...CLEARED_WARNING_STATE,
+	return serializeGuildAnnouncement(guildId, async () => {
+		const settings = await updateAnnouncementSettings(guildId, {
+			hachiAnnouncementChannelId: null,
+			...CLEARED_WARNING_STATE,
+		});
+		await AnnouncementDeliveryProgress.destroy({ where: { guildId: settings.guildId } });
+		return settings;
 	});
 }
 
@@ -390,18 +406,138 @@ async function sendAnnouncementWarningToManager(interaction, now = new Date()) {
 	return true;
 }
 
-async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = {}) {
+function parseDeliveryProgress(row) {
+	if (!row?.progressJson) {
+		return null;
+	}
+	try {
+		const progress = JSON.parse(row.progressJson);
+		if (progress.version === DELIVERY_PROGRESS_VERSION &&
+			typeof progress.releaseId === `string` &&
+			typeof progress.channelId === `string` &&
+			typeof progress.runId === `string` &&
+			Number.isFinite(new Date(progress.startedAt).getTime()) &&
+			Array.isArray(progress.messages) &&
+			progress.messages.every(message => typeof message === `string`) &&
+			Array.isArray(progress.sentMessageIds) &&
+			Number.isInteger(progress.nextChunkIndex) &&
+			progress.nextChunkIndex >= 0 &&
+			progress.nextChunkIndex <= progress.messages.length) {
+			return progress;
+		}
+	} catch {
+		// A malformed checkpoint is handled as a failed delivery below.
+	}
+	return null;
+}
+
+function createDeliveryProgress(note, channelId) {
+	return {
+		version: DELIVERY_PROGRESS_VERSION,
+		releaseId: note.id,
+		channelId,
+		runId: crypto.randomUUID(),
+		startedAt: new Date().toISOString(),
+		messages: formatPatchNotesMessages(note),
+		nextChunkIndex: 0,
+		sentMessageIds: [],
+	};
+}
+
+function deliveryNonce(progress, chunkIndex) {
+	// Discord caps a nonce at 25 characters. The readable UUID and chunk mapping
+	// remain in the checkpoint; this short hash is used only for API deduplication.
+	return crypto.createHash(`sha256`)
+		.update(`${progress.runId}:${chunkIndex}`)
+		.digest(`base64url`)
+		.slice(0, 25);
+}
+
+async function findRecoveredChunk(channel, progress, chunkIndex) {
+	if (typeof channel.messages?.fetch !== `function`) {
+		throw new Error(`Cannot inspect channel history before retrying a patch-note chunk.`);
+	}
+	const nonce = deliveryNonce(progress, chunkIndex);
+	const startedAt = new Date(progress.startedAt).getTime();
+	const content = progress.messages[chunkIndex];
+	const botUserId = channel.client?.user?.id;
+	if (!botUserId) {
+		throw new Error(`Cannot verify the bot author before reconciling patch-note delivery.`);
+	}
+	let before;
+
+	// A send can succeed while the database checkpoint fails. Search the bot's
+	// messages from this delivery run before asking Discord to send that chunk
+	// again. If history cannot be checked completely, stop rather than duplicate.
+	for (let page = 0; page < MAX_RECOVERY_HISTORY_PAGES; page += 1) {
+		const batch = await channel.messages.fetch({ limit: 100, ...(before ? { before } : {}) });
+		const messages = [...batch.values()];
+		const recovered = messages.find(message =>
+			message.author?.id === botUserId && String(message.nonce || ``) === nonce);
+		if (recovered) {
+			return recovered;
+		}
+		if (messages.some(message =>
+			(message.nonce === null || message.nonce === undefined) && message.content === content &&
+			message.createdTimestamp >= startedAt &&
+			message.author?.id === botUserId)) {
+			throw new Error(`Discord omitted the nonce from a matching patch-note message; delivery needs manual review before retrying.`);
+		}
+		const oldest = messages.at(-1);
+		if (!oldest || batch.size < 100 || oldest.createdTimestamp < startedAt) {
+			return null;
+		}
+		before = oldest.id;
+	}
+
+	throw new Error(`Could not verify patch-note delivery history before retrying chunk ${chunkIndex + 1}.`);
+}
+
+async function saveDeliveryProgress(guildId, progress) {
+	await AnnouncementDeliveryProgress.upsert({
+		guildId,
+		progressJson: JSON.stringify(progress),
+	});
+}
+
+async function completeDeliveredRelease(guildId, releaseId, channelId) {
+	await sequelize.transaction(async transaction => {
+		const [updatedCount] = await Servers.update({
+			hachiAnnouncementLastId: releaseId,
+			...CLEARED_WARNING_STATE,
+		}, { where: { guildId, hachiAnnouncementChannelId: channelId }, transaction });
+		if (updatedCount !== 1) {
+			throw new Error(`The announcement channel changed during delivery; release progress was left intact.`);
+		}
+		await AnnouncementDeliveryProgress.destroy({ where: { guildId }, transaction });
+	});
+}
+
+async function sendLatestPatchNotesToGuildUnlocked(client, guildId, { force = false, patchNoteReleases } = {}) {
 	const guild = await fetchGuild(client, guildId);
 	const guildName = guild?.name || `Unknown Server`;
 	const settings = await getAnnouncementSettings(guildId);
-	const notes = getPatchNotesForAnnouncement(settings.hachiAnnouncementLastId, { force });
-	const latestNote = getLatestPatchNotes();
+	const availableReleases = patchNoteReleases ?? parsePatchNoteReleases(readPatchNotesDocument());
+	const notes = selectPatchNotesForAnnouncement(availableReleases, settings.hachiAnnouncementLastId, { force });
+	const latestNote = availableReleases[0] || null;
+	const progressRow = await AnnouncementDeliveryProgress.findByPk(guildId);
+	const savedProgress = parseDeliveryProgress(progressRow);
 
 	if (!latestNote) {
 		return { guildId, guildName, ok: false, sent: 0, skipped: true, message: `No patch notes were found.` };
 	}
 
-	if (!notes.length) {
+	if (progressRow && !savedProgress) {
+		return { guildId, guildName, ok: false, sent: 0, skipped: true, message: `Patch-note delivery checkpoint is invalid; inspect it before retrying.` };
+	}
+	const shouldClearProgress = savedProgress &&
+		(savedProgress.channelId !== settings.hachiAnnouncementChannelId ||
+			savedProgress.releaseId === settings.hachiAnnouncementLastId);
+	if (shouldClearProgress) {
+		await AnnouncementDeliveryProgress.destroy({ where: { guildId } });
+	}
+	const progress = shouldClearProgress ? null : savedProgress;
+	if (!notes.length && !progress) {
 		return { guildId, guildName, ok: true, patchNoteId: latestNote.id, sent: 0, skipped: true, message: `Latest patch notes were already sent.` };
 	}
 
@@ -417,29 +553,95 @@ async function sendLatestPatchNotesToGuild(client, guildId, { force = false } = 
 		return { guildId, guildName, ok: false, patchNoteId: latestNote.id, sent: 0, skipped: true, message: channelResult.message };
 	}
 
-	const messages = notes.flatMap(note => formatPatchNotesMessages(note));
-	const latestSentNote = notes.at(-1);
-
-	for (const content of messages) {
-		await channelResult.channel.send({ content });
+	const releases = progress ?
+		[{ id: progress.releaseId }, ...notes.filter(note => note.id !== progress.releaseId)] :
+		notes;
+	let sent = 0;
+	let releaseCount = 0;
+	let latestSentId = settings.hachiAnnouncementLastId;
+	try {
+		for (const note of releases) {
+			const resumed = progress?.releaseId === note.id;
+			const releaseProgress = resumed ? progress : createDeliveryProgress(note, channelResult.channel.id);
+			if (!resumed) {
+				// Persist the run identity before any Discord send so a restart can
+				// reconcile a chunk that was accepted but not checkpointed.
+				await saveDeliveryProgress(guildId, releaseProgress);
+			}
+			let needsRecoveryCheck = resumed;
+			for (let chunkIndex = releaseProgress.nextChunkIndex; chunkIndex < releaseProgress.messages.length; chunkIndex += 1) {
+				const content = releaseProgress.messages[chunkIndex];
+				let message = needsRecoveryCheck ?
+					await findRecoveredChunk(channelResult.channel, releaseProgress, chunkIndex) :
+					null;
+				needsRecoveryCheck = false;
+				if (!message) {
+					message = await channelResult.channel.send({
+						content,
+						allowedMentions: { parse: [] },
+						nonce: deliveryNonce(releaseProgress, chunkIndex),
+						enforceNonce: true,
+					});
+					sent += 1;
+				}
+				releaseProgress.sentMessageIds[chunkIndex] = message.id;
+				releaseProgress.nextChunkIndex = chunkIndex + 1;
+				await saveDeliveryProgress(guildId, releaseProgress);
+			}
+			await completeDeliveredRelease(guildId, note.id, releaseProgress.channelId);
+			latestSentId = note.id;
+			releaseCount += 1;
+		}
+	} catch (err) {
+		error(`Failed to finish patch-note delivery for guild ${guildId}:`, err);
+		return {
+			guildId,
+			guildName,
+			ok: false,
+			patchNoteId: latestNote.id,
+			sent,
+			skipped: false,
+			message: `Sent ${sent} patch-note message(s) in this attempt; delivery will resume from its saved checkpoint. ${err.message}`,
+		};
 	}
-
-	await updateAnnouncementSettings(guildId, {
-		hachiAnnouncementLastId: latestSentNote.id,
-		...CLEARED_WARNING_STATE,
-	});
 
 	return {
 		guildId,
 		guildName,
 		ok: true,
-		patchNoteId: latestSentNote.id,
-		patchNoteIds: notes.map(note => note.id),
-		releaseCount: notes.length,
-		sent: messages.length,
+		patchNoteId: latestSentId,
+		patchNoteIds: releases.map(note => note.id),
+		releaseCount,
+		sent,
 		skipped: false,
-		message: `Sent ${messages.length} patch-note message(s) for ${notes.length} release(s).`,
+		message: `Sent ${sent} patch-note message(s) for ${releaseCount} release(s).`,
 	};
+}
+
+function serializeGuildAnnouncement(guildId, operation) {
+	// A channel setting change and a delivery must not interleave in one bot
+	// process; the conditional completion update also guards another process.
+	const key = String(guildId);
+	const previous = announcementDeliveryTails.get(key) || Promise.resolve();
+	const result = previous.catch(() => null).then(operation);
+	announcementDeliveryTails.set(key, result);
+	result.then(
+		() => {
+			if (announcementDeliveryTails.get(key) === result) {
+				announcementDeliveryTails.delete(key);
+			}
+		},
+		() => {
+			if (announcementDeliveryTails.get(key) === result) {
+				announcementDeliveryTails.delete(key);
+			}
+		},
+	);
+	return result;
+}
+
+function sendLatestPatchNotesToGuild(client, guildId, options = {}) {
+	return serializeGuildAnnouncement(guildId, () => sendLatestPatchNotesToGuildUnlocked(client, guildId, options));
 }
 
 async function broadcastLatestPatchNotes(client, { force = false } = {}) {
@@ -452,10 +654,13 @@ async function broadcastLatestPatchNotes(client, { force = false } = {}) {
 		},
 	});
 	const results = [];
+	// Use one document snapshot for the whole broadcast so every server sees the
+	// same release, even if the patch-note file changes while messages are sent.
+	const patchNoteReleases = servers.length ? parsePatchNoteReleases(readPatchNotesDocument()) : [];
 
 	for (const server of servers) {
 		try {
-			results.push(await sendLatestPatchNotesToGuild(client, server.guildId, { force }));
+			results.push(await sendLatestPatchNotesToGuild(client, server.guildId, { force, patchNoteReleases }));
 		} catch (err) {
 			error(`Failed to send Hachi patch notes for guild ${server.guildId}:`, err);
 			const guild = client.guilds.cache.get(server.guildId);

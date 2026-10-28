@@ -17,6 +17,10 @@ const { error, info, warn } = require(`./writeLog.js`);
 const MODMAIL_COLOR = 0x5865f2;
 const CLOSED_COLOR = 0xfee75c;
 const DELETE_DELAY_MS = 15 * 24 * 60 * 60 * 1000;
+const INCOMPLETE_TICKET_AGE_MS = 10 * 60 * 1000;
+const ENTRY_CHANNEL_CACHE_TTL_MS = 30 * 1000;
+const ENTRY_CHANNEL_CACHE_MAX_GUILDS = 1024;
+const entryChannelCache = new Map();
 const entryEveryoneAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory];
 const entryEveryoneDeny = [
 	PermissionFlagsBits.SendMessages,
@@ -124,6 +128,58 @@ async function getConfig(guildId) {
 	return ModmailConfigs.findByPk(guildId);
 }
 
+function invalidateEntryChannelCache(guildId) {
+	entryChannelCache.delete(guildId);
+}
+
+function rememberEntryChannel(guildId, cacheEntry) {
+	// Map insertion order gives us a bounded least-recently-used cache without
+	// keeping a timer alive for every guild. Expired entries refresh on access.
+	entryChannelCache.delete(guildId);
+	entryChannelCache.set(guildId, cacheEntry);
+	if (entryChannelCache.size > ENTRY_CHANNEL_CACHE_MAX_GUILDS) {
+		entryChannelCache.delete(entryChannelCache.keys().next().value);
+	}
+}
+
+async function getEntryChannelId(guildId) {
+	while (true) {
+		const cached = entryChannelCache.get(guildId);
+		if (cached?.expiresAt > Date.now()) {
+			rememberEntryChannel(guildId, cached);
+			return cached.entryChannelId;
+		}
+		if (cached?.pending) {
+			await cached.pending;
+			continue;
+		}
+
+		const pending = ModmailConfigs.findByPk(guildId, { attributes: [`entryChannelId`] });
+		const loadingEntry = { pending };
+		rememberEntryChannel(guildId, loadingEntry);
+		let config;
+		try {
+			config = await pending;
+		} catch (err) {
+			if (entryChannelCache.get(guildId) === loadingEntry) {
+				invalidateEntryChannelCache(guildId);
+			}
+			throw err;
+		}
+		// Setup or channel deletion may have invalidated this lookup while SQLite
+		// was answering it. Retry instead of installing or using its stale result.
+		if (entryChannelCache.get(guildId) !== loadingEntry) {
+			continue;
+		}
+		const entryChannelId = config?.entryChannelId || null;
+		rememberEntryChannel(guildId, {
+			entryChannelId,
+			expiresAt: Date.now() + ENTRY_CHANNEL_CACHE_TTL_MS,
+		});
+		return entryChannelId;
+	}
+}
+
 async function ensureEntryPanel(guild, config) {
 	let channel = config.entryChannelId ? await guild.channels.fetch(config.entryChannelId).catch(() => null) : null;
 
@@ -138,6 +194,7 @@ async function ensureEntryPanel(guild, config) {
 			reason: `Hachi Modmail setup`,
 		});
 		await config.update({ entryChannelId: channel.id });
+		invalidateEntryChannelCache(guild.id);
 	}
 
 	await channel.permissionOverwrites.set([
@@ -191,12 +248,23 @@ async function ensureInfrastructure(guild, settings) {
 	});
 
 	await ensureEntryPanel(guild, config);
+	invalidateEntryChannelCache(guild.id);
 
 	return config.reload();
 }
 
 async function allocateTicket(guildId, openerId) {
 	return sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		// The button's initial lookup can race with another click. Check again under
+		// the SQLite write lock before consuming a ticket number or creating a row.
+		const existingTicket = await ModmailTickets.findOne({
+			where: { guildId, openerId, status: `open` },
+			transaction,
+		});
+		if (existingTicket) {
+			return { ticket: existingTicket, created: false };
+		}
+
 		const config = await ModmailConfigs.findByPk(guildId, { transaction });
 
 		if (!config) {
@@ -206,7 +274,11 @@ async function allocateTicket(guildId, openerId) {
 		const ticketNumber = config.nextTicketNumber;
 		await config.increment(`nextTicketNumber`, { by: 1, transaction });
 
-		return ModmailTickets.create({ guildId, ticketNumber, openerId, openedAt: new Date() }, { transaction });
+		const ticket = await ModmailTickets.create(
+			{ guildId, ticketNumber, openerId, openedAt: new Date() },
+			{ transaction },
+		);
+		return { ticket, created: true };
 	});
 }
 
@@ -248,6 +320,62 @@ function welcomeText(openerId, pingRoleIds) {
 	return `Welcome, <@${openerId}>. A member of our support team will be with you shortly.\n${pingRoleIds.map(id => `<@&${id}>`).join(` `)}`;
 }
 
+async function recoverIncompleteTicket(interaction, ticket, config) {
+	const staleBefore = new Date(Date.now() - INCOMPLETE_TICKET_AGE_MS);
+	if (new Date(ticket.openedAt) > staleBefore) {
+		return { state: `pending` };
+	}
+
+	// The channel may have been created just before a crash but before its ID
+	// was saved. Inspect Discord before releasing the reserved ticket number.
+	const guildChannels = await interaction.guild.channels.fetch();
+	const namedChannels = [...guildChannels.values()].filter(channel =>
+		channel.type === ChannelType.GuildText &&
+		channel.name === ticketName(ticket.ticketNumber));
+	const matchingChannels = namedChannels.filter(channel =>
+		channel.permissionOverwrites?.cache?.has(ticket.openerId));
+	if (namedChannels.length !== matchingChannels.length) {
+		// A matching name without the expected opener overwrite may still be the
+		// unfinished ticket. Keep its row for manual review instead of orphaning it.
+		throw new Error(`A channel has the name of incomplete Modmail ticket ${ticket.id} but its opener access is unclear; inspect it before retrying.`);
+	}
+	if (matchingChannels.length > 1) {
+		throw new Error(`Several channels match incomplete Modmail ticket ${ticket.id}; inspect them before retrying.`);
+	}
+	if (matchingChannels.length === 1) {
+		const channel = matchingChannels[0];
+		const [claimed] = await ModmailTickets.update(
+			{ channelId: channel.id },
+			{ where: { id: ticket.id, status: `open`, channelId: null } },
+		);
+		if (claimed === 1) {
+			const { pingRoleIds } = getRoleIds(config);
+			try {
+				await channel.send({
+					allowedMentions: { users: [ticket.openerId], roles: pingRoleIds },
+					components: buildOpenControls(ticket.id),
+					content: welcomeText(ticket.openerId, pingRoleIds),
+				});
+			} catch (err) {
+				error(`Recovered Modmail channel ${channel.id} without its welcome message:`, err);
+				return { state: `recovered`, message: `Your ticket channel was recovered: <#${channel.id}>. Hachi could not finish its setup; please contact a moderator.` };
+			}
+			return { state: `recovered`, message: `Your ticket channel is ready: <#${channel.id}>` };
+		}
+		const currentTicket = await ModmailTickets.findByPk(ticket.id);
+		return currentTicket?.channelId ?
+			{ state: `recovered`, message: `You already have an open ticket: <#${currentTicket.channelId}>` } :
+			{ state: `removed` };
+	}
+
+	// A stale row without any matching channel can be released. The conditional
+	// delete preserves it if another worker saved the channel ID meanwhile.
+	const removed = await ModmailTickets.destroy({
+		where: { id: ticket.id, status: `open`, channelId: null, openedAt: { [Op.lte]: staleBefore } },
+	});
+	return { state: removed === 1 ? `removed` : `pending` };
+}
+
 async function createTicket(interaction) {
 	const config = await getConfig(interaction.guild.id);
 
@@ -255,24 +383,40 @@ async function createTicket(interaction) {
 		return interaction.reply({ content: `Modmail is not configured.`, ephemeral: true });
 	}
 
-	const existing = await ModmailTickets.findOne({ where: { guildId: interaction.guild.id, openerId: interaction.user.id, status: `open` } });
-
-	if (existing?.channelId) {
-		return interaction.reply({ content: `You already have an open ticket: <#${existing.channelId}>`, ephemeral: true });
+	await interaction.deferReply({ ephemeral: true });
+	let ticket;
+	let created = false;
+	for (let attempt = 0; attempt < 3; attempt += 1) {
+		({ ticket, created } = await allocateTicket(interaction.guild.id, interaction.user.id));
+		if (created) {
+			break;
+		}
+		if (ticket.channelId) {
+			return interaction.editReply(`You already have an open ticket: <#${ticket.channelId}>`);
+		}
+		const recovery = await recoverIncompleteTicket(interaction, ticket, config);
+		if (recovery.state === `recovered`) {
+			return interaction.editReply(recovery.message);
+		}
+		if (recovery.state === `pending`) {
+			return interaction.editReply(`Your ticket is still being created. Please try again shortly.`);
+		}
+	}
+	if (!created) {
+		throw new Error(`Could not allocate a Modmail ticket after clearing stale entries.`);
 	}
 
-	await interaction.deferReply({ ephemeral: true });
-	const ticket = await allocateTicket(interaction.guild.id, interaction.user.id);
-
+	let channel = null;
+	let channelIdSaved = false;
 	try {
-		const channel = await interaction.guild.channels.create({
+		channel = await interaction.guild.channels.create({
 			name: ticketName(ticket.ticketNumber),
 			parent: config.ticketCategoryId,
 			permissionOverwrites: buildTicketOverwrites(interaction.guild, interaction.user.id, config),
 			reason: `Modmail ticket opened by ${interaction.user.tag}`,
 		});
-		ticket.channelId = channel.id;
-		await ticket.save();
+		await ticket.update({ channelId: channel.id });
+		channelIdSaved = true;
 		const { pingRoleIds } = getRoleIds(config);
 
 		await channel.send({
@@ -282,8 +426,32 @@ async function createTicket(interaction) {
 		});
 		await interaction.editReply(`Your ticket has been created: ${channel}`);
 	} catch (err) {
-		await ticket.destroy().catch(() => null);
-		throw err;
+		if (!channelIdSaved) {
+			// Discord channel creation and SQLite cannot share a transaction. If
+			// persistence fails, remove the new channel before freeing the ticket row.
+			let channelRemoved = !channel;
+			if (channel) {
+				try {
+					await channel.delete(`Modmail ticket setup failed`);
+					channelRemoved = true;
+				} catch (cleanupError) {
+					error(`Failed to remove incomplete Modmail channel ${channel.id}:`, cleanupError);
+					await ticket.update({ channelId: channel.id }).catch(saveError =>
+						error(`Failed to retain incomplete Modmail channel ${channel.id}:`, saveError));
+				}
+			}
+			if (channelRemoved) {
+				await ticket.destroy().catch(cleanupError =>
+					error(`Failed to remove incomplete Modmail ticket ${ticket.id}:`, cleanupError));
+			}
+			throw err;
+		}
+
+		// Once the channel ID is durable, keep the ticket even if its starter
+		// message or interaction reply fails. Another click can find that channel.
+		error(`Modmail ticket ${ticket.id} has a channel but setup was incomplete:`, err);
+		await interaction.editReply(`Your ticket channel was created: <#${channel.id}>. Hachi could not finish its setup; please contact a moderator.`)
+			.catch(() => null);
 	}
 }
 
@@ -295,6 +463,10 @@ async function getTicketContext(interaction, ticketId) {
 
 	if (!ticket || ticket.guildId !== interaction.guild.id || ticket.channelId !== interaction.channel.id) {
 		await interaction.reply({ content: `This ticket control is no longer valid.`, ephemeral: true });
+		return null;
+	}
+	if (ticket.status === `delete_pending`) {
+		await interaction.reply({ content: `This ticket channel is queued for deletion.`, ephemeral: true });
 		return null;
 	}
 
@@ -336,8 +508,48 @@ async function closeTicket(interaction, ticket, controlMessageId) {
 
 async function reopenTicket(interaction, ticket) {
 	await interaction.deferUpdate();
-	await interaction.channel.permissionOverwrites.edit(ticket.openerId, { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, AttachFiles: true }, { reason: `Modmail ticket reopened` });
-	await ticket.update({ closedAt: null, closedBy: null, deleteAt: null, status: `open` });
+	const previousState = {
+		closedAt: ticket.closedAt,
+		closedBy: ticket.closedBy,
+		deleteAt: ticket.deleteAt,
+		status: ticket.status,
+	};
+	// Claim the one-open-ticket slot before restoring access. The database index
+	// also rejects another process trying to create a ticket at the same time.
+	const reopened = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const anotherOpenTicket = await ModmailTickets.findOne({
+			where: {
+				guildId: ticket.guildId,
+				openerId: ticket.openerId,
+				status: `open`,
+				id: { [Op.ne]: ticket.id },
+			},
+			transaction,
+		});
+		if (anotherOpenTicket) {
+			return false;
+		}
+		await ticket.update({ closedAt: null, closedBy: null, deleteAt: null, status: `open` }, { transaction });
+		return true;
+	});
+	if (!reopened) {
+		return interaction.followUp({
+			content: `The ticket opener already has another open ticket. Close it before reopening this one.`,
+			ephemeral: true,
+		});
+	}
+	try {
+		await interaction.channel.permissionOverwrites.edit(ticket.openerId, {
+			ViewChannel: true,
+			SendMessages: true,
+			ReadMessageHistory: true,
+			AttachFiles: true,
+		}, { reason: `Modmail ticket reopened` });
+	} catch (err) {
+		await ticket.update(previousState).catch(rollbackError =>
+			error(`Failed to restore Modmail ticket ${ticket.id} after a permission error:`, rollbackError));
+		throw err;
+	}
 	await interaction.channel.setName(ticketName(ticket.ticketNumber), `Modmail ticket reopened`).catch(() => null);
 	await interaction.message.edit({ components: [], embeds: [] });
 	await interaction.channel.send({ content: `Ticket reopened by <@${interaction.user.id}>.`, allowedMentions: { parse: [] }, components: buildOpenControls(ticket.id) });
@@ -408,13 +620,24 @@ async function storeTicket(interaction, ticket, config) {
 }
 
 async function deleteTicketChannel(interaction, ticket) {
-	await interaction.update({ content: `Deleting ticket…`, components: [] });
-	ticket.channelId = null;
-	if (!ticket.storedAt) {
-		ticket.status = `deleted`;
+	await interaction.deferUpdate();
+	// Persist a retryable intent before deleting from Discord. A failed follow-up
+	// save cannot strand a stored ticket with a stale channel ID forever.
+	await ticket.update({ status: `delete_pending` });
+	try {
+		await interaction.channel.delete(`Modmail ticket deleted by ${interaction.user.tag}`);
+	} catch (err) {
+		await interaction.followUp({ content: `Hachi could not delete this channel. It will retry during cleanup.`, ephemeral: true });
+		throw err;
 	}
-	await ticket.save();
-	await interaction.channel.delete(`Modmail ticket deleted by ${interaction.user.tag}`);
+
+	// A failed database save leaves the old channel ID available for the timed
+	// cleanup pass, which can recognize Discord's confirmed "unknown channel".
+	await ticket.update({
+		channelId: null,
+		status: ticket.storedAt ? `stored` : `deleted`,
+	});
+	await interaction.editReply({ content: `Ticket deleted.`, components: [] }).catch(() => null);
 }
 
 async function handleTicketComponent(interaction, ticketId, action, controlMessageId = null) {
@@ -476,6 +699,12 @@ async function enforceEntryChannel(message) {
 	if (!message.guild) {
 		return false;
 	}
+	const entryChannelId = await getEntryChannelId(message.guild.id);
+	if (message.channel.id !== entryChannelId) {
+		return false;
+	}
+	// Only messages in the managed channel need the current panel ID. Recheck
+	// the database here so a stale positive cache entry cannot delete a message.
 	const config = await ModmailConfigs.findOne({ where: { guildId: message.guild.id, entryChannelId: message.channel.id } });
 
 	if (!config || message.id === config.panelMessageId) {
@@ -510,23 +739,54 @@ async function restoreDeletedPanel(message) {
 }
 
 async function cleanupClosedTickets(client, now = new Date()) {
-	const tickets = await ModmailTickets.findAll({ where: { status: `closed`, deleteAt: { [Op.lte]: now } } });
+	const tickets = await ModmailTickets.findAll({ where: { [Op.or]: [
+		{ status: `closed`, deleteAt: { [Op.lte]: now } },
+		{ status: `delete_pending` },
+	] } });
+	let deletedCount = 0;
 
 	for (const ticket of tickets) {
-		const guild = client.guilds.cache.get(ticket.guildId);
-		const channel = guild && ticket.channelId ? await guild.channels.fetch(ticket.channelId).catch(() => null) : null;
-		if (channel) {
-			await channel.delete(`Modmail 15-day retention expired`).catch(err => error(`Failed to delete expired Modmail ticket:`, err));
+		try {
+			if (!ticket.channelId) {
+				await ticket.update({ status: ticket.storedAt ? `stored` : `deleted` });
+				deletedCount += 1;
+				continue;
+			}
+			const guild = client.guilds.cache.get(ticket.guildId) ||
+				await client.guilds.fetch(ticket.guildId);
+			let channel = null;
+			try {
+				channel = await guild.channels.fetch(ticket.channelId);
+				if (!channel) {
+					throw new Error(`Discord did not confirm whether Modmail channel ${ticket.channelId} exists.`);
+				}
+			} catch (err) {
+				if (Number(err?.code) !== 10003) {
+					throw err;
+				}
+			}
+			if (channel) {
+				try {
+					await channel.delete(`Modmail 15-day retention expired`);
+				} catch (err) {
+					if (Number(err?.code) !== 10003) {
+						throw err;
+					}
+				}
+			}
+			// Only a successful deletion or Discord's confirmed missing-channel
+			// response retires the ledger row; transient failures remain retryable.
+			await ticket.update({ channelId: null, status: ticket.storedAt ? `stored` : `deleted` });
+			deletedCount += 1;
+		} catch (err) {
+			error(`Failed to delete expired Modmail ticket ${ticket.id}:`, err);
 		}
-		ticket.channelId = null;
-		ticket.status = `deleted`;
-		await ticket.save();
 	}
 
-	if (tickets.length) {
-		info(`Deleted ${tickets.length} expired Modmail ticket channel(s).`);
+	if (deletedCount) {
+		info(`Retired ${deletedCount} Modmail ticket channel record(s).`);
 	}
-	return tickets.length;
+	return deletedCount;
 }
 
 module.exports = {
@@ -538,6 +798,7 @@ module.exports = {
 	getConfig,
 	getRoleIds,
 	handleTicketComponent,
+	invalidateEntryChannelCache,
 	memberIsStaff,
 	restoreDeletedPanel,
 	ticketName,

@@ -163,7 +163,9 @@ function canUsePermissions(memberPermissions, permissions) {
 		return true;
 	}
 
-	return normalized.some(permission => memberPermissions?.has(permission));
+	// Help entries list every permission required for the command. Public help
+	// posting has a separate any-moderator-permission policy below.
+	return normalized.every(permission => memberPermissions?.has(permission));
 }
 
 function categoryDetails(categoryId) {
@@ -239,12 +241,12 @@ function formatCategoryValue(category) {
 }
 
 function canPostPublicHelp(memberPermissions) {
-	return canUsePermissions(memberPermissions, [
+	return [
 		PermissionFlagsBits.Administrator,
 		PermissionFlagsBits.ManageGuild,
 		PermissionFlagsBits.ManageMessages,
 		PermissionFlagsBits.ModerateMembers,
-	]);
+	].some(permission => memberPermissions?.has(permission));
 }
 
 module.exports = {

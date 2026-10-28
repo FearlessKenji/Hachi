@@ -4,6 +4,32 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.12.3 - 2026-10-28
+
+### Added
+
+- Reused safe gaps for new streamer row IDs while preserving existing IDs and reserving orphaned provider references.
+- Persisted patch-note delivery checkpoints, reconciled confirmed sends before retry, and held unverifiable sends for review.
+
+### Changed
+
+- Validated release metadata and ran checks before creating release tags; isolated smoke checks from local runtime data and validated cron expressions at startup.
+- Sent Twitch and Kick client-credentials requests as form data and bounded provider HTTP calls.
+- Reused batched Twitch user and stream data for live announcements instead of searching each resolved channel again on every poll.
+- Batched Kick channel lookups by slug and live user-profile lookups by broadcaster ID, sharing results across servers and isolating invalid batches without retry storms.
+- Cached Modmail entry-channel IDs for ordinary guild messages while rechecking the database before deleting entry-channel messages.
+- Reused one parsed patch-note snapshot for each broadcast across servers.
+- Clarified runtime comments and corrected the README's birthday reminder period to two weeks.
+
+### Fixed
+
+- Rechecked current permissions when administrative setup, confirmation, and modal controls are submitted, and corrected help permission filtering and Twitch listings.
+- Recovered incomplete Modmail ticket creation, prevented duplicate open tickets, and retried unconfirmed channel deletion.
+- Activated reaction-role panels only after all reactions were added, retained records for panels whose deletion failed, and preserved replacement panels when old-panel cleanup failed.
+- Applied supplied Discord URLs when editing a stream entry, suppressed mentions in timestamp titles, and resolved explicit role mentions exactly.
+- Preserved distinct raid attachment evidence, pruned expired raid state, and corrected log archive date parsing.
+- Kept verified Kick live alerts when user-profile data was unavailable and logged rejected channel jobs in both stream pollers.
+
 ## v3.12.2 - 2026-10-24
 
 ### Fixed

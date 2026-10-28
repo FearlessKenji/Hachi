@@ -304,6 +304,16 @@ async function getPendingSetup(interaction, setupId) {
 		return null;
 	}
 
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingRaidSetups.delete(setupId);
+		await interaction.update({
+			content: `You no longer have Manage Server permission to change raid settings.`,
+			components: [],
+			embeds: [],
+		});
+		return null;
+	}
+
 	return pendingSetup;
 }
 
@@ -611,6 +621,16 @@ async function handleSyncComponent(interaction, syncId, action) {
 	if (action === `cancel`) {
 		await interaction.update({
 			content: `No changes made.`,
+			components: [],
+			embeds: [],
+		});
+		return;
+	}
+
+	// A confirmation can outlive the permission that allowed /raid sync to open.
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		await interaction.update({
+			content: `You no longer have Manage Server permission to sync raid settings.`,
 			components: [],
 			embeds: [],
 		});

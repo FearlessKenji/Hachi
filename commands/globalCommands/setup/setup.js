@@ -150,6 +150,11 @@ async function getPendingHub(interaction, setupId) {
 		});
 		return null;
 	}
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingSetupHubs.delete(setupId);
+		await interaction.update({ content: `You need Manage Server to use this setup panel.`, components: [], embeds: [] });
+		return null;
+	}
 
 	return pendingHub;
 }

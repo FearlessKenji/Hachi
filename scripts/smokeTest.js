@@ -4,15 +4,16 @@ const childProcess = require(`node:child_process`);
 const fs = require(`node:fs`);
 const os = require(`node:os`);
 const path = require(`node:path`);
-const { URL } = require(`node:url`);
+const { URL, URLSearchParams } = require(`node:url`);
 
 const projectRoot = path.resolve(__dirname, `..`);
 process.chdir(projectRoot);
 
-// Smoke tests are intentionally broad rather than deeply mocked. They catch the
-// integration failures most likely to break a self-hosted bot install: missing
-// files, command export drift, database/schema drift, encrypted runtime support,
-// and generated artifact hygiene.
+// Smoke tests cover the integration failures most likely to break a self-hosted
+// bot install: missing files, command export drift, database/schema drift,
+// encrypted runtime support, and generated artifact hygiene. Focused mocks use
+// disposable state for provider requests and failure paths that cannot safely
+// run against a live installation.
 const results = {
 	failed: 0,
 	passed: 0,
@@ -466,13 +467,15 @@ async function validateManagedTwitchVerificationPanelLifecycle() {
 
 async function validateAnnouncementChannelIdNormalization() {
 	const announcements = requireFresh(`utils`, `announcements.js`);
-	const { Servers } = require(resolveProject(`database`, `dbObjects.js`));
+	const { AnnouncementDeliveryProgress, Servers } = require(resolveProject(`database`, `dbObjects.js`));
 	const originalFindByPk = Servers.findByPk;
 	const originalFindOne = Servers.findOne;
 	const originalCreate = Servers.create;
+	const originalDestroyProgress = AnnouncementDeliveryProgress.destroy;
 	const writes = [];
 
 	try {
+		AnnouncementDeliveryProgress.destroy = async () => 0;
 		Servers.findByPk = async guildId => {
 			assert(typeof guildId === `string`, `Announcement guild lookup received a non-string guild ID.`);
 			return null;
@@ -504,6 +507,7 @@ async function validateAnnouncementChannelIdNormalization() {
 		Servers.findByPk = originalFindByPk;
 		Servers.findOne = originalFindOne;
 		Servers.create = originalCreate;
+		AnnouncementDeliveryProgress.destroy = originalDestroyProgress;
 	}
 }
 
@@ -885,36 +889,119 @@ function validateDatabaseModels() {
 	return dbObjects;
 }
 
-function hasRuntimeDatabaseSidecar(dbPath) {
-	return [`-journal`, `-wal`, `-shm`].some(suffix => fs.existsSync(`${dbPath}${suffix}`));
+async function validateReusableChannelIds() {
+	const Sequelize = require(`sequelize`);
+	const { findReusableChannelId } = requireFresh(`database`, `channelIds.js`);
+	const database = new Sequelize({ dialect: `sqlite`, storage: `:memory:`, logging: false });
+
+	try {
+		for (const table of [`channels`, `streamChannelIdentities`, `kickLiveSessions`, `pendingStreamVods`]) {
+			const column = table === `channels` ? `id` : `channelId`;
+			await database.query(`CREATE TABLE ${table} (${column} INTEGER NOT NULL)`);
+		}
+		await database.query(`INSERT INTO channels (id) VALUES (1), (3)`);
+		// Simulate an orphan left by an older cleanup. Its ID must never be reused
+		// for a different streamer until the child record is repaired or removed.
+		await database.query(`INSERT INTO streamChannelIdentities (channelId) VALUES (2)`);
+		await database.transaction({ type: Sequelize.Transaction.TYPES.IMMEDIATE }, async transaction => {
+			assert(await findReusableChannelId(database, transaction) === 4,
+				`An orphaned stream identity did not reserve its former channel ID.`);
+			await database.query(`DELETE FROM streamChannelIdentities WHERE channelId = 2`, { transaction });
+			assert(await findReusableChannelId(database, transaction) === 2,
+				`A safe gap was not reused for a new streamer.`);
+		});
+	} finally {
+		await database.close();
+	}
 }
 
-async function auditLocalDatabaseIfPresent() {
-	const dbPath = resolveProject(`database`, `database.sqlite`);
+async function validateOneOpenModmailTicketIndex() {
+	const Sequelize = require(`sequelize`);
+	const { ensureOneOpenModmailTicketIndex } = requireFresh(`database`, `dbInit.js`);
+	const database = new Sequelize({ dialect: `sqlite`, storage: `:memory:`, logging: false });
 
-	if (!fs.existsSync(dbPath)) {
-		warn(`database/database.sqlite not found; skipped local database audit.`);
-		return;
+	try {
+		await database.query(`CREATE TABLE modmailTickets (id INTEGER PRIMARY KEY, guildId TEXT, openerId TEXT, status TEXT)`);
+		await database.query(`INSERT INTO modmailTickets (guildId, openerId, status) VALUES ('guild', 'member', 'open')`);
+		await ensureOneOpenModmailTicketIndex(database);
+		let duplicateRejected = false;
+		try {
+			await database.query(`INSERT INTO modmailTickets (guildId, openerId, status) VALUES ('guild', 'member', 'open')`);
+		} catch (error) {
+			duplicateRejected = error.name === `SequelizeUniqueConstraintError`;
+		}
+		assert(duplicateRejected, `The database accepted a second open ticket for the same member.`);
+
+		await database.query(`DROP INDEX modmailTicketsOneOpenPerUser`);
+		await database.query(`INSERT INTO modmailTickets (guildId, openerId, status) VALUES ('guild', 'member', 'open')`);
+		await ensureOneOpenModmailTicketIndex(database);
+		const [indexes] = await database.query(`SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'modmailTicketsOneOpenPerUser'`);
+		const [tickets] = await database.query(`SELECT id FROM modmailTickets WHERE guildId = 'guild' AND openerId = 'member' AND status = 'open'`);
+		assert(indexes.length === 0 && tickets.length === 2,
+			`The index installer altered or blocked legacy duplicate open tickets.`);
+	} finally {
+		await database.close();
 	}
-	if (hasRuntimeDatabaseSidecar(dbPath)) {
-		// A journal may contain an unfinished transaction. Opening the live
-		// database during smoke testing could trigger recovery or contend with Hachi.
-		warn(`SQLite runtime sidecar present; skipped local database audit.`);
-		return;
+}
+
+async function auditIsolatedDatabase() {
+	const sqlite3 = require(`sqlite3`).verbose();
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-schema-audit-`));
+	const dbPath = path.join(tempDir, `audit.sqlite`);
+
+	try {
+		await new Promise((resolve, reject) => {
+			const database = new sqlite3.Database(dbPath, openError => {
+				if (openError) {
+					reject(openError);
+					return;
+				}
+				database.close(closeError => closeError ? reject(closeError) : resolve());
+			});
+		});
+
+		// Build and inspect a disposable schema. Smoke testing must never open an
+		// installation's database, even when no journal sidecars are visible.
+		const { applyMigration, auditDatabase } = requireFresh(`database`, `dbAudit.js`);
+		const migration = await applyMigration({ dbPath });
+		const audit = await auditDatabase({ dbPath });
+		assert(migration.ok && audit.status === `ok`,
+			`Isolated database audit status is ${audit.status}: ${audit.detail}`);
+
+		// A schema rebuild must restore the partial open-ticket guard. Closed
+		// tickets from one member are valid and must not block that repair.
+		const { openToolDatabase } = requireFresh(`database`, `dbToolConnection.js`);
+		const toolDatabase = await openToolDatabase({ dbPath, readonly: false, root: projectRoot });
+		try {
+			await toolDatabase.exec(`
+				INSERT INTO servers (guildId) VALUES ('guild');
+				INSERT INTO modmailTickets (guildId, ticketNumber, openerId, status, openedAt)
+				VALUES ('guild', 1, 'member', 'closed', '2026-01-01');
+				INSERT INTO modmailTickets (guildId, ticketNumber, openerId, status, openedAt)
+				VALUES ('guild', 2, 'member', 'closed', '2026-01-02');
+				DROP INDEX modmailTicketsOneOpenPerUser;
+			`);
+		} finally {
+			await toolDatabase.close();
+		}
+		const drift = await auditDatabase({ dbPath });
+		assert(drift.safeIssues.some(issue => issue.id === `modmailTickets:modmailTicketsOneOpenPerUser:index-mismatch`) &&
+			!drift.forceIssues.some(issue => issue.table === `modmailTickets`),
+		`Audit did not identify the missing partial Modmail index as a safe repair.`);
+		const repaired = await applyMigration({ dbPath });
+		assert(repaired.ok, `The partial Modmail index was not repaired by migration.`);
+		const verifiedDatabase = await openToolDatabase({ dbPath, readonly: true, root: projectRoot });
+		try {
+			const index = await verifiedDatabase.get(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'modmailTicketsOneOpenPerUser'`);
+			const ticketCount = await verifiedDatabase.get(`SELECT COUNT(*) AS count FROM modmailTickets WHERE guildId = 'guild' AND openerId = 'member'`);
+			assert(index?.sql?.includes(`WHERE "status" = 'open'`) && Number(ticketCount.count) === 2,
+				`Migration lost the open-ticket predicate or existing closed tickets.`);
+		} finally {
+			await verifiedDatabase.close();
+		}
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
-
-	const { auditDatabase } = requireFresh(`database`, `dbAudit.js`);
-	const result = await auditDatabase({ dbPath });
-	const acceptedStatuses = new Set([`ok`, `compatible-drift`]);
-	// Startup sequelize.sync creates these new tables. A local database that has
-	// not booted the updated bot yet may report only these expected gaps.
-	const newTables = new Set([`pendingStreamVods`, `kickLiveSessions`]);
-	const newTablesNotYetCreated = result.status === `migration-required` &&
-		result.safeIssues.length > 0 &&
-		result.safeIssues.every(issue => issue.type === `missing-table` && newTables.has(issue.table));
-
-	assert(acceptedStatuses.has(result.status) || newTablesNotYetCreated,
-		`Database audit status is ${result.status}: ${result.detail}`);
 }
 
 function validatePackageMetadata() {
@@ -962,6 +1049,7 @@ function validateProjectFiles() {
 		`docs/_config.yml`,
 		`docs/patch-notes.md`,
 		`scripts/releaseCheck.js`,
+		`scripts/validateReleaseMetadata.js`,
 		`docs/privacy-policy.md`,
 		`docs/terms-and-conditions.md`,
 		`events/guildDelete.js`,
@@ -979,18 +1067,14 @@ function validateProjectFiles() {
 	assert(fs.existsSync(resolveProject(`commands`, `globalCommands`, `utility`, `twitch.js`)), `Missing /twitch command file.`);
 	assert(!fs.existsSync(resolveProject(`commands`, `globalCommands`, `utility`, `twitchroles.js`)), `Old twitchroles command file still exists.`);
 
-	const rootChangelog = fs.readFileSync(resolveProject(`CHANGELOG.md`), `utf8`);
 	const docsIndex = fs.readFileSync(resolveProject(`docs`, `index.md`), `utf8`);
 	const patchNotes = fs.readFileSync(resolveProject(`docs`, `patch-notes.md`), `utf8`);
 	const releaseCheck = fs.readFileSync(resolveProject(`scripts`, `releaseCheck.js`), `utf8`);
 	const pagesConfig = fs.readFileSync(resolveProject(`docs`, `_config.yml`), `utf8`);
 	const ciWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `ci.yml`), `utf8`);
 	const hachiReleaseWorkflow = fs.readFileSync(resolveProject(`.github`, `workflows`, `release-hachi.yml`), `utf8`);
-	const currentTag = `v${readJson(`package.json`).version}`;
-
-	assert(rootChangelog.includes(`## ${currentTag}`), `Root CHANGELOG.md should include the latest release entry.`);
-	assert(patchNotes.includes(`# ${currentTag}`), `docs/patch-notes.md should include the latest user-facing release entry.`);
-	assert(patchNotes.includes(`### Reliability`), `docs/patch-notes.md should include release category headings.`);
+	const currentReleaseTag = `hachi-v${readJson(`package.json`).version}`;
+	requireFresh(`scripts`, `validateReleaseMetadata.js`).validateReleaseMetadata(currentReleaseTag, projectRoot);
 	assert(readJson(`package.json`).scripts?.[`release:check`] === `node scripts/releaseCheck.js`, `package.json should expose the release preparation check.`);
 	assert(releaseCheck.includes("branch === `main`"), `Release preparation should refuse to run on main.`);
 	assert(!/^## Hachi$/mu.test(patchNotes), `docs/patch-notes.md should not embed redundant Hachi product sections.`);
@@ -1000,7 +1084,9 @@ function validateProjectFiles() {
 	assert(pagesConfig.includes(`theme: jekyll-theme-midnight`), `docs/_config.yml should use the Midnight GitHub Pages theme.`);
 	assert(hachiReleaseWorkflow.includes(`branches:`) && hachiReleaseWorkflow.includes(`main`), `Hachi release workflow should run when main changes.`);
 	assert(ciWorkflow.includes(`name: check`) && ciWorkflow.includes(`npm run check`), `Hachi CI should run the syntax check job.`);
-	assert(hachiReleaseWorkflow.includes(`"hachi-v*"`) && hachiReleaseWorkflow.includes(`$tagPrefix = "hachi-v"`), `Hachi release workflow should use hachi-v* tags.`);
+	assert(hachiReleaseWorkflow.includes(`"hachi-v*"`) &&
+		hachiReleaseWorkflow.includes(`node scripts/validateReleaseMetadata.js $tag`),
+	`Hachi release workflow should validate hachi-v* tags against package metadata.`);
 	assert(hachiReleaseWorkflow.includes(`release_title=Hachi v$version`), `Hachi release workflow should title releases as Hachi vX.X.X.`);
 	assert(!hachiReleaseWorkflow.includes(`HachiGen.exe`), `Hachi release workflow should not upload HachiGen.exe.`);
 }
@@ -1030,44 +1116,89 @@ function validateBlankConfig() {
 	}
 }
 
-function validateConfigCheckIfConfigured() {
-	const configPath = resolveProject(`config`, `config.json`);
-	const databasePath = resolveProject(`database`, `database.sqlite`);
+function validateConfigCheckInIsolatedFixture() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-config-check-`));
+	const configPath = path.join(tempDir, `config`, `config.json`);
+	const config = readJson(`config`, `blank.json`);
+	const configCheckPath = resolveProject(`config`, `configCheck.js`);
+	const fixtureEnvironment = {
+		TOKEN: `smoke-token`,
+		clientId: `smoke-client-id`,
+		HACHI_DB_ENCRYPTION: `encrypted`,
+		HACHI_DB_KEY: `smoke-db-key`,
+		HACHI_SECRETS_ENCRYPTION: `encrypted`,
+		HACHI_SECRETS_KEY: `smoke-secret-key`,
+		kickClientId: `smoke-kick-client-id`,
+		kickSecret: `smoke-kick-secret`,
+		twitchClientId: `smoke-twitch-client-id`,
+		twitchSecret: `smoke-twitch-secret`,
+	};
+	config.botOwners = [`111111111111111111`];
+	config.guildIds = [`222222222222222222`];
 
-	if (!fs.existsSync(configPath)) {
-		warn(`config/config.json not found; skipped configCheck smoke validation.`);
-		return;
-	}
-	if (hasRuntimeDatabaseSidecar(databasePath)) {
-		warn(`SQLite runtime sidecar present; skipped live configCheck smoke validation.`);
-		return;
-	}
+	try {
+		fs.mkdirSync(path.dirname(configPath), { recursive: true });
+		fs.writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+		const runConfigCheck = () => spawnNode([`-e`, `require(${JSON.stringify(configCheckPath)})`], {
+			cwd: tempDir,
+			env: fixtureEnvironment,
+		});
+		const validResult = runConfigCheck();
+		assert(validResult.status === 0, `configCheck failed on an isolated fixture:\n${validResult.stdout}${validResult.stderr}`);
 
-	// CI does not keep a real runtime database in the repository. When the
-	// database is absent, give configCheck a temporary direct database key so it
-	// can verify the mandatory-encryption settings without opening a live file.
-	const databaseEnv = fs.existsSync(databasePath) ?
-		{} :
-		{
-			HACHI_DB_ENCRYPTION: `encrypted`,
-			HACHI_DB_KEY: `smoke-db-key`,
+		config.twitchCron = `invalid cron expression`;
+		fs.writeFileSync(configPath, `${JSON.stringify(config)}\n`);
+		const invalidResult = runConfigCheck();
+		assert(invalidResult.status === 78 && `${invalidResult.stdout}${invalidResult.stderr}`.includes(`twitchCron`),
+			`configCheck did not identify an invalid configured cron expression.`);
+	} finally {
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateProviderAppTokenRequests() {
+	const previousFetch = global.fetch;
+	const capturedRequests = [];
+	const { fetchAuthToken } = requireFresh(`auth`, `fetchAuthToken.js`);
+	const providers = [
+		{ provider: `Twitch`, tokenUrl: `https://id.twitch.tv/oauth2/token` },
+		{ provider: `Kick`, tokenUrl: `https://id.kick.com/oauth/token` },
+	];
+
+	try {
+		global.fetch = async (url, options) => {
+			capturedRequests.push({ url, options });
+			return { ok: true, json: async () => ({ access_token: `smoke-app-token` }) };
 		};
 
-	const result = spawnNode([`-e`, `require('./config/configCheck.js')`], {
-		env: {
-			...databaseEnv,
-			TOKEN: `smoke-token`,
-			clientId: `smoke-client-id`,
-			HACHI_SECRETS_ENCRYPTION: `encrypted`,
-			HACHI_SECRETS_KEY: `smoke-secret-key`,
-			kickClientId: `smoke-kick-client-id`,
-			kickSecret: `smoke-kick-secret`,
-			twitchClientId: `smoke-twitch-client-id`,
-			twitchSecret: `smoke-twitch-secret`,
-		},
-	});
+		for (const { provider, tokenUrl } of providers) {
+			const token = await fetchAuthToken({
+				provider,
+				tokenUrl,
+				clientID: `client id`,
+				clientSecret: `secret+with&symbols`,
+			});
+			assert(token === `smoke-app-token`, `${provider} app-token response was not accepted.`);
+		}
 
-	assert(result.status === 0, `configCheck failed:\n${result.stdout}${result.stderr}`);
+		for (const [index, request] of capturedRequests.entries()) {
+			const provider = providers[index];
+			const form = new URLSearchParams(request.options.body);
+			assert(request.url === provider.tokenUrl && !String(request.url).includes(`secret`),
+				`${provider.provider} token credentials appeared in the request URL.`);
+			assert(request.options.method === `POST` &&
+				request.options.headers?.[`Content-Type`] === `application/x-www-form-urlencoded`,
+			`${provider.provider} token request did not use a form-encoded POST.`);
+			assert(request.options.signal instanceof globalThis.AbortSignal,
+				`${provider.provider} token request did not include a timeout signal.`);
+			assert(form.get(`client_id`) === `client id` &&
+				form.get(`client_secret`) === `secret+with&symbols` &&
+				form.get(`grant_type`) === `client_credentials`,
+			`${provider.provider} token request did not preserve client credentials in the form body.`);
+		}
+	} finally {
+		global.fetch = previousFetch;
+	}
 }
 
 function validateSecretEncryptionHelpers() {
@@ -2204,6 +2335,7 @@ async function validateTwitchPendingVodUpdate() {
 	const streamNameMonitor = require(resolveProject(`modules`, `streamNameMonitor.js`));
 	const streamUtils = require(resolveProject(`modules`, `streamUtils.js`));
 	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
+	const log = require(resolveProject(`utils`, `writeLog.js`));
 	const { Channels, PendingStreamVods } = require(resolveProject(`database`, `dbObjects.js`));
 	const original = {
 		getStreams: twitchStreams.getStreams,
@@ -2220,6 +2352,7 @@ async function validateTwitchPendingVodUpdate() {
 		pendingFindCreateFind: PendingStreamVods.findCreateFind,
 		pendingFindAll: PendingStreamVods.findAll,
 		pendingDestroy: PendingStreamVods.destroy,
+		error: log.error,
 	};
 	const channel = {
 		id: 1,
@@ -2233,6 +2366,7 @@ async function validateTwitchPendingVodUpdate() {
 	const updates = [];
 	const vodLookups = [];
 	const liveSyncs = [];
+	const errors = [];
 	const message = {
 		content: `PirateSoftware just went live`,
 		embeds: [{
@@ -2252,6 +2386,7 @@ async function validateTwitchPendingVodUpdate() {
 	let vodResult = null;
 	let streamData = null;
 	let newMessageCount = 0;
+	let channelSearches = 0;
 
 	try {
 		twitchStreams.getStreams = async () => ({ piratesoftware: { data: streamData, error: false } });
@@ -2259,15 +2394,21 @@ async function validateTwitchPendingVodUpdate() {
 			vodLookups.push({ userId, streamId });
 			return vodResult;
 		};
-		twitchChannel.getChannel = async () => ({
-			id: `user-1`,
-			broadcaster_login: `piratesoftware`,
-			display_name: `PirateSoftware`,
-			title: `A new stream`,
-			game_name: `Noita`,
-			thumbnail_url: `https://example.com/profile.jpg`,
-		});
-		twitchIdentity.getTwitchUsers = async () => new Map([[channel.id, { id: `user-1`, login: `piratesoftware` }]]);
+		twitchChannel.getChannel = async () => {
+			channelSearches += 1;
+			return {
+				id: `user-1`,
+				broadcaster_login: `piratesoftware`,
+				display_name: `PirateSoftware`,
+				title: `A new stream`,
+				game_name: `Noita`,
+				thumbnail_url: `https://example.com/profile.jpg`,
+			};
+		};
+		twitchIdentity.getTwitchUsers = async () => new Map([[channel.id, {
+			id: `user-1`, login: `piratesoftware`, display_name: `PirateSoftware`,
+			profile_image_url: `https://example.com/profile.jpg`,
+		}]]);
 		streamNameMonitor.getIdentityMap = async () => new Map();
 		streamNameMonitor.recordStreamName = async () => null;
 		streamUtils.loadState = async () => ({
@@ -2300,6 +2441,7 @@ async function validateTwitchPendingVodUpdate() {
 		PendingStreamVods.findCreateFind = pendingStore.findCreateFind;
 		PendingStreamVods.findAll = pendingStore.findAll;
 		PendingStreamVods.destroy = pendingStore.destroy;
+		log.error = (messageText, reason) => errors.push({ messageText, reason });
 
 		const { getTwitch } = requireFresh(`modules`, `getTwitch.js`);
 		const client = {
@@ -2319,12 +2461,15 @@ async function validateTwitchPendingVodUpdate() {
 			`Twitch should retry a queued VoD without repeatedly editing or queuing the message.`);
 
 		streamData = {
-			id: `stream-2`, user_id: `user-1`, viewer_count: 10, started_at: `2026-10-23T21:00:00Z`,
+			id: `stream-2`, user_id: `user-1`, user_login: `piratesoftware`, user_name: `PirateSoftware`,
+			title: `A new stream`, game_name: `Noita`, viewer_count: 10, started_at: `2026-10-23T21:00:00Z`,
 		};
 		await getTwitch(client);
 		assert(liveSyncs.at(-1)?.shouldEdit === false && channel.twitchMessageId === `new-twitch-message-1` &&
 			pendingStore.rows.has(`twitch-message-id`),
 		`A new Twitch stream replaced the old replay queue instead of posting a new announcement.`);
+		assert(channelSearches === 0 && liveSyncs.at(-1)?.embed.toJSON().thumbnail?.url === `https://example.com/profile.jpg`,
+			`A resolved live broadcaster triggered a redundant Twitch channel search or lost its profile image.`);
 		const newLiveMessage = discordChannel.messages.cache.get(channel.twitchMessageId);
 
 		vodResult = { url: `https://www.twitch.tv/videos/smoke-vod`, thumbnail_url: null };
@@ -2343,7 +2488,8 @@ async function validateTwitchPendingVodUpdate() {
 		// become a separate pending replay before its replacement is posted.
 		vodResult = null;
 		streamData = {
-			id: `stream-3`, user_id: `user-1`, viewer_count: 11, started_at: `2026-10-23T22:00:00Z`,
+			id: `stream-3`, user_id: `user-1`, user_login: `piratesoftware`, user_name: `PirateSoftware`,
+			title: `Another new stream`, game_name: `Noita`, viewer_count: 11, started_at: `2026-10-23T22:00:00Z`,
 		};
 		await getTwitch(client);
 		assert(newLiveMessage.content === `The Twitch stream has ended.` &&
@@ -2365,6 +2511,19 @@ async function validateTwitchPendingVodUpdate() {
 			`No VoD available` && newLiveMessage.embeds[0].footer.text === endedFooter &&
 			!pendingStore.rows.has(`new-twitch-message-1`) && channel.twitchStreamId === `stream-3`,
 		`Twitch did not finish an expired replay without changing the current live stream.`);
+
+		// A temporary Users lookup failure still has the existing Search Channels
+		// fallback for the profile image and a matching broadcaster ID.
+		twitchIdentity.getTwitchUsers = async () => new Map();
+		const { getTwitch: getTwitchWithoutUsers } = requireFresh(`modules`, `getTwitch.js`);
+		await getTwitchWithoutUsers(client);
+		assert(channelSearches === 1,
+			`The Twitch channel fallback was not used when the batched Users lookup was unavailable.`);
+		streamData = { ...streamData, viewer_count: null };
+		await getTwitchWithoutUsers(client);
+		assert(errors.some(item => item.messageText.includes(`Failed to process Twitch channel`) &&
+			item.messageText.includes(`row 1`) && item.messageText.includes(server.guildId)),
+		`A rejected Twitch channel job did not identify the affected row and guild.`);
 	} finally {
 		twitchStreams.getStreams = original.getStreams;
 		twitchVods.getForStream = original.getForStream;
@@ -2380,6 +2539,7 @@ async function validateTwitchPendingVodUpdate() {
 		PendingStreamVods.findCreateFind = original.pendingFindCreateFind;
 		PendingStreamVods.findAll = original.pendingFindAll;
 		PendingStreamVods.destroy = original.pendingDestroy;
+		log.error = original.error;
 		delete require.cache[require.resolve(resolveProject(`modules`, `getTwitch.js`))];
 	}
 }
@@ -2397,7 +2557,7 @@ async function validateKickChannelRouting() {
 	const original = {
 		fetch: global.fetch,
 		getStreams: kickStreams.getStreams,
-		getUser: kickUser.getUser,
+		getUsersByIds: kickUser.getUsersByIds,
 		getLatest: kickVods.getLatest,
 		getChannelsByBroadcasterIds: kickIdentity.getChannelsByBroadcasterIds,
 		getIdentityMap: streamNameMonitor.getIdentityMap,
@@ -2419,6 +2579,7 @@ async function validateKickChannelRouting() {
 	};
 	const channel = {
 		id: 1,
+		guildId: `guild-id`,
 		channelName: `old_kick_name`,
 		kickMessageId: `message-id`,
 		kickIsLive: true,
@@ -2481,9 +2642,9 @@ async function validateKickChannelRouting() {
 		kickIdentity.getChannelsByBroadcasterIds = async () => channelsById;
 		streamNameMonitor.getIdentityMap = async () => savedIdentities;
 		streamNameMonitor.recordStreamName = async () => null;
-		kickUser.getUser = async () => {
+		kickUser.getUsersByIds = async () => {
 			userLookups++;
-			return false;
+			return new Map();
 		};
 		streamUtils.loadState = async () => ({
 			servers: [server],
@@ -2666,9 +2827,9 @@ async function validateKickChannelRouting() {
 				start_time: `2026-10-23T20:00:10Z`,
 			},
 		}]]);
-		kickUser.getUser = async () => {
+		kickUser.getUsersByIds = async () => {
 			userLookups++;
-			return { name: `Current Kick`, profile_picture: `https://example.com/profile.jpg` };
+			return new Map([[`42`, { name: `Current Kick`, profile_picture: `https://example.com/profile.jpg` }]]);
 		};
 		await getKick(client);
 		assert(liveSync?.shouldEdit === false &&
@@ -2719,7 +2880,7 @@ async function validateKickChannelRouting() {
 		// eslint-disable-next-line require-atomic-updates
 		global.fetch = original.fetch;
 		kickStreams.getStreams = original.getStreams;
-		kickUser.getUser = original.getUser;
+		kickUser.getUsersByIds = original.getUsersByIds;
 		kickVods.getLatest = original.getLatest;
 		kickIdentity.getChannelsByBroadcasterIds = original.getChannelsByBroadcasterIds;
 		streamNameMonitor.getIdentityMap = original.getIdentityMap;
@@ -2979,6 +3140,247 @@ async function validateProviderIdentityLookups() {
 	}
 }
 
+async function validateKickSlugBatching() {
+	const originalFetch = global.fetch;
+	const { getStreams } = requireFresh(`modules`, `kickStreams.js`);
+	const requestedSlugs = [];
+	try {
+		global.fetch = async url => {
+			const slugs = new URL(url).searchParams.getAll(`slug`);
+			requestedSlugs.push(slugs);
+			return { ok: true, json: async () => ({ data: [
+				{ slug: `beta`, stream: { is_live: true } },
+				{ slug: `Alpha`, stream: { is_live: false } },
+				{ slug: `unrelated`, stream: { is_live: true } },
+			] }) };
+		};
+		const streams = await getStreams([`Alpha`, `beta`, `Alpha`, `missing`], `client`, `token`);
+		assert(requestedSlugs.length === 1 && requestedSlugs[0].join(`,`) === `alpha,beta,missing`,
+			`Kick slug lookup did not combine unique channel names into one request.`);
+		assert(streams.Alpha.data?.slug === `Alpha` && streams.beta.data?.slug === `beta` &&
+			streams.missing.data === null && streams.missing.error === false && !streams.unrelated,
+		`Kick slug lookup associated an unrelated channel or treated a missing slug as an API error.`);
+
+		requestedSlugs.length = 0;
+		global.fetch = async url => {
+			const slugs = new URL(url).searchParams.getAll(`slug`);
+			requestedSlugs.push(slugs);
+			return { ok: true, json: async () => ({ data: slugs.map(slug => ({ slug })) }) };
+		};
+		const manySlugs = Array.from({ length: 51 }, (_, index) => `channel_${index}`);
+		const manyStreams = await getStreams(manySlugs, `client`, `token`);
+		assert(requestedSlugs.length === 2 && requestedSlugs[0].length === 50 &&
+			requestedSlugs[1].length === 1 && Object.keys(manyStreams).length === 51,
+		`Kick slug batches exceeded the provider's 50-name limit or lost a result.`);
+
+		requestedSlugs.length = 0;
+		global.fetch = async url => {
+			const slugs = new URL(url).searchParams.getAll(`slug`);
+			requestedSlugs.push(slugs);
+			if (slugs.length > 1) {
+				return { ok: false, status: 400 };
+			}
+			return slugs[0] === `missing` ?
+				{ ok: false, status: 404 } :
+				{ ok: true, json: async () => ({ data: [{ slug: slugs[0] }] }) };
+		};
+		const isolatedStreams = await getStreams([`valid`, `missing`], `client`, `token`);
+		assert(requestedSlugs.length === 3 && isolatedStreams.valid.data?.slug === `valid` &&
+			isolatedStreams.missing.data === null && !isolatedStreams.missing.error,
+		`A bad Kick slug batch did not preserve valid channels through individual fallback.`);
+
+		requestedSlugs.length = 0;
+		global.fetch = async url => {
+			requestedSlugs.push(new URL(url).searchParams.getAll(`slug`));
+			return { ok: false, status: 429 };
+		};
+		const limitedStreams = await getStreams([`one`, `two`], `client`, `token`);
+		assert(requestedSlugs.length === 1 && limitedStreams.one.error && limitedStreams.two.error,
+			`Kick rate limiting triggered an individual-request surge or looked like offline channels.`);
+	} finally {
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = originalFetch;
+	}
+}
+
+async function validateKickUserBatching() {
+	const originalFetch = global.fetch;
+	const { getUsersByIds } = requireFresh(`modules`, `kickUser.js`);
+	const requestedIds = [];
+	try {
+		global.fetch = async url => {
+			const ids = new URL(url).searchParams.getAll(`id`);
+			requestedIds.push(ids);
+			return { ok: true, json: async () => ({ data: [
+				{ user_id: 43, name: `Second` },
+				{ user_id: 42, name: `First` },
+				{ user_id: 999, name: `Unrelated` },
+			] }) };
+		};
+		const users = await getUsersByIds([42, `42`, 43, 44], `client`, `token`);
+		assert(requestedIds.length === 1 && requestedIds[0].join(`,`) === `42,43,44`,
+			`Kick user lookup did not deduplicate broadcaster IDs.`);
+		assert(users.get(`42`)?.name === `First` && users.get(`43`)?.name === `Second` &&
+			!users.has(`44`) && !users.has(`999`),
+		`Kick user lookup associated an unrequested profile with a broadcaster.`);
+
+		requestedIds.length = 0;
+		global.fetch = async url => {
+			const ids = new URL(url).searchParams.getAll(`id`);
+			requestedIds.push(ids);
+			return { ok: true, json: async () => ({ data: ids.map(id => ({ user_id: Number(id), name: id })) }) };
+		};
+		const manyIds = Array.from({ length: 51 }, (_, index) => index + 1);
+		const manyUsers = await getUsersByIds(manyIds, `client`, `token`);
+		assert(requestedIds.length === 2 && requestedIds[0].length === 50 &&
+			requestedIds[1].length === 1 && manyUsers.size === 51,
+		`Kick user-profile batches exceeded their bound or lost a profile.`);
+
+		requestedIds.length = 0;
+		global.fetch = async url => {
+			const ids = new URL(url).searchParams.getAll(`id`);
+			requestedIds.push(ids);
+			if (ids.length > 1) {
+				return { ok: false, status: 400, statusText: `Bad Request` };
+			}
+			return ids[0] === `44` ?
+				{ ok: false, status: 404, statusText: `Not Found` } :
+				{ ok: true, json: async () => ({ data: [{ user_id: Number(ids[0]), name: `Valid` }] }) };
+		};
+		const isolatedUsers = await getUsersByIds([42, 44], `client`, `token`);
+		assert(requestedIds.length === 3 && isolatedUsers.get(`42`)?.name === `Valid` && !isolatedUsers.has(`44`),
+			`A bad Kick user batch did not preserve valid profiles through individual fallback.`);
+
+		requestedIds.length = 0;
+		global.fetch = async url => {
+			requestedIds.push(new URL(url).searchParams.getAll(`id`));
+			return { ok: false, status: 429, statusText: `Too Many Requests` };
+		};
+		const limitedUsers = await getUsersByIds([42, 43], `client`, `token`);
+		assert(requestedIds.length === 1 && limitedUsers.size === 0,
+			`Kick user rate limiting triggered an individual-request surge.`);
+	} finally {
+		// eslint-disable-next-line require-atomic-updates
+		global.fetch = originalFetch;
+	}
+}
+
+async function validateKickSharedProfilesAcrossGuilds() {
+	const kickStreams = require(resolveProject(`modules`, `kickStreams.js`));
+	const kickUser = require(resolveProject(`modules`, `kickUser.js`));
+	const kickIdentity = require(resolveProject(`modules`, `kickIdentity.js`));
+	const streamNameMonitor = require(resolveProject(`modules`, `streamNameMonitor.js`));
+	const streamUtils = require(resolveProject(`modules`, `streamUtils.js`));
+	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const { KickLiveSessions, PendingStreamVods } = require(resolveProject(`database`, `dbObjects.js`));
+	const original = {
+		getStreams: kickStreams.getStreams,
+		getUsersByIds: kickUser.getUsersByIds,
+		getChannelsByBroadcasterIds: kickIdentity.getChannelsByBroadcasterIds,
+		getIdentityMap: streamNameMonitor.getIdentityMap,
+		recordStreamName: streamNameMonitor.recordStreamName,
+		loadState: streamUtils.loadState,
+		targetChannel: streamUtils.targetChannel,
+		syncMessage: streamUtils.syncMessage,
+		getAuthTokens: authTokens.getAuthTokens,
+		kickSessionFindAll: KickLiveSessions.findAll,
+		pendingFindAll: PendingStreamVods.findAll,
+		error: log.error,
+	};
+	const channels = [
+		{ id: 201, guildId: `guild-one`, channelName: `old_slug`, kickNotif: true },
+		{ id: 202, guildId: `guild-two`, channelName: `old_slug`, kickNotif: true },
+	];
+	const profileBatches = [];
+	const announcements = [];
+	const errors = [];
+	let providerChannel = {
+		broadcaster_user_id: 42,
+		slug: `current_slug`,
+		stream_title: `Current stream`,
+		category: { name: `Games` },
+		stream: {
+			is_live: true,
+			viewer_count: 2,
+			thumbnail: `https://example.com/stream.jpg`,
+			start_time: `2026-10-27T18:00:00Z`,
+		},
+	};
+	try {
+		kickStreams.getStreams = async () => ({});
+		kickIdentity.getChannelsByBroadcasterIds = async () => new Map([[`42`, providerChannel]]);
+		kickUser.getUsersByIds = async ids => {
+			profileBatches.push(ids);
+			return new Map([[`42`, {
+				name: `Current Kick`,
+				profile_picture: `https://example.com/profile.jpg`,
+			}]]);
+		};
+		streamNameMonitor.getIdentityMap = async () => new Map(channels.map(chan =>
+			[chan.id, { providerUserId: `42` }]));
+		streamNameMonitor.recordStreamName = async () => null;
+		streamUtils.loadState = async () => ({
+			servers: [{ guildId: `guild-one` }, { guildId: `guild-two` }],
+			channels,
+			channelsByGuild: new Map([
+				[`guild-one`, [channels[0]]],
+				[`guild-two`, [channels[1]]],
+			]),
+		});
+		streamUtils.targetChannel = () => ({ id: `announcement-channel`, discordChannel: {} });
+		streamUtils.syncMessage = async options => {
+			announcements.push(options);
+			return null;
+		};
+		authTokens.getAuthTokens = () => ({ kickAuthToken: `token` });
+		KickLiveSessions.findAll = async () => [];
+		PendingStreamVods.findAll = async () => [];
+		log.error = (message, reason) => errors.push({ message, reason });
+		const { getKick } = requireFresh(`modules`, `getKick.js`);
+		await getKick({ guilds: { cache: new Map([
+			[`guild-one`, { name: `Guild One` }],
+			[`guild-two`, { name: `Guild Two` }],
+		]) } });
+		assert(profileBatches.length === 1 && profileBatches[0].join(`,`) === `42` &&
+			announcements.length === 2 && announcements.every(item => item.content.includes(`Current Kick`)),
+		`Kick fetched duplicate profiles or failed to announce the shared broadcaster in both guilds.`);
+		kickUser.getUsersByIds = async () => new Map();
+		await getKick({ guilds: { cache: new Map() } });
+		assert(announcements.length === 4 && announcements.slice(2).every(item =>
+			item.content.includes(`current_slug just went live`) && !item.embed.toJSON().thumbnail),
+		`Kick did not announce verified live channels when their profiles were missing.`);
+		kickUser.getUsersByIds = async () => {
+			throw new Error(`Profile request unavailable`);
+		};
+		await getKick({ guilds: { cache: new Map() } });
+		assert(announcements.length === 6 && announcements.slice(4).every(item =>
+			item.content.includes(`current_slug just went live`)) &&
+			errors.some(item => item.message.includes(`Failed to fetch Kick user profiles`)),
+		`Kick suppressed live alerts after a failed profile batch.`);
+		providerChannel = { ...providerChannel, category: null };
+		await getKick({ guilds: { cache: new Map() } });
+		assert(errors.filter(item => item.message.includes(`Failed to process Kick channel`)).length === 2 &&
+			errors.some(item => item.message.includes(`row 201`) && item.message.includes(`guild-one`)) &&
+			errors.some(item => item.message.includes(`row 202`) && item.message.includes(`guild-two`)),
+		`A rejected Kick channel job did not identify the affected row and guild.`);
+	} finally {
+		kickStreams.getStreams = original.getStreams;
+		kickUser.getUsersByIds = original.getUsersByIds;
+		kickIdentity.getChannelsByBroadcasterIds = original.getChannelsByBroadcasterIds;
+		streamNameMonitor.getIdentityMap = original.getIdentityMap;
+		streamNameMonitor.recordStreamName = original.recordStreamName;
+		streamUtils.loadState = original.loadState;
+		streamUtils.targetChannel = original.targetChannel;
+		streamUtils.syncMessage = original.syncMessage;
+		authTokens.getAuthTokens = original.getAuthTokens;
+		KickLiveSessions.findAll = original.kickSessionFindAll;
+		PendingStreamVods.findAll = original.pendingFindAll;
+		log.error = original.error;
+		delete require.cache[require.resolve(resolveProject(`modules`, `getKick.js`))];
+	}
+}
+
 function validateGitHygiene() {
 	const nodeModulesResult = runGit([`ls-files`, `node_modules`]);
 
@@ -3028,6 +3430,324 @@ function validateModmailContracts() {
 	assert(roles.effectiveRoleIds.join(`,`) === `allowed,shared,ping`, `Ping roles were not merged into effective Modmail access.`);
 }
 
+async function validateModmailCleanupRetry() {
+	const { ModmailTickets } = requireFresh(`database`, `dbObjects.js`);
+	const { cleanupClosedTickets } = requireFresh(`utils`, `modmail.js`);
+	const previousFindAll = ModmailTickets.findAll;
+	let deletionAttempts = 0;
+	const ticket = {
+		id: 7,
+		guildId: `guild`,
+		channelId: `ticket-channel`,
+		status: `closed`,
+		update: async values => Object.assign(ticket, values),
+	};
+	const channel = {
+		delete: async () => {
+			deletionAttempts += 1;
+			if (deletionAttempts === 1) {
+				throw Object.assign(new Error(`temporary permission failure`), { code: 50013 });
+			}
+		},
+	};
+	const guild = { channels: { fetch: async () => channel } };
+	const client = { guilds: { cache: new Map([[`guild`, guild]]) } };
+
+	try {
+		ModmailTickets.findAll = async () => [ticket];
+		assert(await cleanupClosedTickets(client) === 0 && ticket.status === `closed` && ticket.channelId === `ticket-channel`,
+			`A failed Discord channel deletion retired the Modmail ticket.`);
+		assert(await cleanupClosedTickets(client) === 1 && ticket.status === `deleted` && ticket.channelId === null,
+			`A later successful deletion did not retire the retained Modmail ticket.`);
+	} finally {
+		ModmailTickets.findAll = previousFindAll;
+	}
+}
+
+async function validateModmailEntryChannelCache() {
+	const { ModmailConfigs } = requireFresh(`database`, `dbObjects.js`);
+	const { enforceEntryChannel, invalidateEntryChannelCache } = requireFresh(`utils`, `modmail.js`);
+	const previousFindByPk = ModmailConfigs.findByPk;
+	const previousFindOne = ModmailConfigs.findOne;
+	const guildId = `modmail-cache-smoke-guild`;
+	let entryChannelId = `entry-one`;
+	let entryChannelReads = 0;
+	let panelChecks = 0;
+	let deletedMessages = 0;
+	const message = channelId => ({
+		id: `member-message`,
+		guild: { id: guildId },
+		channel: { id: channelId },
+		author: { id: `member` },
+		client: { user: { id: `bot` } },
+		delete: async () => { deletedMessages += 1; },
+	});
+
+	try {
+		ModmailConfigs.findByPk = async () => {
+			entryChannelReads += 1;
+			return { entryChannelId };
+		};
+		ModmailConfigs.findOne = async ({ where }) => {
+			panelChecks += 1;
+			return where.entryChannelId === entryChannelId ? { panelMessageId: `panel` } : null;
+		};
+
+		assert(!await enforceEntryChannel(message(`general-one`)) &&
+			!await enforceEntryChannel(message(`general-two`)) &&
+			entryChannelReads === 1 && panelChecks === 0,
+		`Ordinary guild messages should share the cached Modmail entry-channel lookup.`);
+
+		entryChannelId = `entry-two`;
+		invalidateEntryChannelCache(guildId);
+		assert(await enforceEntryChannel(message(`entry-two`)) &&
+			entryChannelReads === 2 && panelChecks === 1 && deletedMessages === 1,
+		`A changed Modmail entry channel was not refreshed or enforced.`);
+
+		// A change by another process can leave a positive cache entry until its
+		// TTL expires. The current database row must still authorize deletion.
+		entryChannelId = `entry-three`;
+		assert(!await enforceEntryChannel(message(`entry-two`)) &&
+			entryChannelReads === 2 && panelChecks === 2 && deletedMessages === 1,
+		`A stale Modmail entry-channel cache entry deleted an unrelated message.`);
+	} finally {
+		ModmailConfigs.findByPk = previousFindByPk;
+		ModmailConfigs.findOne = previousFindOne;
+	}
+}
+
+async function validatePatchNotePartialDelivery() {
+	const dbObjects = requireFresh(`database`, `dbObjects.js`);
+	const announcements = requireFresh(`utils`, `announcements.js`);
+	const patchNotesPath = resolveProject(`docs`, `patch-notes.md`);
+	const document = `# v9.9.9 - Smoke release\n\n${`First detail. `.repeat(180)}\n\n${`Second detail. `.repeat(180)}\n`;
+	const expectedChunks = announcements.formatPatchNotesMessages(announcements.parseLatestPatchNotes(document));
+	assert(expectedChunks.length > 1, `The partial-delivery fixture needs multiple messages.`);
+
+	const previousReadFileSync = fs.readFileSync;
+	const previousFindOne = dbObjects.Servers.findOne;
+	const previousUpdate = dbObjects.Servers.update;
+	const previousFindByPk = dbObjects.AnnouncementDeliveryProgress.findByPk;
+	const previousUpsert = dbObjects.AnnouncementDeliveryProgress.upsert;
+	const previousDestroy = dbObjects.AnnouncementDeliveryProgress.destroy;
+	const previousTransaction = dbObjects.sequelize.transaction;
+	const settings = { guildId: `guild`, hachiAnnouncementChannelId: `updates`, hachiAnnouncementLastId: null };
+	let checkpoint = null;
+	let sendAttempts = 0;
+	let secondSendIsAccepted = false;
+	let recoveredMessageHasNonce = true;
+	const deliveredPayloads = [];
+	const fetchedMessages = new Map();
+	const channel = {
+		id: `updates`,
+		client: { user: { id: `bot` } },
+		isTextBased: () => true,
+		permissionsFor: () => ({ has: () => true }),
+		messages: { fetch: async () => fetchedMessages },
+		send: async payload => {
+			sendAttempts += 1;
+			if (sendAttempts === 2) {
+				if (secondSendIsAccepted) {
+					deliveredPayloads.push(payload);
+					fetchedMessages.set(`message-2`, {
+						id: `message-2`,
+						nonce: recoveredMessageHasNonce ? payload.nonce : null,
+						content: payload.content,
+						createdTimestamp: Date.now(),
+						author: { id: `bot` },
+					});
+				}
+				throw new Error(`simulated Discord send failure`);
+			}
+			deliveredPayloads.push(payload);
+			return { id: `message-${deliveredPayloads.length}` };
+		},
+	};
+	const guild = {
+		id: `guild`,
+		name: `Smoke Guild`,
+		members: { me: { id: `bot` } },
+		channels: { fetch: async () => channel },
+	};
+	const client = { guilds: { cache: new Map([[`guild`, guild]]) } };
+
+	try {
+		Reflect.set(fs, `readFileSync`, (filePath, ...args) => {
+			if (typeof filePath === `string` && path.resolve(filePath) === patchNotesPath) {
+				return document;
+			}
+			return previousReadFileSync(filePath, ...args);
+		});
+		dbObjects.Servers.findOne = async () => settings;
+		dbObjects.Servers.update = async values => {
+			Object.assign(settings, values);
+			return [1];
+		};
+		dbObjects.AnnouncementDeliveryProgress.findByPk = async () => checkpoint && { progressJson: checkpoint };
+		dbObjects.AnnouncementDeliveryProgress.upsert = async values => {
+			checkpoint = values.progressJson;
+		};
+		dbObjects.AnnouncementDeliveryProgress.destroy = async () => {
+			checkpoint = null;
+		};
+		dbObjects.sequelize.transaction = async callback => callback({});
+
+		const failedAttempt = await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		assert(!failedAttempt.ok && failedAttempt.sent === 1 && checkpoint &&
+		JSON.parse(checkpoint).nextChunkIndex === 1 && settings.hachiAnnouncementLastId === null,
+		`Partial patch-note delivery did not retain its first confirmed message.`);
+
+		const retry = await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		assert(retry.ok && retry.sent === expectedChunks.length - 1 &&
+			deliveredPayloads.length === expectedChunks.length &&
+			deliveredPayloads.map(payload => payload.content).join(`\n`) === expectedChunks.join(`\n`) &&
+		settings.hachiAnnouncementLastId === `v9.9.9` && checkpoint === null,
+		`Patch-note retry resent a confirmed chunk or failed to complete the release.`);
+
+		// Only a message authored by Hachi can prove that an uncertain send landed.
+		Reflect.set(settings, `hachiAnnouncementLastId`, null);
+		sendAttempts = 0;
+		deliveredPayloads.splice(0);
+		fetchedMessages.clear();
+		await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		const pendingRun = JSON.parse(checkpoint);
+		const spoofedNonce = require(`node:crypto`).createHash(`sha256`)
+			.update(`${pendingRun.runId}:1`).digest(`base64url`).slice(0, 25);
+		fetchedMessages.set(`other-user-message`, {
+			id: `other-user-message`, nonce: spoofedNonce, author: { id: `other-user` },
+			content: pendingRun.messages[1], createdTimestamp: Date.now(),
+		});
+		const ignoredSpoof = await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		assert(ignoredSpoof.ok && ignoredSpoof.sent === expectedChunks.length - 1 && checkpoint === null,
+			`A different author's nonce was mistaken for Hachi's patch-note delivery.`);
+
+		// Discord can accept a send before the API call reports failure. A matching
+		// nonce in channel history proves that chunk should be checkpointed, not resent.
+		Reflect.set(settings, `hachiAnnouncementLastId`, null);
+		sendAttempts = 0;
+		deliveredPayloads.splice(0);
+		fetchedMessages.clear();
+		secondSendIsAccepted = true;
+		await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		const recoveredRetry = await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		assert(recoveredRetry.ok && recoveredRetry.sent === expectedChunks.length - 2 &&
+			deliveredPayloads.length === expectedChunks.length && checkpoint === null,
+		`A previously accepted patch-note chunk was sent again despite a matching nonce in history.`);
+
+		// If Discord omits that nonce, matching content alone cannot prove which
+		// send produced it; keep the checkpoint for manual review.
+		Reflect.set(settings, `hachiAnnouncementLastId`, null);
+		sendAttempts = 0;
+		deliveredPayloads.splice(0);
+		fetchedMessages.clear();
+		recoveredMessageHasNonce = false;
+		await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		const uncertainRetry = await announcements.sendLatestPatchNotesToGuild(client, `guild`);
+		assert(!uncertainRetry.ok && uncertainRetry.message.includes(`manual review`) &&
+			deliveredPayloads.length === 2 && checkpoint && settings.hachiAnnouncementLastId === null,
+		`A nonce-free matching history message allowed an uncertain resend.`);
+	} finally {
+		Reflect.set(fs, `readFileSync`, previousReadFileSync);
+		dbObjects.Servers.findOne = previousFindOne;
+		dbObjects.Servers.update = previousUpdate;
+		dbObjects.AnnouncementDeliveryProgress.findByPk = previousFindByPk;
+		dbObjects.AnnouncementDeliveryProgress.upsert = previousUpsert;
+		dbObjects.AnnouncementDeliveryProgress.destroy = previousDestroy;
+		dbObjects.sequelize.transaction = previousTransaction;
+	}
+}
+
+async function validatePatchNoteBroadcastSnapshot() {
+	const dbObjects = requireFresh(`database`, `dbObjects.js`);
+	const announcements = requireFresh(`utils`, `announcements.js`);
+	const patchNotesPath = resolveProject(`docs`, `patch-notes.md`);
+	const previousReadFileSync = fs.readFileSync;
+	const previousFindAll = dbObjects.Servers.findAll;
+	const previousFindOne = dbObjects.Servers.findOne;
+	const previousFindByPk = dbObjects.AnnouncementDeliveryProgress.findByPk;
+	let documentVersion = `9.9.9`;
+	let documentReads = 0;
+	let switchAfterFirstGuild = true;
+	const client = {
+		guilds: {
+			cache: new Map(),
+			fetch: async () => null,
+		},
+	};
+
+	try {
+		Reflect.set(fs, `readFileSync`, (filePath, ...args) => {
+			if (typeof filePath === `string` && path.resolve(filePath) === patchNotesPath) {
+				documentReads += 1;
+				return `# v${documentVersion} - Smoke release\n\nBroadcast detail.\n`;
+			}
+			return previousReadFileSync(filePath, ...args);
+		});
+		dbObjects.Servers.findAll = async () => [
+			{ guildId: `guild-one` },
+			{ guildId: `guild-two` },
+		];
+		dbObjects.Servers.findOne = async () => {
+			if (switchAfterFirstGuild) {
+				documentVersion = `9.9.10`;
+				switchAfterFirstGuild = false;
+			}
+			return { hachiAnnouncementChannelId: `updates`, hachiAnnouncementLastId: `v9.9.9` };
+		};
+		dbObjects.AnnouncementDeliveryProgress.findByPk = async () => null;
+
+		const firstBroadcast = await announcements.broadcastLatestPatchNotes(client);
+		assert(documentReads === 1 && firstBroadcast.length === 2 &&
+			firstBroadcast.every(result => result.patchNoteId === `v9.9.9`),
+		`A patch-note broadcast used different release documents for its guilds.`);
+
+		const secondBroadcast = await announcements.broadcastLatestPatchNotes(client);
+		assert(documentReads === 2 && secondBroadcast.length === 2 &&
+			secondBroadcast.every(result => result.patchNoteId === `v9.9.10`),
+		`The next patch-note broadcast did not load the updated release document.`);
+	} finally {
+		Reflect.set(fs, `readFileSync`, previousReadFileSync);
+		dbObjects.Servers.findAll = previousFindAll;
+		dbObjects.Servers.findOne = previousFindOne;
+		dbObjects.AnnouncementDeliveryProgress.findByPk = previousFindByPk;
+	}
+}
+
+async function validateLogArchiveRetention() {
+	const { cleanupOldLogs } = requireFresh(`utils`, `writeLog.js`);
+	const logsPath = resolveProject(`logs`);
+	const oldDate = new Date(Date.now() - 35 * 86400000).toISOString().slice(0, 10);
+	const recentDate = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+	const archiveNames = [`${oldDate}.tar.gz`, `${recentDate}.tar.gz`, `2026-02-30.tar.gz`];
+	const previousExistsSync = fs.existsSync;
+	const previousReaddirSync = fs.readdirSync;
+	const previousRmSync = fs.rmSync;
+	const removedArchives = [];
+
+	try {
+		// Redirect only the logger's archive listing. A smoke test must not
+		// alter an installation's actual logs or depend on their age.
+		Reflect.set(fs, `existsSync`, filePath => filePath === logsPath || previousExistsSync(filePath));
+		Reflect.set(fs, `readdirSync`, (directory, options) => directory === logsPath ?
+			archiveNames.map(name => ({ name, isDirectory: () => false, isFile: () => true })) :
+			previousReaddirSync(directory, options));
+		Reflect.set(fs, `rmSync`, (target, options) => {
+			if (path.dirname(target) === logsPath) {
+				removedArchives.push(path.basename(target));
+				return;
+			}
+			previousRmSync(target, options);
+		});
+		await cleanupOldLogs();
+		assert(removedArchives.join(`,`) === `${oldDate}.tar.gz`,
+			`Archive retention did not remove only the old, valid-date archive.`);
+	} finally {
+		Reflect.set(fs, `existsSync`, previousExistsSync);
+		Reflect.set(fs, `readdirSync`, previousReaddirSync);
+		Reflect.set(fs, `rmSync`, previousRmSync);
+	}
+}
+
 async function main() {
 	let dbObjects = null;
 
@@ -3045,19 +3765,27 @@ async function main() {
 	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`Modmail panels, numbering, and role access expose valid contracts`, validateModmailContracts);
+	await test(`failed Modmail channel deletion remains retryable`, validateModmailCleanupRetry);
+	await test(`Modmail entry-channel cache preserves deletion safety`, validateModmailEntryChannelCache);
+	await test(`partial patch-note delivery resumes without duplicating messages`, validatePatchNotePartialDelivery);
+	await test(`patch-note broadcasts use one fresh release snapshot`, validatePatchNoteBroadcastSnapshot);
 	await test(`events load with valid handlers`, validateEventFiles);
 	await test(`help catalog builds from loaded commands`, assertHelpCatalogBuilds);
 	await test(`Hachi command surfaces expose valid contracts`, validateHachiCommandSurfaces);
 	await test(`database models match audited schema columns`, () => {
 		dbObjects = validateDatabaseModels();
 	});
+	await test(`new streamer IDs reuse only safe gaps`, validateReusableChannelIds);
+	await test(`Modmail index rejects new duplicates but preserves legacy tickets`, validateOneOpenModmailTicketIndex);
 	await test(`SQLCipher adapter normalizes Sequelize bind values`, validateSqlcipherAdapterBindNormalization);
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
-	await test(`local database audit runs when safe and available`, auditLocalDatabaseIfPresent);
+	await test(`database migration and audit use an isolated schema`, auditIsolatedDatabase);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
-	await test(`configCheck validates local config when safe and available`, validateConfigCheckIfConfigured);
+	await test(`Twitch and Kick app tokens use form-encoded request bodies`, validateProviderAppTokenRequests);
+	await test(`configCheck validates isolated config and rejects bad cron expressions`, validateConfigCheckInIsolatedFixture);
+	await test(`log cleanup removes only old valid-date archives`, validateLogArchiveRetention);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
 	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
@@ -3069,6 +3797,9 @@ async function main() {
 	await test(`concurrent Twitch identity capture persists every channel`, validateConcurrentStreamIdentityWrites);
 	await test(`/stream list shows independent Twitch and Kick names on one row`, validateStreamListProviderNames);
 	await test(`Kick and Twitch resolve renamed accounts by stable provider ID`, validateProviderIdentityLookups);
+	await test(`Kick channel slugs batch without cross-matching or retry storms`, validateKickSlugBatching);
+	await test(`Kick user profiles batch by exact ID and isolate bad requests`, validateKickUserBatching);
+	await test(`Kick shares live user profiles across servers`, validateKickSharedProfilesAcrossGuilds);
 	await test(`git hygiene checks pass`, validateGitHygiene);
 
 	if (dbObjects?.sequelize) {

@@ -17,8 +17,10 @@ const {
 	StringSelectMenuBuilder,
 	StringSelectMenuOptionBuilder,
 } = require(`discord.js`);
+const { Transaction } = require(`sequelize`);
 
-const { Servers, Channels } = require(`../../../database/dbObjects.js`);
+const { sequelize, Servers, Channels } = require(`../../../database/dbObjects.js`);
+const { findReusableChannelId } = require(`../../../database/channelIds.js`);
 const { getIdentityMap } = require(`../../../modules/streamNameMonitor.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
 
@@ -79,6 +81,12 @@ async function getPendingStreamSetup(interaction, setupId) {
 			content: `This stream setup request is no longer available. Run \`/stream setup\` again.`,
 			components: [],
 		});
+		return null;
+	}
+	// Discord permissions may change while the setup panel is open.
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingStreamSetups.delete(setupId);
+		await interaction.update({ content: `You need Manage Server to set up streams.`, components: [], embeds: [] });
 		return null;
 	}
 
@@ -451,6 +459,11 @@ async function getPendingAdd(interaction, addId) {
 		});
 		return;
 	}
+	if (!interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) {
+		pendingAdds.delete(addId);
+		await interaction.update({ content: `You need Manage Server to manage streams.`, components: [], embeds: [] });
+		return;
+	}
 
 	return pendingAdd;
 }
@@ -479,13 +492,29 @@ async function showComplete(interaction, pendingAdd) {
 
 async function savePendingAdd(interaction, addId, pendingAdd) {
 	await Servers.upsert({ guildId: pendingAdd.guildId });
-	await Channels.upsert({
-		channelName: pendingAdd.channelName,
-		discordUrl: pendingAdd.discordUrl,
-		guildId: pendingAdd.guildId,
-		isSelf: pendingAdd.isSelf,
-		twitchNotif: pendingAdd.twitchNotif,
-		kickNotif: pendingAdd.kickNotif,
+	await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const values = {
+			channelName: pendingAdd.channelName,
+			discordUrl: pendingAdd.discordUrl,
+			guildId: pendingAdd.guildId,
+			isSelf: pendingAdd.isSelf,
+			twitchNotif: pendingAdd.twitchNotif,
+			kickNotif: pendingAdd.kickNotif,
+		};
+		const existingChannel = await Channels.findOne({
+			where: { channelName: pendingAdd.channelName, guildId: pendingAdd.guildId },
+			transaction,
+		});
+
+		if (existingChannel) {
+			await existingChannel.update(values, { transaction });
+			return;
+		}
+
+		// An explicit free ID fills a gap while leaving every existing channel ID
+		// and its dependent provider records unchanged.
+		const availableChannelId = await findReusableChannelId(sequelize, transaction);
+		await Channels.create({ id: availableChannelId, ...values }, { transaction });
 	});
 
 	pendingAdds.delete(addId);
@@ -507,6 +536,8 @@ async function startAdd(interaction) {
 	const pendingAdd = existingChannel ?
 		{
 			...existingChannel,
+			// Leaving the option unset keeps the saved link; supplying one updates it.
+			discordUrl: interaction.options.getString(`discord`) ?? existingChannel.discordUrl,
 			userId: interaction.user.id,
 			guildId: interaction.guild.id,
 			needsSelections: false,
@@ -707,13 +738,13 @@ module.exports = {
 	},
 
 	async handleComponent(interaction) {
-		const [, addId, action, field, subfield] = interaction.customId.split(`:`);
+		const [, requestId, action, field, subfield] = interaction.customId.split(`:`);
 
 		try {
 			if (action === `setup`) {
-				await handleStreamSetupComponent(interaction, addId, field, subfield);
+				await handleStreamSetupComponent(interaction, requestId, field, subfield);
 			} else {
-				await handleAddComponent(interaction, addId, action, field);
+				await handleAddComponent(interaction, requestId, action, field);
 			}
 		} catch (err) {
 			logError(`Failed to add stream settings:`, err);

@@ -1,7 +1,7 @@
 // /timestamp command.
 //
-// Converts date/time input and timezones into Discord timestamp markup, with a
-// confirmation component so users can preview before posting publicly.
+// Converts date/time input and timezones into Discord timestamp markup. When
+// Hachi infers a future year, the confirmation and its result stay private.
 const {
 	ActionRowBuilder,
 	ApplicationIntegrationType,
@@ -276,6 +276,7 @@ module.exports = {
 			});
 
 			await interaction.reply({
+				allowedMentions: { parse: [] },
 				content: buildConfirmContent(title, parsed.dateTime, timezone),
 				components: buildConfirmComponents(interaction.id),
 				flags: MessageFlags.Ephemeral,
@@ -284,6 +285,7 @@ module.exports = {
 		}
 
 		await interaction.reply({
+			allowedMentions: { parse: [] },
 			content: buildTimestampResponse(title, parsed.dateTime),
 		});
 	},
@@ -313,6 +315,7 @@ module.exports = {
 		}
 
 		await interaction.update({
+			allowedMentions: { parse: [] },
 			content: buildTimestampResponse(pendingConfirmation.title, pendingConfirmation.dateTime),
 			components: [],
 		});

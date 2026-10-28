@@ -1,6 +1,7 @@
 // Startup configuration validator for Hachi and HachiGen.
 const path = require(`node:path`);
 const fs = require(`node:fs`);
+const { CronTime } = require(`cron`);
 require(`dotenv/config`);
 const { info, error } = require(`../utils/writeLog.js`);
 const {
@@ -28,6 +29,7 @@ const {
 // validating installs. Keep failures explicit and early so Hachi never starts
 // with plaintext secrets, a plaintext database, or unreadable encryption keys.
 const configPath = path.join(process.cwd(), `config`, `config.json`);
+const runtimePackageRoot = path.resolve(__dirname, `..`);
 const CONFIG_EXIT_CODE = 78;
 
 info(`Validating config files...`);
@@ -72,7 +74,7 @@ if (!secretProtectionEnabled) {
 if (secretFileStatus.plaintextFields.length) {
 	fatal(
 		`.env contains plaintext fields that must be encrypted:\n` +
-		secretFileStatus.plaintextFields.map(k => `  - ${k}`).join(`\n`) +
+		secretFileStatus.plaintextFields.map(field => `  - ${field}`).join(`\n`) +
 		`\nSave configuration with HachiGen to convert them before starting Hachi.`,
 	);
 }
@@ -89,7 +91,7 @@ const missingEnv = REQUIRED_ENV.filter(key => isEmpty(process.env[key]));
 if (missingEnv.length) {
 	fatal(
 		`.env is missing required fields:\n` +
-		missingEnv.map(k => `  - ${k}`).join(`\n`),
+		missingEnv.map(field => `  - ${field}`).join(`\n`),
 	);
 }
 
@@ -140,7 +142,7 @@ if (!databaseProtectionEnabled || !String(databaseKeyInfo?.key || ``).trim()) {
 	fatal(`Encrypted database runtime is enabled, but no database key is available.`);
 }
 
-const driver = cipherDriverStatus(process.cwd());
+const driver = cipherDriverStatus(runtimePackageRoot);
 
 if (!driver.installed) {
 	fatal(`Encrypted database runtime is enabled, but ${driver.packageName} is not installed.`);
@@ -168,7 +170,7 @@ if (databaseStatus.encryptedLikely) {
 			dbPath: databaseStatus.path,
 			key: databaseKeyInfo.key,
 			readonly: true,
-			root: process.cwd(),
+			root: runtimePackageRoot,
 		});
 		encryptedDb.prepare(`PRAGMA schema_version`).get();
 	} catch (err) {
@@ -203,7 +205,7 @@ try {
 // Config validation
 // Cron expressions are required explicitly instead of silently defaulting, because
 // changing a scheduler should be an intentional config edit.
-const REQUIRED_WITH_DEFAULTS = [
+const REQUIRED_CRON_FIELDS = [
 	`twitchCron`,
 	`kickCron`,
 	`birthdayCron`,
@@ -223,22 +225,35 @@ if (!guildIds.length) {
 	missingStrict.push(`guildIds`);
 }
 
-const missingDefaults = REQUIRED_WITH_DEFAULTS.filter(key => isEmpty(config[key]));
+const missingCronFields = REQUIRED_CRON_FIELDS.filter(field => isEmpty(config[field]));
 
-if (missingStrict.length || missingDefaults.length) {
+if (missingStrict.length || missingCronFields.length) {
 	let message = `config.json is invalid`;
 
 	if (missingStrict.length) {
 		message += `\n\nMissing required fields:\n`;
-		message += missingStrict.map(k => `  - ${k}`).join(`\n`);
+		message += missingStrict.map(field => `  - ${field}`).join(`\n`);
 	}
 
-	if (missingDefaults.length) {
+	if (missingCronFields.length) {
 		message += `\n\nMissing required cron fields:\n`;
-		message += missingDefaults.map(k => `  - ${k}`).join(`\n`);
+		message += missingCronFields.map(field => `  - ${field}`).join(`\n`);
 	}
 
 	fatal(message);
+}
+
+// Validate the same cron parser used by the runtime before any jobs are built.
+// A bad expression should identify its config field instead of failing during job construction.
+for (const field of REQUIRED_CRON_FIELDS) {
+	if (typeof config[field] !== `string`) {
+		fatal(`${field} must be a cron expression string.`);
+	}
+	try {
+		new CronTime(config[field]);
+	} catch (err) {
+		fatal(`${field} is not a valid cron expression: ${err.message}`);
+	}
 }
 
 // Normalize the accepted config shapes for any runtime imports that happen after

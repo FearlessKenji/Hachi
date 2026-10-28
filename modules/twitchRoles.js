@@ -11,6 +11,7 @@ const {
 	TwitchRoleLinks,
 } = require(`../database/dbObjects.js`);
 const { roleIsAssignable } = require(`../utils/reactionRoles.js`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 
 const TWITCH_AUTH_BASE = `https://id.twitch.tv/oauth2`;
@@ -90,7 +91,7 @@ async function readJson(res) {
 }
 
 async function postForm(url, params) {
-	const res = await fetch(url, {
+	const res = await fetchProviderApi(url, {
 		method: `POST`,
 		headers: {
 			'Content-Type': `application/x-www-form-urlencoded`,
@@ -208,7 +209,7 @@ async function waitForDeviceAuthorization(device, scopes, options = {}) {
 }
 
 async function validateToken(accessToken) {
-	const res = await fetch(`${TWITCH_AUTH_BASE}/validate`, {
+	const res = await fetchProviderApi(`${TWITCH_AUTH_BASE}/validate`, {
 		headers: {
 			Authorization: `OAuth ${accessToken}`,
 		},
@@ -347,7 +348,7 @@ async function helixRequest(config, endpoint, options = {}) {
 
 	for (let attempt = 0; attempt < 2; attempt += 1) {
 		const accessToken = await ensureBroadcasterAccess(config, { force: attempt > 0 });
-		const res = await fetch(url, {
+		const res = await fetchProviderApi(url, {
 			method: options.method || `GET`,
 			headers: {
 				'Authorization': `Bearer ${accessToken}`,

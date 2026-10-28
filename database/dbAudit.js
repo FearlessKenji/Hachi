@@ -46,6 +46,14 @@ const EXPECTED_SCHEMA = [
 		indexes: [],
 	},
 	{
+		name: `announcementDeliveryProgress`,
+		columns: [
+			column(`guildId`, `VARCHAR(255)`, { primaryKey: true, references: `servers (guildId) ON DELETE CASCADE ON UPDATE CASCADE` }),
+			column(`progressJson`, `TEXT`),
+		],
+		indexes: [],
+	},
+	{
 		name: `channels`,
 		columns: [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
@@ -464,6 +472,10 @@ const EXPECTED_SCHEMA = [
 			index(`modmailTicketsGuildOpenerStatus`, [`guildId`, `openerId`, `status`]),
 			index(`modmailTicketsChannel`, [`channelId`], { unique: true }),
 			index(`modmailTicketsStatusDeleteAt`, [`status`, `deleteAt`]),
+			index(`modmailTicketsOneOpenPerUser`, [`guildId`, `openerId`], {
+				unique: true,
+				where: `"status" = 'open'`,
+			}),
 		],
 	},
 ];
@@ -614,7 +626,8 @@ function createPreservedColumnSql(columnInfo) {
 function createIndexSql(tableName, indexSpec) {
 	const unique = indexSpec.unique ? `UNIQUE ` : ``;
 	const columns = indexSpec.columns.map(quoteIdentifier).join(`, `);
-	return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdentifier(indexSpec.name)} ON ${quoteIdentifier(tableName)} (${columns})`;
+	const predicate = indexSpec.where ? ` WHERE ${indexSpec.where}` : ``;
+	return `CREATE ${unique}INDEX IF NOT EXISTS ${quoteIdentifier(indexSpec.name)} ON ${quoteIdentifier(tableName)} (${columns})${predicate}`;
 }
 
 function fallbackExpression(spec) {
@@ -684,10 +697,15 @@ async function getIndexes(db, tableName) {
 
 	for (const currentIndex of indexes) {
 		const columns = await all(db, `PRAGMA index_info(${quoteIdentifier(currentIndex.name)})`);
+		const definition = await get(db,
+			`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?`,
+			[currentIndex.name]);
+		const predicate = definition?.sql?.match(/\bWHERE\s+([\s\S]+)$/iu)?.[1] || null;
 
 		details.push({
 			columns: columns.map(columnInfo => columnInfo.name),
 			name: currentIndex.name,
+			where: predicate,
 			unique: Boolean(currentIndex.unique),
 		});
 	}
@@ -695,10 +713,11 @@ async function getIndexes(db, tableName) {
 	return details;
 }
 
-async function uniqueConflictCount(db, tableName, columns) {
-	const where = columns
+async function uniqueConflictCount(db, tableName, columns, predicate = null) {
+	const nonNullColumns = columns
 		.map(columnName => `${quoteIdentifier(columnName)} IS NOT NULL`)
 		.join(` AND `);
+	const where = predicate ? `${nonNullColumns} AND (${predicate})` : nonNullColumns;
 	const groupedColumns = columns.map(quoteIdentifier).join(`, `);
 	const row = await get(db, `
 		SELECT COUNT(*) AS count
@@ -714,11 +733,23 @@ async function uniqueConflictCount(db, tableName, columns) {
 	return Number(row?.count || 0);
 }
 
+function normalizeIndexPredicate(predicate) {
+	// SQLite preserves the predicate's spelling in sqlite_master. Ignore quote
+	// and whitespace differences while keeping the actual condition significant.
+	return String(predicate || ``)
+		.replace(/[\s"`()]/gu, ``)
+		.replaceAll(`[`, ``)
+		.replaceAll(`]`, ``)
+		.replace(/;$/u, ``)
+		.toLowerCase();
+}
+
 function hasMatchingIndex(indexes, expectedIndex) {
 	return indexes.some(currentIndex =>
 		currentIndex.unique === expectedIndex.unique &&
 		currentIndex.columns.length === expectedIndex.columns.length &&
-		currentIndex.columns.every((columnName, position) => columnName === expectedIndex.columns[position]),
+		currentIndex.columns.every((columnName, position) => columnName === expectedIndex.columns[position]) &&
+		normalizeIndexPredicate(currentIndex.where) === normalizeIndexPredicate(expectedIndex.where),
 	);
 }
 
@@ -852,7 +883,7 @@ async function auditTable(db, tableSpec, report) {
 		}
 
 		const conflicts = expectedIndex.unique ?
-			await uniqueConflictCount(db, tableSpec.name, expectedIndex.columns) :
+			await uniqueConflictCount(db, tableSpec.name, expectedIndex.columns, expectedIndex.where) :
 			0;
 
 		addIssue(conflicts ? report.forceIssues : report.safeIssues, {
@@ -875,6 +906,38 @@ async function auditTable(db, tableSpec, report) {
 				type: `foreign-key-mismatch`,
 			});
 		}
+	}
+}
+
+async function auditOpenModmailTickets(db, report) {
+	if (!await tableExists(db, `modmailTickets`)) {
+		return;
+	}
+
+	const columns = await tableInfo(db, `modmailTickets`);
+	if (![`guildId`, `openerId`, `status`].every(name => columns.some(columnInfo => columnInfo.name === name))) {
+		return;
+	}
+
+	// Creating the runtime partial unique index would fail on legacy duplicate
+	// open tickets. Surface that conflict for review without discarding tickets.
+	const duplicateGroups = await get(db, `
+		SELECT COUNT(*) AS count FROM (
+			SELECT guildId, openerId
+			FROM modmailTickets
+			WHERE status = 'open'
+			GROUP BY guildId, openerId
+			HAVING COUNT(*) > 1
+		)
+	`);
+	if (Number(duplicateGroups?.count || 0) > 0) {
+		addIssue(report.errorIssues, {
+			count: Number(duplicateGroups.count),
+			id: `modmailTickets:duplicate-open-tickets`,
+			message: `Multiple open Modmail tickets exist for the same user in a server; resolve them before enabling the uniqueness constraint.`,
+			table: `modmailTickets`,
+			type: `duplicate-open-tickets`,
+		});
 	}
 }
 
@@ -973,6 +1036,7 @@ async function auditDatabase({ dbPath = DB_PATH } = {}) {
 		for (const tableSpec of EXPECTED_SCHEMA) {
 			await auditTable(db, tableSpec, report);
 		}
+		await auditOpenModmailTickets(db, report);
 
 		const tables = await listTables(db);
 

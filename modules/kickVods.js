@@ -4,6 +4,7 @@
 // supplying a replay link. The newest listed video may belong to another stream.
 const { error, warn } = require(`../utils/writeLog.js`);
 const { formatStreamTime } = require(`./streamUtils.js`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 const missingChannelWarnings = new Set();
 const securityPolicyWarnings = new Set();
 
@@ -41,7 +42,7 @@ function matchesStartLabel(livestream, startLabel) {
 
 async function getLatest(channelName, startLabel = null, providerStartTime = null) {
 	try {
-		const res = await fetch(
+		const res = await fetchProviderApi(
 			`https://kick.com/api/v1/channels/${channelName}`,
 			{
 				headers: {

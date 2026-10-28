@@ -248,6 +248,9 @@ function compareGuildIds(left, right) {
 }
 
 function selectBirthdayCardDeliveryGuild(card, candidates) {
+	// Delivery goes to the earliest scheduled participating server. On a tie,
+	// prefer the card owner, then a stable guild ID order so cron iteration order
+	// cannot decide which community notifies the member.
 	const ordered = [...candidates].sort((left, right) => {
 		const timeDifference = left.scheduledAt.toMillis() - right.scheduledAt.toMillis();
 
@@ -324,6 +327,9 @@ async function reverifyBirthdayCardDelivery(card, {
 	requirePendingAnnouncement = true,
 	transferOwnership = true,
 } = {}) {
+	// Ownership controls who may replace or remove the shared card; delivery
+	// controls which server sends its one member notification. Recalculate those
+	// independently as memberships and announcement eligibility change.
 	const ownershipCandidates = await getBirthdayCardDeliveryCandidates(card);
 	const remainingCandidates = ownershipCandidates.filter(candidate => !excludeGuildIds.includes(candidate.guildId));
 	const deliveryCandidates = requirePendingAnnouncement ?
@@ -405,7 +411,8 @@ function groupBirthdaysByDay(birthdays) {
 		groups.get(key).userIds.push(birthday.userId);
 	}
 
-	return [...groups.values()].sort((a, b) => a.month - b.month || a.day - b.day);
+	return [...groups.values()].sort((earlierBirthday, laterBirthday) =>
+		earlierBirthday.month - laterBirthday.month || earlierBirthday.day - laterBirthday.day);
 }
 
 async function fetchBirthdaysForDate(guildId, target) {
@@ -781,6 +788,9 @@ async function sendPendingUpcomingBirthdayReminders(client, config, now, maxDays
 }
 
 async function failOverBirthdayCardNotification(client, card, failedGuildId, now) {
+	// Record each candidate before trying it. A future-hour candidate will send
+	// on its own schedule; an eligible current-hour candidate gets a separate
+	// card message because its day announcement may already have been posted.
 	const deliveryUrl = card.deliveryUrl || deriveBirthdayDeliveryUrl(card.url);
 
 	if (!deliveryUrl) {
@@ -868,6 +878,10 @@ async function sendLateBirthdayCard(client, card, guildId) {
 }
 
 async function sendPendingBirthdayAnnouncements(client, config, now, { immediate = false } = {}) {
+	// Discord delivery is the commit point: only after a successful send do we
+	// mark this guild's occurrence and the selected card notification complete.
+	// A failure leaves the occurrence pending and moves the card notification to
+	// another eligible server without marking this guild's post as sent.
 	const todayKey = now.toISODate();
 	const birthdays = (await fetchBirthdaysForDate(config.guildId, {
 		day: now.day,

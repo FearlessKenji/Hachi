@@ -4,10 +4,11 @@
 // This helper resolves a Twitch login into channel metadata with consistent
 // logging around API failures.
 const { warn, error } = require(`../utils/writeLog.js`);
+const { fetchProviderApi } = require(`./providerFetch.js`);
 
 async function getChannel(channelName, clientID, authKey) {
 	try {
-		const res = await fetch(
+		const res = await fetchProviderApi(
 			`https://api.twitch.tv/helix/search/channels?query=${channelName}`,
 			{
 				headers: {

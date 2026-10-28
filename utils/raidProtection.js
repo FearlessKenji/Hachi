@@ -36,6 +36,7 @@ const DEFAULT_TIMEOUT_MINUTES = 60;
 const CONFIG_CACHE_MS = 10 * 1000;
 const TRIGGER_COOLDOWN_MS = 30 * 1000;
 const MAX_BUFFER_SECONDS = 30;
+const RAID_STATE_PRUNE_INTERVAL_MS = 60 * 1000;
 const MAX_ARCHIVE_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_FIELD_VALUE_LENGTH = 1024;
 const MAX_EVIDENCE_MESSAGES = 25;
@@ -47,6 +48,7 @@ const messageBuffers = new Map();
 const joinBuffers = new Map();
 const triggerCooldowns = new Map();
 const configCache = new Map();
+let lastRaidStatePruneAt = 0;
 const RAID_CONFIG_FIELDS = [
 	`enabled`,
 	`quarantineRoleId`,
@@ -297,7 +299,7 @@ function randomInt(min, max) {
 	return Math.floor(Math.random() * (normalizedMax - normalizedMin + 1)) + normalizedMin;
 }
 
-function safeJson(value) {
+function serializeJson(value) {
 	return JSON.stringify(value || null);
 }
 
@@ -416,7 +418,10 @@ function getDisplayName(message, userId, user = null) {
 
 function buildMessageFingerprint(entry) {
 	const content = entry.content?.trim().toLowerCase() || ``;
-	const attachments = entry.attachments.map(attachment => `${attachment.filename}:${attachment.size}`).join(`|`);
+	// Different uploads may share a filename and byte count. Keep their Discord
+	// attachment identities in the evidence key without downloading in this path.
+	const attachments = entry.attachments.map(attachment =>
+		`${attachment.id || attachment.url || ``}:${attachment.filename}:${attachment.size}`).join(`|`);
 	const embeds = entry.embeds.map(embed => `${embed.title || ``}:${embed.url || embed.imageUrl || embed.videoUrl || ``}`).join(`|`);
 
 	return [content, attachments, embeds].filter(Boolean).join(`\n`);
@@ -467,6 +472,29 @@ function buildMessageEvidence(message, metadata = null) {
 function pruneBuffer(entries, windowMs) {
 	const cutoff = Date.now() - windowMs;
 	return entries.filter(entry => entry.createdAt.getTime() >= cutoff);
+}
+
+function pruneRaidState(now = Date.now()) {
+	if (now - lastRaidStatePruneAt < RAID_STATE_PRUNE_INTERVAL_MS) {
+		return;
+	}
+	lastRaidStatePruneAt = now;
+	const oldestBufferedAt = now - MAX_BUFFER_SECONDS * 1000;
+	for (const bufferMap of [messageBuffers, joinBuffers]) {
+		for (const [key, entries] of bufferMap) {
+			const recent = entries.filter(entry => entry.createdAt.getTime() >= oldestBufferedAt);
+			if (recent.length) {
+				bufferMap.set(key, recent);
+			} else {
+				bufferMap.delete(key);
+			}
+		}
+	}
+	for (const [key, triggeredAt] of triggerCooldowns) {
+		if (now - triggeredAt >= TRIGGER_COOLDOWN_MS) {
+			triggerCooldowns.delete(key);
+		}
+	}
 }
 
 function getBufferKey(guildId, userId) {
@@ -992,6 +1020,9 @@ function canApplyFullQuarantineOverwrite(guild, channel) {
 		return true;
 	}
 
+	// Discord's effective channel permission can come from a category, but an
+	// unsynced child may differ. Require authority for every deny bit before
+	// claiming the bot can apply the complete quarantine policy.
 	const permissions = getOverwriteAuthorityPermissions(guild, channel, member);
 
 	return getQuarantineDenyPermissions(channel)
@@ -999,6 +1030,8 @@ function canApplyFullQuarantineOverwrite(guild, channel) {
 }
 
 function getConflictingAllowDetails(channel, quarantineRoleId, ignoredOverwriteIds = new Set()) {
+	// A direct member or other-role allow can defeat the quarantine role's deny.
+	// Report those conflicts instead of presenting the overwrite as sufficient.
 	const details = {
 		hasMemberSpecificAllows: false,
 		permissionLabels: [],
@@ -1318,6 +1351,8 @@ async function auditRaidConfiguration(guild, config = null) {
 }
 
 async function syncQuarantineOverwrites(guild, config = null) {
+	// Apply only where Hachi can set the entire deny policy. A partial overwrite
+	// would make the server appear protected while leaving some actions usable.
 	const raidConfig = config || await getRaidConfig(guild.id);
 
 	if (!raidConfig.quarantineRoleId) {
@@ -1424,8 +1459,8 @@ async function recordIncidentUser(incident, guild, userId, actions = {}, joinedA
 		displayName: member?.displayName || user?.globalName || user?.displayName || user?.username || null,
 		username: user?.tag || user?.username || null,
 		joinedAt,
-		actionTaken: safeJson(actions.taken || []),
-		actionError: safeJson(actions.errors || []),
+		actionTaken: serializeJson(actions.taken || []),
+		actionError: serializeJson(actions.errors || []),
 		releasedAt: null,
 	});
 }
@@ -1476,6 +1511,18 @@ async function deleteIncidentMessage(entry) {
 }
 
 async function archiveAttachment(incident, entry, attachment) {
+	const existingAttachmentRecord = await RaidIncidentFiles.findOne({
+		where: {
+			incidentId: incident.id,
+			messageId: entry.messageId,
+			attachmentId: attachment.id,
+		},
+	});
+	if (existingAttachmentRecord &&
+		(!attachment.url || attachment.size > MAX_ARCHIVE_ATTACHMENT_BYTES ||
+			(existingAttachmentRecord.localPath && fs.existsSync(existingAttachmentRecord.localPath)))) {
+		return existingAttachmentRecord;
+	}
 	if (!attachment.url || attachment.size > MAX_ARCHIVE_ATTACHMENT_BYTES) {
 		return RaidIncidentFiles.create({
 			incidentId: incident.id,
@@ -1500,30 +1547,38 @@ async function archiveAttachment(incident, entry, attachment) {
 
 	const buffer = Buffer.from(await response.arrayBuffer());
 	const hash = crypto.createHash(`sha256`).update(buffer).digest(`hex`);
-	const existing = await RaidIncidentFiles.findOne({
+	const existingFile = await RaidIncidentFiles.findOne({
 		where: {
 			incidentId: incident.id,
 			hash,
 		},
 	});
-
-	if (existing) {
-		await existing.increment(`seenCount`);
-		return existing;
+	let localPath = existingFile?.localPath;
+	if (!localPath || !fs.existsSync(localPath)) {
+		const directory = ensureEvidenceDirectory(incident.guildId, incident.id);
+		const filename = `${hash.slice(0, 12)}-${sanitizeFilename(attachment.filename)}`;
+		localPath = path.join(directory, filename);
+		await fs.promises.writeFile(localPath, buffer);
+		if (existingFile) {
+			await existingFile.update({ localPath });
+		}
+	}
+	if (existingAttachmentRecord) {
+		await existingAttachmentRecord.update({ hash, localPath });
+		return existingAttachmentRecord;
+	}
+	if (existingFile) {
+		await existingFile.increment(`seenCount`);
 	}
 
-	const directory = ensureEvidenceDirectory(incident.guildId, incident.id);
-	const filename = `${hash.slice(0, 12)}-${sanitizeFilename(attachment.filename)}`;
-	const localPath = path.join(directory, filename);
-
-	await fs.promises.writeFile(localPath, buffer);
-
+	// Reuse the bytes on disk, but keep one ledger row per message attachment so
+	// every incident report can locate that message's archived evidence.
 	return RaidIncidentFiles.create({
 		incidentId: incident.id,
 		guildId: incident.guildId,
 		messageId: entry.messageId,
 		attachmentId: attachment.id,
-		filename: attachment.filename || filename,
+		filename: attachment.filename || path.basename(localPath),
 		contentType: attachment.contentType,
 		size: attachment.size || buffer.length,
 		hash,
@@ -1564,9 +1619,9 @@ async function recordIncidentMessage(incident, entry, deletedAt = null) {
 			userId: entry.userId,
 			content: entry.content,
 			contentHash: entry.contentHash,
-			attachmentsJson: safeJson(entry.attachments),
-			embedsJson: safeJson(entry.embeds),
-			linksJson: safeJson(entry.links),
+			attachmentsJson: serializeJson(entry.attachments),
+			embedsJson: serializeJson(entry.embeds),
+			linksJson: serializeJson(entry.links),
 			deletedAt,
 			createdAt: entry.createdAt,
 		},
@@ -1620,7 +1675,7 @@ function buildRaidAlertEmbed(incident, config, summary, { drill = false } = {}) 
 }
 
 async function updateIncidentSummary(incident, summary) {
-	incident.summary = safeJson(summary);
+	incident.summary = serializeJson(summary);
 	await incident.save();
 	return summary;
 }
@@ -1640,7 +1695,7 @@ async function createMessageSpamIncident(guild, config, userId, entries) {
 		status: `open`,
 		startedAt: new Date(),
 		endedAt: null,
-		summary: safeJson(initialSummary),
+		summary: serializeJson(initialSummary),
 	});
 	const actions = await applyConfiguredUserActions(guild, config, userId, `Raid protection incident #${incident.id}`);
 
@@ -1709,7 +1764,7 @@ async function createJoinSpikeIncident(guild, config, entries) {
 		status: `open`,
 		startedAt: new Date(),
 		endedAt: null,
-		summary: safeJson(initialSummary),
+		summary: serializeJson(initialSummary),
 	});
 	let actionFailures = 0;
 
@@ -1747,6 +1802,7 @@ async function observeMessageForRaid(message, metadata = null) {
 	if (!message.guild) {
 		return;
 	}
+	pruneRaidState();
 
 	const config = await getRaidConfig(message.guild.id, { cached: true });
 
@@ -1762,6 +1818,8 @@ async function observeMessageForRaid(message, metadata = null) {
 
 	const key = getBufferKey(evidence.guildId, evidence.userId);
 	const windowMs = Math.min(config.messageSpamSeconds, MAX_BUFFER_SECONDS) * 1000;
+	// The buffer is a rolling per-user window; cooldowns suppress repeated
+	// incidents from the same burst without discarding its first report.
 	const buffered = pruneBuffer(messageBuffers.get(key) || [], windowMs);
 
 	buffered.push(evidence);
@@ -1773,10 +1831,11 @@ async function observeMessageForRaid(message, metadata = null) {
 
 	setCooldown(key);
 	await createMessageSpamIncident(message.guild, config, evidence.userId, buffered);
-	messageBuffers.set(key, []);
+	messageBuffers.delete(key);
 }
 
 async function observeGuildMemberAdd(member) {
+	pruneRaidState();
 	const config = await getRaidConfig(member.guild.id, { cached: true });
 
 	if (!config.enabled) {
@@ -1785,6 +1844,7 @@ async function observeGuildMemberAdd(member) {
 
 	const key = member.guild.id;
 	const windowMs = Math.min(config.joinSpikeSeconds, MAX_BUFFER_SECONDS) * 1000;
+	// Join spikes are guild-wide, unlike message spam's per-user window.
 	const buffered = pruneBuffer(joinBuffers.get(key) || [], windowMs);
 
 	buffered.push({
@@ -1802,7 +1862,7 @@ async function observeGuildMemberAdd(member) {
 
 	setCooldown(cooldownKey);
 	await createJoinSpikeIncident(member.guild, config, buffered);
-	joinBuffers.set(key, []);
+	joinBuffers.delete(key);
 }
 
 async function listRecentIncidents(guildId, limit = 10) {
@@ -1880,7 +1940,7 @@ function getUniqueMessageSummaries(messages) {
 	for (const message of messages) {
 		const attachments = parseJson(message.attachmentsJson, []);
 		const links = parseJson(message.linksJson, []);
-		const fingerprint = message.contentHash || `${message.content || ``}:${attachments.length}:${links.join(`|`)}`;
+		const fingerprint = getMessageEvidenceFingerprint(message);
 
 		if (seen.has(fingerprint)) {
 			continue;
@@ -1929,9 +1989,15 @@ function buildIncidentReportEmbed(details) {
 
 function getMessageEvidenceFingerprint(message) {
 	const attachments = parseJson(message.attachmentsJson, []);
-	const links = parseJson(message.linksJson, []);
+	const embeds = parseJson(message.embedsJson, []);
 
-	return message.contentHash || `${message.content || ``}:${attachments.length}:${links.join(`|`)}`;
+	// Recompute from stored metadata so older rows that used only filename and
+	// size do not collapse two distinct uploads in later evidence reports.
+	return hashText(buildMessageFingerprint({
+		content: message.content,
+		attachments,
+		embeds,
+	})) || message.messageId;
 }
 
 function getIncidentEvidenceGroups(messages) {
@@ -2376,17 +2442,17 @@ function buildDrillMessageRecords(guild, config, drillId, messageCount, uniqueCo
 		const links = index === 0 ? [`https://example.com/raid-drill/${drillId.toLowerCase()}`] : [];
 
 		return {
-			attachmentsJson: safeJson(attachments),
+			attachmentsJson: serializeJson(attachments),
 			channelId,
 			content,
 			contentHash: hashText(content),
 			createdAt: new Date(now - ((messageCount - index) * 1000)),
 			deletedAt: config.actionDelete ? new Date(now) : null,
-			embedsJson: safeJson([]),
+			embedsJson: serializeJson([]),
 			guildId: guild.id,
 			id: index + 1,
 			incidentId: drillId,
-			linksJson: safeJson(links),
+			linksJson: serializeJson(links),
 			messageId: `drill-message-${index + 1}`,
 			userId,
 		};
@@ -2443,14 +2509,14 @@ function buildDrillDetails(guild, config) {
 			id: drillId,
 			startedAt,
 			status: `drill`,
-			summary: safeJson(summary),
+			summary: serializeJson(summary),
 			triggerType,
 		},
 		messages,
 		summary,
 		users: Array.from({ length: userCount }, (_, index) => ({
-			actionError: safeJson([]),
-			actionTaken: safeJson([]),
+			actionError: serializeJson([]),
+			actionTaken: serializeJson([]),
 			displayName: `Drill User ${index + 1}`,
 			guildId: guild.id,
 			id: index + 1,

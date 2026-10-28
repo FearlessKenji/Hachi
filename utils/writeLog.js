@@ -344,6 +344,8 @@ function writePrettyStructuredLog(structuredPrettyPath, entry) {
 }
 
 function writeCrashDump(type, err) {
+	// Crash paths use synchronous writes because an uncaught exception can end
+	// the process before an asynchronous logger flushes its last entry.
 	try {
 		ensureLogs();
 
@@ -372,9 +374,15 @@ function parseLogDateName(name) {
 		return null;
 	}
 
-	const date = new Date(`${name}T00:00:00.000Z`);
+	// Archive names carry a .tar.gz suffix; parse only the matched date so
+	// retention treats a folder and its archive as the same calendar day.
+	const [, year, month, day] = match;
+	const date = new Date(`${year}-${month}-${day}T00:00:00.000Z`);
 
-	if (Number.isNaN(date.getTime())) {
+	if (Number.isNaN(date.getTime()) ||
+		date.getUTCFullYear() !== Number(year) ||
+		date.getUTCMonth() + 1 !== Number(month) ||
+		date.getUTCDate() !== Number(day)) {
 		return null;
 	}
 
@@ -386,6 +394,8 @@ function getAgeDays(date, now) {
 }
 
 async function compressFolderToTarGz(folderPath, outputPath) {
+	// Build beside the destination, then rename only a complete archive into
+	// place. The source folder stays available when compression fails.
 	const tempPath = `${outputPath}.tmp`;
 
 	try {
@@ -416,6 +426,8 @@ async function compressFolderToTarGz(folderPath, outputPath) {
 }
 
 async function cleanupOldLogs() {
+	// Retain recent daily folders, archive older ones, and remove aged archives.
+	// Date parsing is shared so both retention stages use the same UTC day.
 	if (!fs.existsSync(baseLogsFolder)) {
 		return;
 	}
@@ -620,6 +632,8 @@ function debug(message, options = {}) {
 }
 
 function initCrashHandlers() {
+	// Uncaught exceptions exit after a short synchronous dump. Unhandled
+	// rejections are recorded without forcing a process restart.
 	if (crashHandlersInitialized) {
 		return;
 	}
