@@ -26,6 +26,25 @@ async function ensureBirthdayMemberLeaveColumn(database = sequelize) {
 	}
 }
 
+async function ensureBirthdayBoardRevisionColumns(database = sequelize) {
+	const queryInterface = database.getQueryInterface();
+	const tables = await queryInterface.showAllTables();
+	if (!tables.includes(`birthdayConfigs`)) {
+		return;
+	}
+	const columns = await queryInterface.describeTable(`birthdayConfigs`);
+	for (const columnName of [`boardRevision`, `boardPublishedRevision`]) {
+		if (!columns[columnName]) {
+			// Existing boards begin clean; later membership changes advance the revision.
+			await queryInterface.addColumn(`birthdayConfigs`, columnName, {
+				allowNull: false,
+				defaultValue: 0,
+				type: DataTypes.INTEGER,
+			});
+		}
+	}
+}
+
 async function ensureOneOpenModmailTicketIndex(database = sequelize) {
 	// Existing installs may already have duplicate open tickets. Keep the bot
 	// running and report those rows for manual resolution instead of silently
@@ -54,6 +73,7 @@ async function dbInit() {
 	const dbPath = path.resolve(`database/database.sqlite`);
 	const exists = fs.existsSync(dbPath);
 	await ensureBirthdayMemberLeaveColumn();
+	await ensureBirthdayBoardRevisionColumns();
 
 	// sequelize.sync creates missing tables for a brand-new database. Install the
 	// Modmail uniqueness guard after legacy duplicate review, then audit existing
@@ -69,4 +89,4 @@ async function dbInit() {
 	);
 }
 
-module.exports = { dbInit, ensureBirthdayMemberLeaveColumn, ensureOneOpenModmailTicketIndex };
+module.exports = { dbInit, ensureBirthdayMemberLeaveColumn, ensureBirthdayBoardRevisionColumns, ensureOneOpenModmailTicketIndex };

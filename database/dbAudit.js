@@ -54,6 +54,15 @@ const EXPECTED_SCHEMA = [
 		indexes: [],
 	},
 	{
+		name: `authRequestAttempts`,
+		columns: [
+			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
+			column(`provider`, `VARCHAR(255)`),
+			column(`attemptedAt`, `DATETIME`),
+		],
+		indexes: [index(`authRequestAttemptsProviderTime`, [`provider`, `attemptedAt`])],
+	},
+	{
 		name: `channels`,
 		columns: [
 			column(`id`, `INTEGER`, { autoIncrement: true, primaryKey: true }),
@@ -205,8 +214,19 @@ const EXPECTED_SCHEMA = [
 			column(`lastDayPostDate`, `VARCHAR(255)`, { nullable: true }),
 			column(`lastBoardPostDate`, `VARCHAR(255)`, { nullable: true }),
 			column(`boardMessageId`, `VARCHAR(255)`, { nullable: true }),
+			column(`boardRevision`, `INTEGER`, { defaultValue: `0` }),
+			column(`boardPublishedRevision`, `INTEGER`, { defaultValue: `0` }),
 		],
 		indexes: [],
+	},
+	{
+		name: `birthdayBoardRetiredMessages`,
+		columns: [
+			column(`messageId`, `VARCHAR(255)`, { primaryKey: true }),
+			column(`guildId`, `VARCHAR(255)`, { references: `servers (guildId) ON DELETE RESTRICT ON UPDATE CASCADE` }),
+			column(`channelId`, `VARCHAR(255)`),
+		],
+		indexes: [index(`birthdayBoardRetiredMessagesGuildId`, [`guildId`])],
 	},
 	{
 		name: `birthdayCards`,

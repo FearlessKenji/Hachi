@@ -46,8 +46,12 @@ module.exports = (client) => {
 			waitForCompletion: true,
 		}),
 
-		Birthday: new CronJob(config.birthdayCron, async () => {
-			await checkBirthdays(client);
+		Birthday: CronJob.from({
+			cronTime: config.birthdayCron,
+			onTick: async () => {
+				await checkBirthdays(client);
+			},
+			waitForCompletion: true,
 		}),
 
 		Modmail: new CronJob(`0 * * * *`, async () => {

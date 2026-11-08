@@ -4,11 +4,13 @@
 // moves to PendingStreamVods after its Discord edit, letting later streams use
 // new messages while older replays keep retrying until found or timed out.
 const { Channels, KickLiveSessions, PendingStreamVods } = require(`../database/dbObjects.js`);
+const { URL } = require(`node:url`);
 const kickUser = require(`./kickUser.js`);
 const kickStreams = require(`./kickStreams.js`);
 const kickVods = require(`./kickVods.js`);
 const { getChannelsByBroadcasterIds, normalizeBroadcasterId } = require(`./kickIdentity.js`);
 const { getIdentityMap, recordStreamName } = require(`./streamNameMonitor.js`);
+const { processReplayRows, selectReplayRows } = require(`./replayWorker.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const { warn, error } = require(`../utils/writeLog.js`);
 const {
@@ -29,14 +31,20 @@ const kickClientId = process.env.kickClientId;
 const provider = `Kick`;
 const unavailableChannelWarnings = new Set();
 const unavailableReplayChannels = new Set();
+let pendingReplayWork = null;
+let lastReplayRowId = 0;
 
-async function observeKickName(chan, streamInfo) {
+async function observeKickName(chan, streamInfo, savedIdentity) {
 	const observedUserId = normalizeBroadcasterId(streamInfo?.broadcaster_user_id);
 	if (!observedUserId || typeof streamInfo.slug !== `string` || !streamInfo.slug) {
 		return;
 	}
+	const observedName = streamInfo.slug.toLowerCase();
+	if (savedIdentity?.providerUserId === observedUserId && savedIdentity.currentName === observedName) {
+		return;
+	}
 
-	await recordStreamName(chan, `kick`, observedUserId, streamInfo.slug);
+	await recordStreamName(chan, `kick`, observedUserId, observedName);
 }
 
 function findKickVodUrl(embed) {
@@ -49,6 +57,19 @@ function findKickVodUrl(embed) {
 		.find(Boolean);
 
 	return match || null;
+}
+
+function cacheBustedThumbnail(thumbnail) {
+	if (!thumbnail) {
+		return null;
+	}
+	try {
+		const url = new URL(thumbnail);
+		url.searchParams.set(`cacheBypass`, String(Date.now()));
+		return url.toString();
+	} catch {
+		return null;
+	}
 }
 
 function isEndedKickMessage(message) {
@@ -166,15 +187,24 @@ async function processPendingKickVods(client, channelsById) {
 		return;
 	}
 
+	const replayRows = selectReplayRows(pendingRows, lastReplayRowId);
+	if (replayRows.length) {
+		lastReplayRowId = replayRows.at(-1).id;
+	}
 	const replayLookups = new Map();
-	for (const pending of pendingRows) {
+	await processReplayRows(replayRows, async pending => {
 		try {
 			let discordChannel = client.channels?.cache?.get(pending.discordChannelId);
 			if (!discordChannel && typeof client.channels?.fetch === `function`) {
 				try {
 					discordChannel = await client.channels.fetch(pending.discordChannelId);
-				} catch {
-					// The channel may only be temporarily inaccessible; retain the row.
+				} catch (err) {
+					if (Number(err?.code) === 10003) {
+						// A confirmed deleted channel cannot receive a replay update.
+						await pending.destroy();
+						return;
+					}
+					// Network and permission failures remain retryable.
 				}
 			}
 			if (!discordChannel) {
@@ -182,7 +212,7 @@ async function processPendingKickVods(client, channelsById) {
 					warn(`Kick replay update cannot find Discord channel ${pending.discordChannelId}.`);
 					unavailableReplayChannels.add(pending.discordChannelId);
 				}
-				continue;
+				return;
 			}
 			unavailableReplayChannels.delete(pending.discordChannelId);
 
@@ -190,27 +220,27 @@ async function processPendingKickVods(client, channelsById) {
 			const replayField = message?.embeds[0]?.fields?.find(field => field.name === provider)?.value;
 			if (!message || findKickVodUrl(message.embeds[0]) || replayField === `No VoD available`) {
 				await pending.destroy();
-				continue;
+				return;
 			}
 
 			const currentName = channelsById.get(normalizeBroadcasterId(pending.providerUserId))?.slug;
 			const slug = currentName || pending.providerName;
 			if (!slug) {
 				// No provider response means there is no evidence to apply the cutoff.
-				continue;
+				return;
 			}
 			// Several guilds can announce the same stream; share one replay lookup
 			// for their matching pending messages during this cron tick.
 			const lookupKey = JSON.stringify([slug, pending.providerStartTime || pending.startLabel]);
 			if (!replayLookups.has(lookupKey)) {
-				replayLookups.set(lookupKey, await kickVods.getLatest(
+				replayLookups.set(lookupKey, kickVods.getLatest(
 					slug, pending.startLabel, pending.providerStartTime,
 				));
 			}
-			const vod = replayLookups.get(lookupKey);
+			const vod = await replayLookups.get(lookupKey);
 			if (vod?.retryable) {
 				// A failed request cannot establish that no replay was published.
-				continue;
+				return;
 			}
 			if (!vod?.url) {
 				if (vodWaitExpired(pending.endedAt)) {
@@ -219,7 +249,7 @@ async function processPendingKickVods(client, channelsById) {
 					await message.edit({ content: `The Kick stream has ended.`, embeds: [embed] });
 					await pending.destroy();
 				}
-				continue;
+				return;
 			}
 
 			const embed = offlineEmbed({
@@ -236,7 +266,7 @@ async function processPendingKickVods(client, channelsById) {
 		} catch (err) {
 			error(`Failed to update pending Kick replay for message ${pending.messageId}:`, err);
 		}
-	}
+	});
 }
 
 /**
@@ -313,7 +343,7 @@ async function getKick(client) {
 
 			const { savedUserId, streamRecord, streamInfo } = resolvedChannels.get(chan.id);
 			try {
-				await observeKickName(chan, streamInfo);
+				await observeKickName(chan, streamInfo, identityMap.get(chan.id));
 			} catch (err) {
 				error(`Failed to record Kick channel name for ${chan.channelName}:`, err);
 			}
@@ -386,7 +416,7 @@ async function getKick(client) {
 				streamInfo.stream_title :
 				`Live now`;
 			const streamThumbnail = streamInfo.stream?.thumbnail;
-			const imageUrl = streamThumbnail ? `${streamThumbnail}?cacheBypass=${Date.now()}` : null;
+			const imageUrl = cacheBustedThumbnail(streamThumbnail);
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x00E701,
@@ -468,10 +498,17 @@ async function getKick(client) {
 		}
 	}
 
-	await processPendingKickVods(client, channelsById);
+	// Replay retries run behind a bounded worker, so slow archives never delay
+	// the next live-alert poll. The saved queue survives a process restart.
+	if (!pendingReplayWork) {
+		pendingReplayWork = processPendingKickVods(client, channelsById)
+			.catch(err => error(`Failed to process pending Kick replays:`, err))
+			.finally(() => { pendingReplayWork = null; });
+	}
 }
 
 module.exports = {
 	findKickVodUrl,
 	getKick,
+	waitForPendingReplayWork: () => pendingReplayWork || Promise.resolve(),
 };

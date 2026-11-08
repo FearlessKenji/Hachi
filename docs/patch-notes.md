@@ -10,20 +10,22 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 ### Birthdays
 
-- When Hachi observes a member leave, their birthday is removed from that server's posts and board while the record is kept for seven days. Rejoining within that period restores it. Hachi retries unavailable membership checks before deleting expired birthdays or cards.
+- When Hachi observes a member leave, their birthday is removed from that server's posts and board while the record is kept for seven days. Rejoining within that period restores it. Hachi retries unavailable membership checks and board updates; an existing board stays visible until its replacement is posted.
 
 ### Server Setup
 
 - Administrative commands require Manage Server when used, including after Discord command-permission overrides. Twitch VIP mapping and manual sync also require Manage Roles. A Twitch broadcaster connection checks Manage Server again when device approval finishes.
-- A failed startup initialization stops Hachi instead of repeatedly restarting with the supplied PM2 configuration. Failed Twitch and Kick app-token requests get up to five follow-up attempts per provider in a rolling hour.
+- A failed startup initialization stops Hachi instead of repeatedly restarting with the supplied PM2 configuration. Failed Twitch and Kick app-token requests get up to five follow-up attempts per provider in a rolling hour, even across restarts. A rejected app token triggers a bounded refresh.
 
 ### Stream Notifications
 
-- Live alerts ping only the configured notification role. If a stream lacks category or viewer data, the alert shows `No Category` and `0` viewers.
+- Live alerts ping only the configured notification role. If a stream lacks category or viewer data, the alert shows `No Category` and `0` viewers. Unchanged alerts are no longer edited on every poll; changed titles, categories, and viewer counts still update.
+- Slow replay lookups no longer hold up checks for new live alerts.
 
 ### Modmail
 
-- Longer ticket transcripts include the full available message history and can download as numbered text files. Transcripts include attachment links and visible embed and sticker details; Hachi gives a clear error when a ticket exceeds the export limits.
+- Longer ticket transcripts include the full available message history and can download as numbered text files. Reopened stored tickets include later messages when closed again. Transcripts include attachment links and visible embed and sticker details; Hachi gives a clear error when a ticket exceeds the export limits.
+- Hachi reports failed close and reopen attempts and tries to restore the ticket's prior state and access.
 
 ### Twitch Verification
 

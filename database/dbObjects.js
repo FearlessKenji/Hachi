@@ -29,6 +29,7 @@ const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 // aware of the full table set on startup.
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
 const AnnouncementDeliveryProgress = require(`./models/announcementDeliveryProgress.js`)(sequelize, Sequelize.DataTypes);
+const AuthRequestAttempts = require(`./models/authRequestAttempts.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
 const StreamChannelIdentities = require(`./models/streamChannelIdentities.js`)(sequelize, Sequelize.DataTypes);
 const PendingStreamVods = require(`./models/pendingStreamVods.js`)(sequelize, Sequelize.DataTypes);
@@ -52,6 +53,10 @@ const BirthdayUsers = require(`./models/birthdayUsers.js`)(
 	Sequelize.DataTypes,
 );
 const BirthdayConfigs = require(`./models/birthdayConfigs.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const BirthdayBoardRetiredMessages = require(`./models/birthdayBoardRetiredMessages.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
@@ -256,6 +261,13 @@ BirthdayConfigs.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+Servers.hasMany(BirthdayBoardRetiredMessages, {
+	foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+BirthdayBoardRetiredMessages.belongsTo(Servers, {
+	foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+
 Servers.hasMany(BirthdayCards, {
 	foreignKey: `guildId`,
 	sourceKey: `guildId`,
@@ -414,6 +426,7 @@ Servers.hasMany(ModmailTickets, { foreignKey: `guildId`, sourceKey: `guildId`, o
 ModmailTickets.belongsTo(Servers, { foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
 
 module.exports = {
+	AuthRequestAttempts,
 	sequelize,
 	Servers,
 	AnnouncementDeliveryProgress,
@@ -426,6 +439,7 @@ module.exports = {
 	RulesVerificationMessages,
 	BirthdayUsers,
 	BirthdayConfigs,
+	BirthdayBoardRetiredMessages,
 	BirthdayCards,
 	CommandMonitorWhitelists,
 	LinkConfigs,

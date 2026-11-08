@@ -4,18 +4,21 @@
 // follow-up attempts in a rolling hour; the hourly auth cron can begin a new
 // cycle after the rate window permits another request.
 const { fetchAuthToken } = require(`./fetchAuthToken.js`);
-const { updateAuthTokens } = require(`./authTokens.js`);
+const { reserveAuthAttempt } = require(`./authAttemptBudget.js`);
+const { invalidateAuthToken, updateAuthTokens } = require(`./authTokens.js`);
 const { error, warn } = require(`../utils/writeLog.js`);
 
-const HOUR_MS = 60 * 60 * 1000;
 const MAX_ATTEMPTS_PER_HOUR = 6;
 const RETRY_DELAYS_MS = [1, 2, 4, 8, 16].map(minutes => minutes * 60 * 1000);
+const TOKEN_KEY_BY_PROVIDER = {
+	Twitch: `twitchAuthToken`,
+	Kick: `kickAuthToken`,
+};
 const providerStates = new Map();
 
 function getProviderState(provider) {
 	if (!providerStates.has(provider)) {
 		providerStates.set(provider, {
-			attemptTimes: [],
 			inFlight: null,
 			retryCount: 0,
 			retryTimer: null,
@@ -58,19 +61,17 @@ async function refreshAuth(options, { isRetry = false } = {}) {
 		state.retryCount = 0;
 	}
 
-	const now = Date.now();
-	state.attemptTimes = state.attemptTimes.filter(attemptTime => now - attemptTime < HOUR_MS);
-
-	if (state.attemptTimes.length >= MAX_ATTEMPTS_PER_HOUR) {
-		const waitMs = Math.max(1, state.attemptTimes[0] + HOUR_MS - now);
-		warn(`${provider} OAuth request deferred until its hourly retry limit resets.`);
-		scheduleAttempt(options, state, waitMs, isRetry);
-		return false;
-	}
-
-	state.attemptTimes.push(now);
-	state.inFlight = (async () => {
+	const attempt = (async () => {
 		try {
+			// Reserve before transmitting credentials. A restart cannot bypass
+			// the rolling-hour budget stored in SQLite.
+			const reservation = await reserveAuthAttempt(provider);
+			if (!reservation.allowed) {
+				warn(`${provider} OAuth request deferred until its hourly retry limit resets.`);
+				scheduleAttempt(options, state, reservation.waitMs, isRetry);
+				return false;
+			}
+
 			const authToken = await fetchAuthToken({ provider, tokenUrl, clientID, clientSecret });
 
 			if (authToken) {
@@ -79,9 +80,7 @@ async function refreshAuth(options, { isRetry = false } = {}) {
 				return true;
 			}
 		} catch (err) {
-			error(`${provider} OAuth refresh failed unexpectedly.`, err);
-		} finally {
-			state.inFlight = null;
+			error(`${provider} OAuth request could not be completed.`, err);
 		}
 
 		if (state.retryCount < RETRY_DELAYS_MS.length) {
@@ -95,6 +94,9 @@ async function refreshAuth(options, { isRetry = false } = {}) {
 
 		return false;
 	})();
+	state.inFlight = attempt.finally(() => {
+		state.inFlight = null;
+	});
 
 	return state.inFlight;
 }
@@ -119,7 +121,22 @@ function updateKick() {
 	});
 }
 
+function handleUnauthorizedToken(provider, rejectedToken) {
+	const tokenKey = TOKEN_KEY_BY_PROVIDER[provider];
+	if (!tokenKey || !invalidateAuthToken(tokenKey, rejectedToken)) {
+		return false;
+	}
+
+	// One rejected app token can fail many batched requests. Clearing only the
+	// still-current token and using the shared retry controller prevents a storm.
+	warn(`${provider} app token was rejected; refresh will follow the retry budget.`);
+	const refresh = provider === `Twitch` ? updateTwitch : updateKick;
+	void refresh().catch(err => error(`${provider} OAuth recovery failed unexpectedly.`, err));
+	return true;
+}
+
 module.exports = {
+	handleUnauthorizedToken,
 	refreshAuth,
 	updateKick,
 	updateTwitch,

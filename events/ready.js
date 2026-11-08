@@ -11,7 +11,11 @@ const { startTwitchRoleEventSub } = require(`../modules/twitchRoleEventSub.js`);
 const { syncAllTwitchRoles } = require(`../modules/twitchRoles.js`);
 const { reconcileServerRows } = require(`../utils/serverLifecycle.js`);
 const { reconcileVerificationPanels } = require(`../utils/twitchVerificationPanels.js`);
-const { purgeExpiredBirthdayDepartures, reconcileStoredBirthdayMemberships } = require(`../utils/birthdays.js`);
+const {
+	purgeExpiredBirthdayDepartures,
+	reconcileStoredBirthdayMemberships,
+	retryPendingBirthdayBoardWork,
+} = require(`../utils/birthdays.js`);
 const BIRTHDAY_RECONCILIATION_RETRY_MS = 60 * 60 * 1000;
 let birthdayRetryTimer = null;
 
@@ -85,6 +89,7 @@ module.exports = {
 		// These operations can need many Discord or provider calls. They run with
 		// explicit error handling after core startup so polling is not held back.
 		void reconcileBirthdays(client);
+		runOptionalStartupTask(`birthday board cleanup`, () => retryPendingBirthdayBoardWork(client));
 		runOptionalStartupTask(`Twitch role EventSub`, () => {
 			client.twitchRoleEventSub = startTwitchRoleEventSub(client);
 		});

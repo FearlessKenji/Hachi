@@ -8,8 +8,9 @@ Notable changes to Hachi are documented here.
 
 ### Changed
 
-- Retained departed members' server-scoped birthdays for seven days, restored timely rejoins, and reconciled stored memberships in 100-ID Discord batches before purging orphaned global cards.
-- Retried failed Twitch and Kick app-token requests independently with a six-attempt rolling-hour limit, and deferred stream polling until each provider has a token.
+- Retained departed members' server-scoped birthdays for seven days, restored timely rejoins, and reconciled stored memberships in 100-ID Discord batches before purging orphaned global cards; membership and card changes now commit together, with durable board-refresh retries.
+- Retried failed Twitch and Kick app-token requests independently with a durable six-attempt rolling-hour limit, refreshed rejected app tokens without a poll storm, and deferred stream polling until each provider has a token.
+- Skipped unchanged stream-alert edits and identity writes, and processed replay retries in bounded background batches so slow archives do not hold live polls open.
 - Updated the transitive `minimatch` development dependency to a patched release to address its glob-pattern denial-of-service advisory.
 
 ### Fixed
@@ -17,10 +18,11 @@ Notable changes to Hachi are documented here.
 - Stopped PM2 restart loops after fatal initialization failures and moved optional Discord reconciliation behind core startup.
 - Required Manage Server at runtime for administrative commands, rechecked permission after delayed Twitch broadcaster authorization, and retained Manage Roles for Twitch role mapping and sync.
 - Restricted stream alert pings to the configured role and displayed `No Category` and `0` for missing provider metadata.
-- Paged, bounded, compressed, and split Modmail transcripts without silently omitting messages; retained legacy snapshots and reported explicit limits.
-- Deleted dependent server, stream, birthday-card, and raid-evidence data before their parent IDs; preserved saved message IDs on uncertain Discord cleanup and removed unsaved replacement messages when persistence failed.
+- Paged, bounded, compressed, and split Modmail transcripts without silently omitting messages; refreshed stored transcripts after reopening and guarded close/reopen transitions with permission and control-panel compensation.
+- Deleted dependent server, stream, and birthday-card data before their parent IDs; staged raid evidence for recoverable cleanup, retained uncertain Discord message IDs, and removed unsaved replacements when persistence failed.
+- Retried failed birthday-board updates and retired old board messages after saving their replacements.
 - Kept rules verification records recoverable if a replacement could not be saved.
-- Expanded smoke coverage for birthday membership batches, Modmail transcript delivery, and deletion-order failures.
+- Expanded smoke coverage for birthday reconciliation, Modmail transition failures, server evidence recovery, stream update suppression, replay limits, and durable OAuth budgets.
 
 ## v3.12.3 - 2026-10-28
 

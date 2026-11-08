@@ -38,6 +38,7 @@ async function getTwitchUsers(channels, identityMap, clientID, authKey) {
 
 		try {
 			const response = await fetchProviderApi(url, {
+				appTokenProvider: `Twitch`,
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

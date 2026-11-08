@@ -12,6 +12,7 @@ async function getForStream(userId, streamId, clientID, authKey) {
 		const res = await fetchProviderApi(
 			`https://api.twitch.tv/helix/videos?user_id=${userId}&type=archive&first=100`,
 			{
+				appTokenProvider: `Twitch`,
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

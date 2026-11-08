@@ -11,7 +11,14 @@ const {
 const { URL } = require(`node:url`);
 const { DateTime } = require(`luxon`);
 const { Op, Transaction } = require(`sequelize`);
-const { BirthdayCards, BirthdayConfigs, BirthdayUsers, Servers, sequelize } = require(`../database/dbObjects.js`);
+const {
+	BirthdayBoardRetiredMessages,
+	BirthdayCards,
+	BirthdayConfigs,
+	BirthdayUsers,
+	Servers,
+	sequelize,
+} = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
 
 const UPCOMING_BIRTHDAY_DAYS = 14;
@@ -25,6 +32,21 @@ const CARD_URL_HOSTS = new Set([
 	`www.recocards.com`,
 ]);
 let membershipReconciliationComplete = false;
+const boardWorkTails = new Map();
+
+function serializeBirthdayBoardWork(guildId, operation) {
+	// Board replacement, membership edits, and cleanup must not race for one guild.
+	const previous = boardWorkTails.get(guildId) || Promise.resolve();
+	const result = previous.then(operation);
+	const settled = result.catch(() => null);
+	boardWorkTails.set(guildId, settled);
+	void settled.then(() => {
+		if (boardWorkTails.get(guildId) === settled) {
+			boardWorkTails.delete(guildId);
+		}
+	});
+	return result;
+}
 
 const MONTHS = [
 	`january`,
@@ -362,9 +384,14 @@ async function reverifyBirthdayCardDelivery(card, {
 }
 
 async function reverifyBirthdayCardsForUser(userId, options = {}) {
-	const cards = await BirthdayCards.findAll({ where: { userId } });
-
-	return Promise.all(cards.map(card => reverifyBirthdayCardDelivery(card, options)));
+	const cards = await BirthdayCards.findAll({ where: { userId }, transaction: options.transaction });
+	const results = [];
+	for (const card of cards) {
+		// SQLite transactions use one connection; keep their dependent reads and
+		// writes in order so a failed card leaves the membership unchanged.
+		results.push(await reverifyBirthdayCardDelivery(card, options));
+	}
+	return results;
 }
 
 async function reverifyBirthdayCardsForGuild(guildId, options = {}) {
@@ -395,11 +422,15 @@ async function transferBirthdayCardsFromGuild(guildId, { transaction } = {}) {
 		},
 	});
 
-	return Promise.all(cards.map(card => reverifyBirthdayCardDelivery(card, {
-		excludeGuildIds: [guildId],
-		force: true,
-		transaction,
-	})));
+	const results = [];
+	for (const card of cards) {
+		results.push(await reverifyBirthdayCardDelivery(card, {
+			excludeGuildIds: [guildId],
+			force: true,
+			transaction,
+		}));
+	}
+	return results;
 }
 
 function groupBirthdaysByDay(birthdays) {
@@ -1026,24 +1057,57 @@ async function deleteBirthdayBoardMessage(message) {
 	}
 }
 
-async function refreshBirthdayBoard(client, config, now, options = {}) {
+async function deleteRetiredBirthdayBoardMessage(client, retiredMessage) {
+	const guild = await getBirthdayGuild(client, retiredMessage.guildId);
+	if (!guild) {
+		return false;
+	}
+	let channel;
+	try {
+		channel = guild.channels.cache.get(retiredMessage.channelId) ||
+			await guild.channels.fetch(retiredMessage.channelId);
+	} catch (err) {
+		if (Number(err?.code) !== 10003) {
+			throw err;
+		}
+		// A confirmed deleted channel also confirms its board is gone.
+		await retiredMessage.destroy();
+		return true;
+	}
+	if (!channel?.messages?.fetch) {
+		return false;
+	}
+	let message;
+	try {
+		message = await channel.messages.fetch(retiredMessage.messageId);
+	} catch (err) {
+		if (Number(err?.code) !== 10008) {
+			throw err;
+		}
+	}
+	await deleteBirthdayBoardMessage(message);
+	await retiredMessage.destroy();
+	return true;
+}
+
+async function refreshBirthdayBoardUnlocked(client, config, now, options = {}) {
 	const channelId = getBirthdayChannelId(config, `board`);
 
 	if (!channelId) {
-		return false;
+		return `unavailable`;
 	}
 
 	const guild = await getBirthdayGuild(client, config.guildId);
 
 	if (!guild) {
-		return false;
+		return `unavailable`;
 	}
 
 	const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
 
 	if (!channel?.send) {
 		warn(`Skipping birthday board refresh for guild ${config.guildId}; channel ${channelId} is unavailable`);
-		return false;
+		return `unavailable`;
 	}
 
 	const entries = await getUpcomingBirthdayEntries(guild, config, { now });
@@ -1076,32 +1140,124 @@ async function refreshBirthdayBoard(client, config, now, options = {}) {
 			boardMessageId: null,
 			...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
 		});
-		return false;
+		return `removed`;
 	}
 
 	const payload = await buildBirthdayBoardPayload(guild, config, { entries, now });
 
 	if (refreshAction === `edit`) {
 		await existingMessage.edit(payload);
-		return true;
+		return `updated`;
 	}
 
-	await deleteBirthdayBoardMessage(existingMessage);
-
 	const message = await channel.send(payload);
-
 	try {
-		await config.update({
-			boardMessageId: message.id,
-			...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
+		// Save the replacement and the old message's cleanup job atomically. A
+		// failed send leaves the previous board visible, and a failed delete retries.
+		await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+			await config.update({
+				boardMessageId: message.id,
+				...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
+			}, { transaction });
+			if (existingMessage) {
+				await BirthdayBoardRetiredMessages.create({
+					guildId: config.guildId,
+					channelId,
+					messageId: existingMessage.id,
+				}, { transaction });
+			}
 		});
 	} catch (err) {
 		await deleteBirthdayBoardMessage(message).catch(deleteError =>
 			error(`Could not remove an unsaved birthday board ${message.id}:`, deleteError));
 		throw err;
 	}
+	if (existingMessage) {
+		try {
+			const retired = await BirthdayBoardRetiredMessages.findByPk(existingMessage.id);
+			if (retired) {
+				await deleteRetiredBirthdayBoardMessage(client, retired);
+			}
+		} catch (err) {
+			warn(`Could not remove old birthday board ${existingMessage.id}; it remains queued for retry:`, err);
+		}
+	}
 
-	return true;
+	return `posted`;
+}
+
+function refreshBirthdayBoard(client, config, now, options = {}) {
+	return serializeBirthdayBoardWork(config.guildId, async () => {
+		const currentConfig = await BirthdayConfigs.findByPk(config.guildId);
+		if (!currentConfig) {
+			return `unavailable`;
+		}
+		if (options.scheduled && currentConfig.lastBoardPostDate === now.toISODate()) {
+			return `up-to-date`;
+		}
+		return refreshBirthdayBoardUnlocked(client, currentConfig, now, options);
+	});
+}
+
+async function markBirthdayBoardDirty(guildId, transaction) {
+	// This revision is committed with membership/card changes. A process restart
+	// cannot lose a board update that Discord did not confirm.
+	await BirthdayConfigs.increment(`boardRevision`, {
+		by: 1,
+		transaction,
+		where: { guildId },
+	});
+}
+
+function refreshPendingBirthdayBoard(client, guildId) {
+	return serializeBirthdayBoardWork(guildId, async () => {
+		const config = await BirthdayConfigs.findByPk(guildId);
+		if (!config || config.boardRevision <= config.boardPublishedRevision) {
+			return true;
+		}
+		const revision = config.boardRevision;
+		const now = DateTime.now().setZone(config.timezone);
+		if (!now.isValid) {
+			return false;
+		}
+		const outcome = await refreshBirthdayBoardUnlocked(client, config, now, { inPlace: true });
+		if (outcome === `unavailable`) {
+			return false;
+		}
+		// A later membership change advances boardRevision again. Mark only the
+		// revision actually rendered so that later work remains pending.
+		await BirthdayConfigs.update({ boardPublishedRevision: revision }, {
+			where: { guildId, boardPublishedRevision: { [Op.lt]: revision } },
+		});
+		return true;
+	});
+}
+
+async function retryPendingBirthdayBoardWork(client) {
+	const [configs, retiredMessages] = await Promise.all([
+		BirthdayConfigs.findAll({
+			attributes: [`guildId`, `boardRevision`, `boardPublishedRevision`], raw: true,
+		}),
+		BirthdayBoardRetiredMessages.findAll(),
+	]);
+	for (const config of configs) {
+		if (config.boardRevision <= config.boardPublishedRevision) {
+			continue;
+		}
+		try {
+			await refreshPendingBirthdayBoard(client, config.guildId);
+		} catch (err) {
+			warn(`Could not finish birthday board refresh for guild ${config.guildId}:`, err);
+		}
+	}
+	for (const retiredMessage of retiredMessages) {
+		try {
+			await serializeBirthdayBoardWork(retiredMessage.guildId, () =>
+				deleteRetiredBirthdayBoardMessage(client, retiredMessage));
+		} catch (err) {
+			warn(`Could not remove retired birthday board ${retiredMessage.messageId}:`, err);
+		}
+	}
 }
 
 async function refreshBirthdayBoardsForUser(client, userId) {
@@ -1132,44 +1288,34 @@ async function refreshBirthdayBoardsForUser(client, userId) {
 		});
 	}));
 
-	return results.filter(Boolean).length;
+	return results.filter(outcome => outcome === `updated` || outcome === `posted`).length;
 }
 
 async function refreshBirthdayBoardForMembership(client, guildId) {
-	const config = await BirthdayConfigs.findByPk(guildId);
-
-	if (!config) {
-		return;
-	}
-
-	const now = DateTime.now().setZone(config.timezone);
-
-	if (now.isValid) {
-		// Membership changes update the visible board without counting as a daily post.
-		await refreshBirthdayBoard(client, config, now, { inPlace: true });
-	}
+	await refreshPendingBirthdayBoard(client, guildId);
 }
 
 async function markBirthdayMemberLeft(client, guildId, userId, { now = new Date() } = {}) {
-	const [changed] = await BirthdayUsers.update(
-		{ leftAt: now },
-		{ where: { guildId, userId, leftAt: null } },
-	);
+	const changed = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const [updated] = await BirthdayUsers.update(
+			{ leftAt: now },
+			{ transaction, where: { guildId, userId, leftAt: null } },
+		);
+		if (!updated) {
+			return false;
+		}
+		await reverifyBirthdayCardsForUser(userId, { force: true, transaction });
+		await markBirthdayBoardDirty(guildId, transaction);
+		return true;
+	});
 
 	if (!changed) {
 		return false;
 	}
 
-	// Update both visible board state and shared-card ownership even if one
-	// operation fails. A failed half remains eligible for the next retry.
-	const updates = await Promise.allSettled([
-		refreshBirthdayBoardForMembership(client, guildId),
-		reverifyBirthdayCardsForUser(userId, { force: true }),
-	]);
-	const failures = updates.filter(result => result.status === `rejected`).map(result => result.reason);
-	if (failures.length) {
-		throw new AggregateError(failures, `Failed to finish birthday departure updates for ${userId} in ${guildId}.`);
-	}
+	// A Discord failure leaves the durable revision pending for hourly/startup retry.
+	await refreshBirthdayBoardForMembership(client, guildId).catch(err =>
+		warn(`Birthday board refresh remains queued after member ${userId} left guild ${guildId}:`, err));
 	return true;
 }
 
@@ -1177,38 +1323,38 @@ async function markBirthdayMemberJoined(client, guildId, userId, {
 	joinedAt = new Date(),
 	now = new Date(),
 } = {}) {
-	const birthday = await BirthdayUsers.findOne({ raw: true, where: { guildId, userId } });
+	const transition = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const birthday = await BirthdayUsers.findOne({ raw: true, transaction, where: { guildId, userId } });
+		if (!birthday?.leftAt) {
+			return `unchanged`;
+		}
+		const expiresAt = new Date(birthday.leftAt).getTime() + BIRTHDAY_MEMBER_RETENTION_MS;
+		if (new Date(joinedAt).getTime() > expiresAt) {
+			return `expired`;
+		}
+		const [changed] = await BirthdayUsers.update(
+			{ leftAt: null },
+			{ transaction, where: { guildId, userId, leftAt: { [Op.ne]: null } } },
+		);
+		if (!changed) {
+			return `unchanged`;
+		}
+		await reverifyBirthdayCardsForUser(userId, { force: true, transaction });
+		await markBirthdayBoardDirty(guildId, transaction);
+		return `restored`;
+	});
 
-	if (!birthday?.leftAt) {
-		return false;
-	}
-
-	const expiresAt = new Date(birthday.leftAt).getTime() + BIRTHDAY_MEMBER_RETENTION_MS;
-
-	if (new Date(joinedAt).getTime() > expiresAt) {
+	if (transition === `expired`) {
 		// Expiration is based on the actual rejoin time, not when an offline bot
 		// happened to observe the member again.
 		await purgeExpiredBirthdayDepartures({ guildId, now, userId });
 		return false;
 	}
-
-	const [changed] = await BirthdayUsers.update(
-		{ leftAt: null },
-		{ where: { guildId, userId, leftAt: { [Op.ne]: null } } },
-	);
-
-	if (!changed) {
+	if (transition !== `restored`) {
 		return false;
 	}
-
-	const updates = await Promise.allSettled([
-		refreshBirthdayBoardForMembership(client, guildId),
-		reverifyBirthdayCardsForUser(userId, { force: true }),
-	]);
-	const failures = updates.filter(result => result.status === `rejected`).map(result => result.reason);
-	if (failures.length) {
-		throw new AggregateError(failures, `Failed to finish birthday rejoin updates for ${userId} in ${guildId}.`);
-	}
+	await refreshBirthdayBoardForMembership(client, guildId).catch(err =>
+		warn(`Birthday board refresh remains queued after member ${userId} rejoined guild ${guildId}:`, err));
 	return true;
 }
 
@@ -1371,6 +1517,7 @@ async function checkBirthdays(client) {
 	if (membershipReconciliationComplete) {
 		await purgeExpiredBirthdayDepartures();
 	}
+	await retryPendingBirthdayBoardWork(client);
 	const configs = await BirthdayConfigs.findAll();
 
 	for (const config of configs) {
@@ -1411,6 +1558,7 @@ module.exports = {
 	refreshBirthdayBoardForMembership,
 	refreshBirthdayBoardsForUser,
 	reconcileStoredBirthdayMemberships,
+	retryPendingBirthdayBoardWork,
 	removeBirthdayMembership,
 	purgeExpiredBirthdayDepartures,
 	reverifyBirthdayCardDelivery,

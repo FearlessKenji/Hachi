@@ -4,6 +4,7 @@
 // channels, build embeds, fetch/edit messages, format role mentions, and load
 // server/channel state efficiently for each cron tick.
 const { EmbedBuilder } = require(`discord.js`);
+const { URL } = require(`node:url`);
 const { Servers, Channels } = require(`../database/dbObjects.js`);
 const { warn } = require(`../utils/writeLog.js`);
 
@@ -140,6 +141,43 @@ async function fetchMessage(discordChannel, messageId) {
 	}
 }
 
+function comparableImageUrl(value) {
+	if (!value) {
+		return null;
+	}
+	try {
+		const url = new URL(value);
+		// Preview URLs deliberately carry a fresh query value each poll. That is
+		// not a visible stream change and must not force a Discord edit.
+		url.searchParams.delete(`cacheBypass`);
+		return url.toString();
+	} catch {
+		return value;
+	}
+}
+
+function comparableLiveEmbed(embed) {
+	const data = typeof embed?.toJSON === `function` ? embed.toJSON() : embed;
+	if (!data) {
+		return null;
+	}
+	return {
+		title: data.title || null,
+		description: data.description || null,
+		url: data.url || null,
+		color: data.color ?? null,
+		fields: (data.fields || []).map(field => ({
+			name: field.name,
+			value: field.value,
+			inline: Boolean(field.inline),
+		})),
+		thumbnail: comparableImageUrl(data.thumbnail?.url),
+		image: comparableImageUrl(data.image?.url),
+		// Preserve a corrected start time while ignoring the changing edit time.
+		startedAt: data.footer?.text?.split(`. Last edited `)[0] || null,
+	};
+}
+
 async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, allowedRoleId, onSend }) {
 	const existingMessage = await fetchMessage(discordChannel, messageId);
 	// Provider text can contain Discord mention syntax. Only the configured
@@ -147,7 +185,14 @@ async function syncMessage({ discordChannel, messageId, shouldEdit, content, emb
 	const allowedMentions = { parse: [], roles: allowedRoleId ? [allowedRoleId] : [] };
 
 	if (existingMessage && shouldEdit) {
-		await existingMessage.edit({ content, embeds: [embed], allowedMentions });
+		// Keep the one-minute provider poll accurate without a Discord write when
+		// title, viewer count, category, role, and other visible fields are unchanged.
+		const sameContent = existingMessage.content === content;
+		const sameEmbed = JSON.stringify(comparableLiveEmbed(existingMessage.embeds?.[0])) ===
+			JSON.stringify(comparableLiveEmbed(embed));
+		if (!sameContent || !sameEmbed) {
+			await existingMessage.edit({ content, embeds: [embed], allowedMentions });
+		}
 		return existingMessage;
 	}
 
