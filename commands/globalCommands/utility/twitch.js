@@ -41,6 +41,8 @@ const {
 } = require(`../../../utils/twitchVerificationPanels.js`);
 const { error: logError, warn } = require(`../../../utils/writeLog.js`);
 const TWITCH_VERIFY_CUSTOM_ID = `twitch:verify`;
+const pendingBroadcasterConnections = new Map();
+const broadcasterSaveOperations = new Map();
 
 // Formatting helpers keep the status panel focused on setup state rather than
 // leaking raw database nulls or provider IDs into user-facing text.
@@ -99,7 +101,7 @@ async function safeFollowUp(interaction, payload) {
 // This helper waits in the background and reports completion/failure with a
 // follow-up instead of holding the interaction open.
 function startPollingDeviceFlow(interaction, device, scopes, handler) {
-	waitForDeviceAuthorization(device, scopes)
+	return waitForDeviceAuthorization(device, scopes)
 		.then(token => handler(token))
 		.catch(err => safeFollowUp(interaction, {
 			content: `Twitch authorization did not finish: ${err.message}`,
@@ -117,25 +119,71 @@ async function startBroadcasterConnect(interaction) {
 
 	await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-	const device = await startDeviceAuthorization(BROADCASTER_SCOPES);
+	const guildId = interaction.guild.id;
+	const connectionAttemptId = interaction.id;
+	// A new attempt supersedes a device code that may still be polling.
+	pendingBroadcasterConnections.set(guildId, connectionAttemptId);
+	let device;
+	try {
+		device = await startDeviceAuthorization(BROADCASTER_SCOPES);
+		await interaction.editReply({
+			content: buildDeviceContent(`## Connect Twitch Broadcaster`, device),
+			components: buildOpenTwitchComponents(device),
+		});
+	} catch (err) {
+		if (pendingBroadcasterConnections.get(guildId) === connectionAttemptId) {
+			pendingBroadcasterConnections.delete(guildId);
+		}
+		throw err;
+	}
 
-	await interaction.editReply({
-		content: buildDeviceContent(`## Connect Twitch Broadcaster`, device),
-		components: buildOpenTwitchComponents(device),
-	});
-
-	startPollingDeviceFlow(interaction, device, BROADCASTER_SCOPES, async (token) => {
+	void startPollingDeviceFlow(interaction, device, BROADCASTER_SCOPES, async (token) => {
 		const validation = await validateToken(token.access_token);
-		const config = await saveBroadcasterAuthorization({
-			guildId: interaction.guild.id,
+		// Serializing saves prevents an older request from finishing after a
+		// newer connection and overwriting its broadcaster credentials.
+		const previousSave = broadcasterSaveOperations.get(guildId);
+		if (previousSave) {
+			await previousSave.catch(() => null);
+		}
+		if (pendingBroadcasterConnections.get(guildId) !== connectionAttemptId) {
+			throw new Error(`A newer Twitch broadcaster connection replaced this request.`);
+		}
+
+		// Device approval can take minutes. Refresh roles and membership from
+		// Discord before persisting a broadcaster token.
+		const currentGuild = await interaction.client.guilds.fetch(guildId);
+		await currentGuild.roles.fetch();
+		const currentMember = await currentGuild.members.fetch({ user: interaction.user.id, force: true });
+		if (!currentMember.permissions.has(PermissionFlagsBits.ManageGuild) &&
+			!currentMember.permissions.has(PermissionFlagsBits.Administrator)) {
+			throw new Error(`You need Manage Server to finish connecting the Twitch broadcaster.`);
+		}
+		if (pendingBroadcasterConnections.get(guildId) !== connectionAttemptId) {
+			throw new Error(`A newer Twitch broadcaster connection replaced this request.`);
+		}
+
+		const saveOperation = saveBroadcasterAuthorization({
+			guildId,
 			requestedBy: interaction.user.id,
 			token,
 			validation,
 		});
+		broadcasterSaveOperations.set(guildId, saveOperation);
+		let config;
+		try {
+			config = await saveOperation;
+		} finally {
+			if (broadcasterSaveOperations.get(guildId) === saveOperation) {
+				broadcasterSaveOperations.delete(guildId);
+			}
+		}
+		if (pendingBroadcasterConnections.get(guildId) !== connectionAttemptId) {
+			throw new Error(`This Twitch broadcaster connection was superseded or disconnected.`);
+		}
 
 		interaction.client.twitchRoleEventSub?.restart();
 
-		const syncResult = await syncGuildTwitchRoles(interaction.client, interaction.guild.id);
+		const syncResult = await syncGuildTwitchRoles(interaction.client, guildId);
 		const syncLine = syncResult.reason ?
 			`Role sync skipped: ${syncResult.reason}` :
 			`Role sync complete.`;
@@ -143,6 +191,10 @@ async function startBroadcasterConnect(interaction) {
 		await safeFollowUp(interaction, {
 			content: `Connected Twitch broadcaster **${config.broadcasterLogin}** to this server.\n${syncLine}`,
 		});
+	}).finally(() => {
+		if (pendingBroadcasterConnections.get(guildId) === connectionAttemptId) {
+			pendingBroadcasterConnections.delete(guildId);
+		}
 	});
 }
 
@@ -194,9 +246,10 @@ async function ensureRoleIsAssignable(interaction, role, label) {
 }
 
 async function setRoleMappings(interaction) {
-	if (!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageRoles)) {
+	if (!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageGuild) ||
+		!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageRoles)) {
 		await interaction.reply({
-			content: `You need Manage Roles to configure Twitch role mappings.`,
+			content: `You need both Manage Server and Manage Roles to configure Twitch role mappings.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
@@ -242,9 +295,10 @@ async function setRoleMappings(interaction) {
 }
 
 async function syncNow(interaction) {
-	if (!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageRoles)) {
+	if (!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageGuild) ||
+		!canManageTwitchRoleSync(interaction, PermissionFlagsBits.ManageRoles)) {
 		await interaction.reply({
-			content: `You need Manage Roles to sync Twitch roles.`,
+			content: `You need both Manage Server and Manage Roles to sync Twitch roles.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
@@ -316,12 +370,20 @@ async function disconnectBroadcaster(interaction) {
 		});
 		return;
 	}
+	// Disconnect also cancels an unfinished device-code connection.
+	const cancelledPendingConnection = pendingBroadcasterConnections.delete(interaction.guild.id);
+	const activeSave = broadcasterSaveOperations.get(interaction.guild.id);
+	if (activeSave) {
+		await activeSave.catch(() => null);
+	}
 
 	const config = await TwitchRoleConfigs.findByPk(interaction.guild.id);
 
 	if (!config?.broadcasterTwitchUserId) {
 		await interaction.reply({
-			content: `No Twitch broadcaster is connected for this server.`,
+			content: cancelledPendingConnection ?
+				`Pending Twitch broadcaster connection cancelled.` :
+				`No Twitch broadcaster is connected for this server.`,
 			flags: MessageFlags.Ephemeral,
 		});
 		return;
@@ -427,7 +489,7 @@ module.exports = {
 			{
 				command: `/twitch roles/sync`,
 				description: `configure and sync Twitch VIP roles.`,
-				permissions: [PermissionFlagsBits.ManageRoles],
+				permissions: [PermissionFlagsBits.ManageGuild, PermissionFlagsBits.ManageRoles],
 			},
 		],
 	},

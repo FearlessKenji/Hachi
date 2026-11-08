@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 
 const childProcess = require(`node:child_process`);
+const { Buffer } = require(`node:buffer`);
 const fs = require(`node:fs`);
+const Module = require(`node:module`);
 const os = require(`node:os`);
 const path = require(`node:path`);
 const { URL, URLSearchParams } = require(`node:url`);
@@ -267,13 +269,14 @@ function collectCommands() {
 }
 
 async function validateSetupHubOrdering() {
-	const { ButtonStyle } = require(`discord.js`);
+	const { ButtonStyle, PermissionFlagsBits } = require(`discord.js`);
 	const setup = requireFresh(`commands`, `globalCommands`, `setup`, `setup.js`);
 	let replyPayload = null;
 
 	await setup.execute({
 		id: `smoke-setup-order`,
 		guild: { id: `smoke-guild` },
+		memberPermissions: { has: permission => permission === PermissionFlagsBits.ManageGuild },
 		user: { id: `smoke-user` },
 		reply(payload) {
 			replyPayload = payload;
@@ -295,6 +298,14 @@ async function validateSetupHubOrdering() {
 	assert(buttons.map(button => button.label).join(`|`) === expectedOrder.join(`|`), `/setup buttons are not in the expected order.`);
 	assert(buttons[0]?.style === ButtonStyle.Primary, `Hachi Updates should be the primary setup button.`);
 	assert(buttons.slice(1).every(button => button.style === ButtonStyle.Secondary), `Non-primary setup buttons should use secondary style.`);
+	let deniedPayload = null;
+	await setup.execute({
+		guild: { id: `smoke-guild` },
+		memberPermissions: { has: () => false },
+		reply: async payload => { deniedPayload = payload; },
+	});
+	assert(deniedPayload?.content?.includes(`Manage Server`) && !deniedPayload.embeds,
+		`/setup allowed a member without Manage Server to open the administrative hub.`);
 }
 
 async function validateTwitchVerificationPanelPrivacyCopy() {
@@ -451,13 +462,36 @@ async function validateManagedTwitchVerificationPanelLifecycle() {
 		);
 		assert(warningCount === 4, `Managed-panel warning budget should refresh after 24 hours.`);
 
+		channels.set(`new-channel`, {
+			...makeChannel(`new-channel`),
+			messages: { fetch: async () => { throw new Error(`temporary fetch failure`); } },
+		});
+		panel.destroy = async () => lifecycle.push(`destroy-record`);
+		let removalFailed = false;
+		try {
+			await removeVerificationPanel(guild);
+		} catch {
+			removalFailed = true;
+		}
+		assert(removalFailed && panel.messageId === `new-message-2` && !lifecycle.includes(`destroy-record`),
+			`A transient managed-panel fetch error retired its saved message ID.`);
+		channels.set(`new-channel`, makeChannel(`new-channel`, {
+			delete: async () => { throw new Error(`temporary delete failure`); },
+		}));
+		removalFailed = false;
+		try {
+			await removeVerificationPanel(guild);
+		} catch {
+			removalFailed = true;
+		}
+		assert(removalFailed && panel.messageId === `new-message-2` && !lifecycle.includes(`destroy-record`),
+			`A transient managed-panel delete error retired its saved message ID.`);
 		const removalMessage = { delete: async () => lifecycle.push(`delete-removed`) };
 		channels.set(`new-channel`, makeChannel(`new-channel`, removalMessage));
-		panel.destroy = async () => lifecycle.push(`destroy-record`);
 		await removeVerificationPanel(guild);
 		assert(
-			lifecycle.slice(-2).join(`,`) === `destroy-record,delete-removed`,
-			`Removing a managed panel should clear ownership before deleting its message.`,
+			lifecycle.slice(-2).join(`,`) === `delete-removed,destroy-record`,
+			`Removing a managed panel should delete its message before retiring the saved ID.`,
 		);
 	} finally {
 		TwitchVerificationPanels.findByPk = originalFindByPk;
@@ -467,20 +501,27 @@ async function validateManagedTwitchVerificationPanelLifecycle() {
 
 async function validateAnnouncementChannelIdNormalization() {
 	const announcements = requireFresh(`utils`, `announcements.js`);
-	const { AnnouncementDeliveryProgress, Servers } = require(resolveProject(`database`, `dbObjects.js`));
+	const { AnnouncementDeliveryProgress, Servers, sequelize } = require(resolveProject(`database`, `dbObjects.js`));
 	const originalFindByPk = Servers.findByPk;
 	const originalFindOne = Servers.findOne;
 	const originalCreate = Servers.create;
 	const originalDestroyProgress = AnnouncementDeliveryProgress.destroy;
+	const originalTransaction = sequelize.transaction;
 	const writes = [];
+	const mutationOrder = [];
 
 	try {
-		AnnouncementDeliveryProgress.destroy = async () => 0;
+		sequelize.transaction = async (options, callback) => callback({});
+		AnnouncementDeliveryProgress.destroy = async () => {
+			mutationOrder.push(`checkpoint-deleted`);
+			return 0;
+		};
 		Servers.findByPk = async guildId => {
 			assert(typeof guildId === `string`, `Announcement guild lookup received a non-string guild ID.`);
 			return null;
 		};
 		Servers.create = async values => {
+			mutationOrder.push(`server-created`);
 			writes.push(values);
 			assert(typeof values.guildId === `string`, `Announcement settings create received a non-string guild ID.`);
 			assert(typeof values.hachiAnnouncementChannelId === `string`, `Announcement settings create received a non-string channel ID.`);
@@ -502,12 +543,15 @@ async function validateAnnouncementChannelIdNormalization() {
 
 		assert(settings.guildId === `smoke-guild-id`, `Announcement settings did not normalize object-shaped guild ID.`);
 		assert(settings.hachiAnnouncementChannelId === `smoke-channel-id`, `Announcement settings did not normalize object-shaped channel ID.`);
+		assert(mutationOrder.join(`,`) === `checkpoint-deleted,server-created`,
+			`Announcement channel ID changed before its delivery checkpoint was retired.`);
 		assert(announcements.normalizeAnnouncementId(123456789n) === `123456789`, `Announcement ID normalization did not handle bigint IDs.`);
 	} finally {
 		Servers.findByPk = originalFindByPk;
 		Servers.findOne = originalFindOne;
 		Servers.create = originalCreate;
 		AnnouncementDeliveryProgress.destroy = originalDestroyProgress;
+		sequelize.transaction = originalTransaction;
 	}
 }
 
@@ -2521,9 +2565,9 @@ async function validateTwitchPendingVodUpdate() {
 			`The Twitch channel fallback was not used when the batched Users lookup was unavailable.`);
 		streamData = { ...streamData, viewer_count: null };
 		await getTwitchWithoutUsers(client);
-		assert(errors.some(item => item.messageText.includes(`Failed to process Twitch channel`) &&
-			item.messageText.includes(`row 1`) && item.messageText.includes(server.guildId)),
-		`A rejected Twitch channel job did not identify the affected row and guild.`);
+		assert(liveSyncs.at(-1)?.embed.toJSON().fields.find(field => field.name === `Viewers`)?.value === `0` &&
+			!errors.some(item => item.messageText.includes(`Failed to process Twitch channel`)),
+		`A missing Twitch viewer count did not fall back to zero.`);
 	} finally {
 		twitchStreams.getStreams = original.getStreams;
 		twitchVods.getForStream = original.getForStream;
@@ -3073,6 +3117,356 @@ async function validateConcurrentStreamIdentityWrites() {
 	}
 }
 
+async function validateServerCleanupDependencyOrder() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-server-cleanup-`));
+	const databasePath = path.join(tempDir, `cleanup.sqlite`);
+	const registryPath = resolveProject(`database`, `dbObjects.js`);
+	const birthdayPath = resolveProject(`utils`, `birthdays.js`);
+	const lifecyclePath = resolveProject(`utils`, `serverLifecycle.js`);
+	const liveRegistry = require(registryPath);
+	const originalRegistry = { ...liveRegistry };
+	const originalEncryptionMode = process.env.HACHI_DB_ENCRYPTION;
+	const originalKey = process.env.HACHI_DB_KEY;
+	const originalKeyFile = process.env.HACHI_DB_KEY_FILE;
+	const originalRemove = fs.promises.rm;
+	let isolatedRegistry;
+	let evidenceFailure = true;
+
+	try {
+		process.env.HACHI_DB_ENCRYPTION = `active`;
+		process.env.HACHI_DB_KEY = `smoke-server-cleanup-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		// Load the real model registry and all its foreign keys, changing only its
+		// SQLite storage path to this disposable encrypted database.
+		const fixtureModule = new Module(registryPath, module);
+		fixtureModule.filename = registryPath;
+		fixtureModule.paths = Module._nodeModulePaths(path.dirname(registryPath));
+		const moduleRequire = fixtureModule.require.bind(fixtureModule);
+		fixtureModule.require = request => {
+			if (request !== `path`) {
+				return moduleRequire(request);
+			}
+			const fixturePath = Object.create(path);
+			fixturePath.join = (...parts) => {
+				if (parts.at(-1) === `database.sqlite`) {
+					return databasePath;
+				}
+				return path.join(...parts);
+			};
+			return fixturePath;
+		};
+		fixtureModule._compile(fs.readFileSync(registryPath, `utf8`), registryPath);
+		isolatedRegistry = fixtureModule.exports;
+		assert(isolatedRegistry.sequelize.options.storage === databasePath,
+			`Server cleanup fixture did not isolate its database path.`);
+		Object.assign(liveRegistry, isolatedRegistry);
+		await isolatedRegistry.sequelize.sync();
+		const expiredGuildId = `smoke-expired-guild`;
+		const retainedGuildId = `smoke-retained-guild`;
+		const now = new Date(`2026-11-08T12:00:00.000Z`);
+		const leftAt = new Date(`2026-10-01T12:00:00.000Z`);
+		await isolatedRegistry.Servers.bulkCreate([
+			{ guildId: expiredGuildId, leftAt },
+			{ guildId: retainedGuildId },
+		]);
+		await isolatedRegistry.BirthdayConfigs.bulkCreate([
+			{ guildId: expiredGuildId, channelId: `old-board`, hour: 12, timezone: `UTC` },
+			{ guildId: retainedGuildId, channelId: `new-board`, hour: 12, timezone: `UTC` },
+		]);
+		await isolatedRegistry.BirthdayUsers.bulkCreate([
+			{ guildId: expiredGuildId, userId: `orphan`, month: 12, day: 1 },
+			{ guildId: expiredGuildId, userId: `shared`, month: 12, day: 1 },
+			{ guildId: retainedGuildId, userId: `shared`, month: 12, day: 1 },
+		]);
+		for (const userId of [`orphan`, `shared`]) {
+			await isolatedRegistry.BirthdayCards.create({
+				guildId: expiredGuildId, userId, year: 2026,
+				url: `https://recocards.com/card/${userId}`, createdAt: now,
+			});
+		}
+		await isolatedRegistry.BirthdayCards.bulkCreate([
+			{
+				guildId: expiredGuildId, userId: `legacy-orphan`, year: 2026,
+				url: `https://recocards.com/card/legacy-orphan`, createdAt: now,
+			},
+			{
+				guildId: null, deliveryGuildId: expiredGuildId, userId: `delivery-orphan`, year: 2026,
+				url: `https://recocards.com/card/delivery-orphan`, createdAt: now,
+			},
+		]);
+		const streamChannel = await isolatedRegistry.Channels.create({
+			guildId: expiredGuildId, channelName: `smoke_streamer`, twitchNotif: true, kickNotif: true,
+		});
+		await isolatedRegistry.StreamChannelIdentities.create({
+			channelId: streamChannel.id, provider: `twitch`, providerUserId: `streamer-id`, currentName: `smoke_streamer`,
+		});
+		await isolatedRegistry.PendingStreamVods.create({
+			channelId: streamChannel.id, provider: `twitch`, discordChannelId: `alerts`,
+			messageId: `old-alert`, endedAt: now,
+		});
+		await isolatedRegistry.KickLiveSessions.create({ channelId: streamChannel.id, messageId: `kick-alert`, startTime: now });
+		await isolatedRegistry.AnnouncementDeliveryProgress.create({ guildId: expiredGuildId, progressJson: `{}` });
+		await isolatedRegistry.LinkConfigs.create({ guildId: expiredGuildId });
+		await isolatedRegistry.LinkFixRules.create({
+			guildId: expiredGuildId, sourceDomain: `example.com`, targetDomain: `embed.example.com`, createdAt: now,
+		});
+		await isolatedRegistry.LinkBlockRules.create({ guildId: expiredGuildId, domain: `blocked.example`, createdAt: now });
+		await isolatedRegistry.TwitchVerificationPanels.create({ guildId: expiredGuildId, channelId: `panel-channel` });
+		await isolatedRegistry.ModmailTickets.create({
+			guildId: expiredGuildId, ticketNumber: 1, openerId: `member`, openedAt: now,
+		});
+		const reactionPanel = await isolatedRegistry.ReactionRoleMessages.create({
+			guildId: expiredGuildId, channelId: `role-channel`, messageId: `role-panel`, title: `Roles`, description: `Choose`,
+		});
+		await isolatedRegistry.ReactionRoleItems.create({
+			guildId: expiredGuildId, reactionRoleMessageId: reactionPanel.id, roleId: `role`, label: `Role`,
+		});
+		const incident = await isolatedRegistry.RaidIncidents.create({
+			guildId: expiredGuildId, triggerType: `joins`, startedAt: now,
+		});
+		await isolatedRegistry.RaidIncidentUsers.create({ incidentId: incident.id, guildId: expiredGuildId, userId: `member` });
+		await isolatedRegistry.RaidIncidentMessages.create({
+			incidentId: incident.id, guildId: expiredGuildId, messageId: `raid-message`,
+			channelId: `raid-channel`, userId: `member`, createdAt: now,
+		});
+		await isolatedRegistry.RaidIncidentFiles.create({
+			incidentId: incident.id, guildId: expiredGuildId, messageId: `raid-message`,
+			attachmentId: `attachment`, filename: `evidence.txt`,
+		});
+		delete require.cache[require.resolve(birthdayPath)];
+		const lifecycle = requireFresh(`utils`, `serverLifecycle.js`);
+		Reflect.set(fs.promises, `rm`, async target => {
+			assert(path.basename(target) === expiredGuildId,
+				`Server cleanup attempted to delete an unexpected evidence directory.`);
+			if (evidenceFailure) {
+				throw new Error(`simulated evidence removal failure`);
+			}
+		});
+		let failed = false;
+		try {
+			await lifecycle.deleteExpiredLeftServers({ now });
+		} catch (err) {
+			failed = err.message === `simulated evidence removal failure`;
+		}
+		assert(failed && await isolatedRegistry.Servers.findByPk(expiredGuildId) &&
+			await isolatedRegistry.BirthdayCards.count({ where: { userId: `orphan` } }) === 1 &&
+			await isolatedRegistry.Channels.count({ where: { guildId: expiredGuildId } }) === 1,
+		`Failed evidence cleanup did not roll back dependent rows and the master server ID.`);
+		evidenceFailure = false;
+		const removed = await lifecycle.deleteExpiredLeftServers({ now });
+		assert(removed.deleted === 1 && !await isolatedRegistry.Servers.findByPk(expiredGuildId) &&
+			await isolatedRegistry.Servers.findByPk(retainedGuildId),
+		`Expired server cleanup did not remove only the departed master row.`);
+		assert(await isolatedRegistry.BirthdayCards.count({ where: { userId: [`orphan`, `legacy-orphan`, `delivery-orphan`] } }) === 0 &&
+			(await isolatedRegistry.BirthdayCards.findOne({ where: { userId: `shared` } })).guildId === retainedGuildId &&
+			await isolatedRegistry.LinkFixRules.count({ where: { guildId: expiredGuildId } }) === 0 &&
+			await isolatedRegistry.ReactionRoleItems.count({ where: { guildId: expiredGuildId } }) === 0 &&
+			await isolatedRegistry.PendingStreamVods.count({ where: { channelId: streamChannel.id } }) === 0,
+		`Server cleanup left dependent rows behind or deleted a shared birthday card.`);
+
+		await isolatedRegistry.Servers.create({ guildId: `smoke-rejoined-guild`, leftAt });
+		await isolatedRegistry.LinkConfigs.create({ guildId: `smoke-rejoined-guild` });
+		const originalFindAll = isolatedRegistry.Servers.findAll;
+		Reflect.set(isolatedRegistry.Servers, `findAll`, async function findAllWithRejoin(options) {
+			const rows = await originalFindAll.call(this, options);
+			if (!options?.transaction && Array.isArray(rows) &&
+				rows.some(row => row.guildId === `smoke-rejoined-guild`)) {
+				await isolatedRegistry.Servers.update({ leftAt: null }, { where: { guildId: `smoke-rejoined-guild` } });
+			}
+			return rows;
+		});
+		try {
+			const rejoined = await lifecycle.deleteExpiredLeftServers({ now });
+			assert(rejoined.deleted === 0 && await isolatedRegistry.Servers.findByPk(`smoke-rejoined-guild`) &&
+				await isolatedRegistry.LinkConfigs.findByPk(`smoke-rejoined-guild`),
+			`A guild that rejoined before the cleanup transaction lost its master or child row.`);
+		} finally {
+			Reflect.set(isolatedRegistry.Servers, `findAll`, originalFindAll);
+		}
+	} finally {
+		Reflect.set(fs.promises, `rm`, originalRemove);
+		Object.assign(liveRegistry, originalRegistry);
+		delete require.cache[require.resolve(birthdayPath)];
+		delete require.cache[require.resolve(lifecyclePath)];
+		if (isolatedRegistry?.sequelize) {
+			await isolatedRegistry.sequelize.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_ENCRYPTION`, originalEncryptionMode);
+		restoreEnvValue(`HACHI_DB_KEY`, originalKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, originalKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateBirthdayMemberRetention() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const dbObjects = require(resolveProject(`database`, `dbObjects.js`));
+	const { ensureBirthdayMemberLeaveColumn } = requireFresh(`database`, `dbInit.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-birthday-retention-`));
+	const dbPath = path.join(tempDir, `birthdays.sqlite`);
+	const original = Object.fromEntries([
+		`BirthdayCards`, `BirthdayConfigs`, `BirthdayUsers`, `Servers`, `sequelize`,
+	].map(key => [key, dbObjects[key]]));
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	const birthdayPath = resolveProject(`utils`, `birthdays.js`);
+	let database = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-birthday-retention-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		database = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		for (const [key, fileName] of [
+			[`Servers`, `servers.js`],
+			[`BirthdayUsers`, `birthdayUsers.js`],
+			[`BirthdayConfigs`, `birthdayConfigs.js`],
+			[`BirthdayCards`, `birthdayCards.js`],
+		]) {
+			dbObjects[key] = require(resolveProject(`database`, `models`, fileName))(database, Sequelize.DataTypes);
+		}
+		dbObjects.sequelize = database;
+		await database.query(`CREATE TABLE birthdayUsers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			guildId VARCHAR(255) NOT NULL,
+			userId VARCHAR(255) NOT NULL,
+			month INTEGER NOT NULL,
+			day INTEGER NOT NULL,
+			lastUpcomingReminderDate VARCHAR(255),
+			lastBirthdayAnnouncementDate VARCHAR(255)
+		)`);
+		await ensureBirthdayMemberLeaveColumn(database);
+		await database.sync();
+		assert((await database.getQueryInterface().describeTable(`birthdayUsers`)).leftAt,
+			`Birthday membership retention column was not created.`);
+		assert((await database.getQueryInterface().showIndex(`birthdayUsers`))
+			.some(index => index.name === `birthdayUsersLeftAt`),
+		`Birthday membership retention index was not created.`);
+		const birthdays = requireFresh(`utils`, `birthdays.js`);
+		const { DateTime } = require(`luxon`);
+		const client = { guilds: { cache: new Map(), fetch: async () => null } };
+		const userId = `birthday-member`;
+		const year = new Date().getUTCFullYear() + 1;
+		const boardGuild = {
+			members: { cache: new Map([[userId, { displayName: `Birthday member` }]]) },
+		};
+		const boardNow = DateTime.fromISO(`${year}-11-20T12:00:00`, { zone: `UTC` });
+
+		await dbObjects.Servers.bulkCreate([{ guildId: `first` }, { guildId: `second` }]);
+		await dbObjects.BirthdayConfigs.bulkCreate([
+			{ guildId: `first`, channelId: `board-first`, hour: 12, timezone: `UTC` },
+			{ guildId: `second`, channelId: `board-second`, hour: 13, timezone: `UTC` },
+		]);
+		await dbObjects.BirthdayUsers.bulkCreate([
+			{ guildId: `first`, userId, month: 12, day: 1 },
+			{ guildId: `second`, userId, month: 12, day: 1 },
+		]);
+		await dbObjects.BirthdayCards.create({
+			createdAt: new Date(),
+			guildId: `first`,
+			userId,
+			year,
+			url: `https://recocards.com/card/test`,
+		});
+		const firstLeave = new Date(`2026-11-01T12:00:00.000Z`);
+
+		assert(await birthdays.markBirthdayMemberLeft(client, `first`, userId, { now: firstLeave }),
+			`Leaving a server did not retain its birthday with a timestamp.`);
+		assert((await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId } })).leftAt,
+			`Departed birthday was deleted before its grace period.`);
+		assert((await dbObjects.BirthdayCards.findOne({ where: { userId, year } })).guildId === `second`,
+			`Global card ownership did not transfer to the remaining server.`);
+		assert((await birthdays.getUpcomingBirthdayEntries(boardGuild, {
+			guildId: `first`, timezone: `UTC`,
+		}, { now: boardNow })).length === 0,
+		`A departed member remained on the server's upcoming birthday board.`);
+		assert(await birthdays.markBirthdayMemberJoined(client, `first`, userId, {
+			joinedAt: new Date(`2026-11-03T12:00:00.000Z`),
+			now: new Date(`2026-11-10T12:00:00.000Z`),
+		}), `A timely rejoin did not restore the saved birthday.`);
+		assert(!(await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId } })).leftAt,
+			`A restored birthday still appeared departed.`);
+		assert((await birthdays.getUpcomingBirthdayEntries(boardGuild, {
+			guildId: `first`, timezone: `UTC`,
+		}, { now: boardNow })).length === 1,
+		`A timely rejoin did not restore the upcoming birthday board entry.`);
+		await birthdays.markBirthdayMemberLeft(client, `first`, userId, {
+			now: new Date(`2026-11-04T12:00:00.000Z`),
+		});
+		await birthdays.markBirthdayMemberLeft(client, `second`, userId, {
+			now: new Date(`2026-11-05T12:00:00.000Z`),
+		});
+		await birthdays.purgeExpiredBirthdayDepartures({ now: new Date(`2026-11-11T12:00:00.000Z`) });
+		assert(await dbObjects.BirthdayCards.count({ where: { userId, year } }) === 1,
+			`A shared card was removed while another server's grace period remained.`);
+		await birthdays.purgeExpiredBirthdayDepartures({ now: new Date(`2026-11-12T12:00:00.000Z`) });
+		assert(await dbObjects.BirthdayUsers.count({ where: { userId } }) === 0,
+			`Expired server-scoped birthdays were retained.`);
+		assert(await dbObjects.BirthdayCards.count({ where: { userId, year } }) === 0,
+			`The orphaned global card survived the last server's grace period.`);
+		await dbObjects.BirthdayUsers.create({ guildId: `first`, userId: `late-member`, month: 12, day: 1 });
+		await dbObjects.BirthdayCards.create({
+			createdAt: new Date(),
+			guildId: `first`,
+			userId: `late-member`,
+			year,
+			url: `https://recocards.com/card/late`,
+		});
+		await birthdays.markBirthdayMemberLeft(client, `first`, `late-member`, {
+			now: new Date(`2026-11-01T12:00:00.000Z`),
+		});
+		assert(!await birthdays.markBirthdayMemberJoined(client, `first`, `late-member`, {
+			joinedAt: new Date(`2026-11-09T12:00:00.000Z`),
+			now: new Date(`2026-11-09T12:00:00.000Z`),
+		}), `A rejoin after seven days restored expired birthday data.`);
+		assert(await dbObjects.BirthdayUsers.count({ where: { userId: `late-member` } }) === 0 &&
+			await dbObjects.BirthdayCards.count({ where: { userId: `late-member` } }) === 0,
+		`A late rejoin left expired birthday or card data behind.`);
+
+		const batchUserIds = Array.from({ length: 110 }, (_, index) => `batch-member-${index}`);
+		await dbObjects.BirthdayUsers.bulkCreate(batchUserIds.map(batchUserId => ({
+			guildId: `first`, userId: batchUserId, month: 12, day: 1,
+		})));
+		const fetchSizes = [];
+		client.guilds.cache.set(`first`, {
+			channels: { cache: new Map(), fetch: async () => null },
+			members: {
+				cache: new Map(),
+				fetch: async ({ user: userIds }) => {
+					fetchSizes.push(userIds.length);
+					return new Map(userIds.filter(id => id !== batchUserIds[0]).map(id => [id, { id, joinedAt: new Date() }]));
+				},
+			},
+		});
+		const verified = await birthdays.reconcileStoredBirthdayMemberships(client);
+		assert(fetchSizes.join(`,`) === `100,10` && verified.left === 1 && verified.unverified === 0,
+			`Birthday membership reconciliation did not batch requests or mark a confirmed absence.`);
+		assert((await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId: batchUserIds[0] } })).leftAt,
+			`A confirmed absent birthday member was not suspended.`);
+		client.guilds.cache.get(`first`).members.fetch = async () => {
+			throw new Error(`temporary member gateway failure`);
+		};
+		const unverified = await birthdays.reconcileStoredBirthdayMemberships(client);
+		assert(unverified.unverified === 110 &&
+			!(await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId: batchUserIds[1] } })).leftAt,
+		`A failed member batch was treated as proof of departure.`);
+	} finally {
+		Object.assign(dbObjects, original);
+		delete require.cache[require.resolve(birthdayPath)];
+		if (database) {
+			await database.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 function validateStreamListProviderNames() {
 	const { buildChannelList } = requireFresh(`commands`, `globalCommands`, `utility`, `stream.js`);
 	const channels = [{
@@ -3358,12 +3752,14 @@ async function validateKickSharedProfilesAcrossGuilds() {
 			item.content.includes(`current_slug just went live`)) &&
 			errors.some(item => item.message.includes(`Failed to fetch Kick user profiles`)),
 		`Kick suppressed live alerts after a failed profile batch.`);
-		providerChannel = { ...providerChannel, category: null };
+		providerChannel = { ...providerChannel, category: null, stream: { ...providerChannel.stream, viewer_count: null } };
 		await getKick({ guilds: { cache: new Map() } });
-		assert(errors.filter(item => item.message.includes(`Failed to process Kick channel`)).length === 2 &&
-			errors.some(item => item.message.includes(`row 201`) && item.message.includes(`guild-one`)) &&
-			errors.some(item => item.message.includes(`row 202`) && item.message.includes(`guild-two`)),
-		`A rejected Kick channel job did not identify the affected row and guild.`);
+		assert(announcements.length === 8 && announcements.slice(6).every(item => {
+			const fields = item.embed.toJSON().fields;
+			return fields.find(field => field.name === `Playing`)?.value === `No Category` &&
+				fields.find(field => field.name === `Viewers`)?.value === `0`;
+		}) && !errors.some(item => item.message.includes(`Failed to process Kick channel`)),
+		`Missing Kick category and viewer count did not use the configured fallbacks.`);
 	} finally {
 		kickStreams.getStreams = original.getStreams;
 		kickUser.getUsersByIds = original.getUsersByIds;
@@ -3428,6 +3824,108 @@ function validateModmailContracts() {
 	assert(button.custom_id === `modmail:create`, `Modmail create-ticket button is not persistently routable.`);
 	assert(ticketName(1) === `ticket-0001`, `Modmail ticket numbering format is invalid.`);
 	assert(roles.effectiveRoleIds.join(`,`) === `allowed,shared,ping`, `Ping roles were not merged into effective Modmail access.`);
+}
+
+async function validateModmailTranscriptDelivery() {
+	const { Collection, PermissionFlagsBits } = require(`discord.js`);
+	const { ModmailConfigs, ModmailTickets } = require(`../database/dbObjects.js`);
+	const { handleTicketComponent } = requireFresh(`utils`, `modmail.js`);
+	const originalFindTicket = ModmailTickets.findByPk;
+	const originalCount = ModmailTickets.count;
+	const originalFindConfig = ModmailConfigs.findByPk;
+	const ticket = {
+		id: 73,
+		guildId: `transcript-guild`,
+		channelId: `transcript-channel`,
+		openerId: `opener`,
+		ticketNumber: 73,
+		openedAt: new Date(`2026-01-01T00:00:00.000Z`),
+		storedAt: null,
+		transcript: null,
+		update: async values => Object.assign(ticket, values),
+	};
+	let messageRows = [];
+	const channel = {
+		id: ticket.channelId,
+		guild: { id: ticket.guildId, name: `Transcript guild` },
+		messages: {
+			fetch: async ({ before, limit }) => new Collection(messageRows
+				.filter(message => !before || Number(message.id) < Number(before))
+				.slice(0, limit)
+				.map(message => [message.id, message])),
+		},
+	};
+	const makeMessage = number => ({
+		id: String(number),
+		createdAt: new Date(`2026-01-01T00:00:00.000Z`),
+		author: { id: `author`, tag: `Author` },
+		content: `message-${number}`,
+		attachments: new Collection(),
+	});
+	const createInteraction = attachmentSizeLimit => {
+		const replies = [];
+		return {
+			attachmentSizeLimit,
+			channel,
+			guild: channel.guild,
+			member: { permissions: { has: permission => permission === PermissionFlagsBits.Administrator } },
+			user: { id: `staff` },
+			replies,
+			deferReply: async () => null,
+			editReply: async payload => { replies.push(payload); },
+			followUp: async payload => { replies.push(payload); },
+			reply: async payload => { replies.push(payload); },
+		};
+	};
+	const attachmentBytes = interaction => Buffer.concat(interaction.replies
+		.filter(reply => reply.files?.length)
+		.map(reply => reply.files[0].attachment));
+
+	try {
+		ModmailTickets.findByPk = async () => ticket;
+		ModmailTickets.count = async () => 0;
+		ModmailConfigs.findByPk = async () => ({ maxStoredTickets: 50 });
+
+		messageRows = Array.from({ length: 150 }, (_, index) => makeMessage(150 - index));
+		const pagedInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(pagedInteraction, ticket.id, `transcript`);
+		const pagedText = attachmentBytes(pagedInteraction).toString(`utf8`);
+		assert(pagedText.includes(`message-1`) && pagedText.includes(`message-150`) &&
+			pagedText.indexOf(`message-1\n`) < pagedText.indexOf(`message-150`),
+		`Modmail transcript pagination omitted or misordered messages after the first page.`);
+
+		Object.assign(ticket, { transcript: `Legacy transcript: ${`é🌟`.repeat(750)}` });
+		const multipartInteraction = createInteraction(3072);
+		await handleTicketComponent(multipartInteraction, ticket.id, `transcript`);
+		const multipartFiles = multipartInteraction.replies.filter(reply => reply.files?.length);
+		assert(multipartFiles.length > 1 &&
+			attachmentBytes(multipartInteraction).toString(`utf8`) === ticket.transcript &&
+			multipartFiles.every(reply => !reply.files[0].attachment.toString(`utf8`).includes(`�`)),
+		`Legacy Modmail transcript parts did not reconstruct as valid UTF-8.`);
+
+		Object.assign(ticket, { transcript: `é`.repeat(40_000) });
+		const tooManyParts = createInteraction(3072);
+		await handleTicketComponent(tooManyParts, ticket.id, `transcript`);
+		assert(tooManyParts.replies.length === 1 &&
+			!tooManyParts.replies[0].files &&
+			/more than 25 transcript attachments/u.test(tooManyParts.replies[0].content),
+		`An oversized Modmail transcript sent partial files instead of a clear limit error.`);
+
+		Object.assign(ticket, { storedAt: null, transcript: null });
+		messageRows = [{ ...makeMessage(1), content: `compressible content `.repeat(15_000) }];
+		const storeInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(storeInteraction, ticket.id, `store`);
+		assert(ticket.transcript?.startsWith(`hachi-gzip-v1:`) && ticket.status === `stored`,
+			`Large Modmail transcript was not stored as a readable compressed snapshot.`);
+		const storedInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(storedInteraction, ticket.id, `transcript`);
+		assert(attachmentBytes(storedInteraction).toString(`utf8`).includes(messageRows[0].content),
+			`A compressed Modmail transcript did not round-trip through download.`);
+	} finally {
+		ModmailTickets.findByPk = originalFindTicket;
+		ModmailTickets.count = originalCount;
+		ModmailConfigs.findByPk = originalFindConfig;
+	}
 }
 
 async function validateModmailCleanupRetry() {
@@ -3765,6 +4263,7 @@ async function main() {
 	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`Modmail panels, numbering, and role access expose valid contracts`, validateModmailContracts);
+	await test(`Modmail transcripts page, compress, and split without losing text`, validateModmailTranscriptDelivery);
 	await test(`failed Modmail channel deletion remains retryable`, validateModmailCleanupRetry);
 	await test(`Modmail entry-channel cache preserves deletion safety`, validateModmailEntryChannelCache);
 	await test(`partial patch-note delivery resumes without duplicating messages`, validatePatchNotePartialDelivery);
@@ -3795,6 +4294,8 @@ async function main() {
 	await test(`Kick VoD lookup uses resolved slugs and preserves missing-channel state`, validateKickChannelRouting);
 	await test(`stream renames preserve one alias and independent provider names`, validateStreamNameMonitoring);
 	await test(`concurrent Twitch identity capture persists every channel`, validateConcurrentStreamIdentityWrites);
+	await test(`expired server cleanup removes dependents before IDs and preserves rejoins`, validateServerCleanupDependencyOrder);
+	await test(`birthday departures retain, restore, and purge server data and orphaned cards`, validateBirthdayMemberRetention);
 	await test(`/stream list shows independent Twitch and Kick names on one row`, validateStreamListProviderNames);
 	await test(`Kick and Twitch resolve renamed accounts by stable provider ID`, validateProviderIdentityLookups);
 	await test(`Kick channel slugs batch without cross-matching or retry storms`, validateKickSlugBatching);

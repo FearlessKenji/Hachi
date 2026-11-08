@@ -8,6 +8,7 @@ const { getTwitch } = require(`../modules/getTwitch.js`);
 const config = require(`../config/config.json`);
 const { ActivityType } = require(`discord.js`);
 const { updateKick, updateTwitch } = require(`../auth/refreshAuthTokens.js`);
+const { getAuthTokens } = require(`../auth/authTokens.js`);
 const { checkBirthdays } = require(`./birthdays.js`);
 const { syncAllTwitchRoles } = require(`../modules/twitchRoles.js`);
 const { syncAllLinkBlockRules } = require(`./linkBlocking.js`);
@@ -22,6 +23,12 @@ module.exports = (client) => {
 		Twitch: CronJob.from({
 			cronTime: config.twitchCron,
 			onTick: async () => {
+				// OAuth retries own provider recovery. Polling without a token only
+				// creates repeated unauthorized API requests.
+				if (!getAuthTokens().twitchAuthToken) {
+					return;
+				}
+
 				await getTwitch(client);
 			},
 			waitForCompletion: true,
@@ -30,6 +37,10 @@ module.exports = (client) => {
 		Kick: CronJob.from({
 			cronTime: config.kickCron,
 			onTick: async () => {
+				if (!getAuthTokens().kickAuthToken) {
+					return;
+				}
+
 				await getKick(client);
 			},
 			waitForCompletion: true,

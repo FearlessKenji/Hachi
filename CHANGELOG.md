@@ -4,6 +4,24 @@ Notable changes to Hachi are documented here.
 
 ## Unreleased
 
+## v3.13.0 - 2026-11-08
+
+### Changed
+
+- Retained departed members' server-scoped birthdays for seven days, restored timely rejoins, and reconciled stored memberships in 100-ID Discord batches before purging orphaned global cards.
+- Retried failed Twitch and Kick app-token requests independently with a six-attempt rolling-hour limit, and deferred stream polling until each provider has a token.
+- Updated the transitive `minimatch` development dependency to a patched release to address its glob-pattern denial-of-service advisory.
+
+### Fixed
+
+- Stopped PM2 restart loops after fatal initialization failures and moved optional Discord reconciliation behind core startup.
+- Required Manage Server at runtime for administrative commands, rechecked permission after delayed Twitch broadcaster authorization, and retained Manage Roles for Twitch role mapping and sync.
+- Restricted stream alert pings to the configured role and displayed `No Category` and `0` for missing provider metadata.
+- Paged, bounded, compressed, and split Modmail transcripts without silently omitting messages; retained legacy snapshots and reported explicit limits.
+- Deleted dependent server, stream, birthday-card, and raid-evidence data before their parent IDs; preserved saved message IDs on uncertain Discord cleanup and removed unsaved replacement messages when persistence failed.
+- Kept rules verification records recoverable if a replacement could not be saved.
+- Expanded smoke coverage for birthday membership batches, Modmail transcript delivery, and deletion-order failures.
+
 ## v3.12.3 - 2026-10-28
 
 ### Added

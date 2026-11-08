@@ -19,10 +19,18 @@ const {
 } = require(`discord.js`);
 const { Transaction } = require(`sequelize`);
 
-const { sequelize, Servers, Channels } = require(`../../../database/dbObjects.js`);
+const {
+	Channels,
+	KickLiveSessions,
+	PendingStreamVods,
+	Servers,
+	StreamChannelIdentities,
+	sequelize,
+} = require(`../../../database/dbObjects.js`);
 const { findReusableChannelId } = require(`../../../database/channelIds.js`);
 const { getIdentityMap } = require(`../../../modules/streamNameMonitor.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 // pendingAdds tracks the short-lived /stream add wizard. pendingStreamSetups
 // tracks the broader notification settings wizard. Both are intentionally
@@ -561,8 +569,19 @@ async function removeChannel(interaction) {
 	const channelName = interaction.options.getString(`name`).toLowerCase().trim();
 	const guildId = interaction.guild.id;
 
-	const removed = await Channels.destroy({
-		where: { channelName, guildId },
+	const removed = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const channel = await Channels.findOne({ transaction, where: { channelName, guildId } });
+		if (!channel) {
+			return false;
+		}
+
+		// Provider identities, live-session state, and replay lookups all hold
+		// this channel ID. Retire them before the parent row in one transaction.
+		await StreamChannelIdentities.destroy({ transaction, where: { channelId: channel.id } });
+		await PendingStreamVods.destroy({ transaction, where: { channelId: channel.id } });
+		await KickLiveSessions.destroy({ transaction, where: { channelId: channel.id } });
+		await Channels.destroy({ transaction, where: { id: channel.id, guildId } });
+		return true;
 	});
 
 	if (!removed) {
@@ -716,6 +735,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const subcommand = interaction.options.getSubcommand();
 
 		try {

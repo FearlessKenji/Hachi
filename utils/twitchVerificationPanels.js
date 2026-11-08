@@ -13,6 +13,57 @@ const REPAIR_COOLDOWN_MS = 60 * 1000;
 const WARNING_INTERVAL_MS = 15 * 60 * 1000;
 const WARNING_WINDOW_MS = 24 * 60 * 60 * 1000;
 const WARNING_LIMIT = 3;
+const intentionalPanelDeletes = new Set();
+
+function panelMessageKey(guildId, messageId) {
+	return `${guildId}:${messageId}`;
+}
+
+function isIntentionalPanelDeletion(guildId, messageId) {
+	return intentionalPanelDeletes.has(panelMessageKey(guildId, messageId));
+}
+
+async function fetchStoredPanelMessage(guild, panel) {
+	if (!panel?.messageId) {
+		return null;
+	}
+	let channel;
+	try {
+		channel = await guild.channels.fetch(panel.channelId);
+	} catch (err) {
+		if (err.code !== 10003) {
+			throw err;
+		}
+		return null;
+	}
+	if (!channel?.messages?.fetch) {
+		return null;
+	}
+	try {
+		return await channel.messages.fetch(panel.messageId);
+	} catch (err) {
+		if (err.code !== 10008) {
+			throw err;
+		}
+		return null;
+	}
+}
+
+async function deleteStoredPanelMessage(guildId, message) {
+	const key = panelMessageKey(guildId, message.id);
+	intentionalPanelDeletes.add(key);
+	try {
+		await message.delete();
+	} catch (err) {
+		if (err.code !== 10008) {
+			intentionalPanelDeletes.delete(key);
+			throw err;
+		}
+	}
+	// Keep suppression until the corresponding database ID is retired. A
+	// MessageDelete event can arrive after Discord acknowledges the delete.
+	return () => intentionalPanelDeletes.delete(key);
+}
 
 function panelPayload() {
 	return {
@@ -68,7 +119,17 @@ async function fetchPanelMessage(client, panel) {
 	if (failure) {
 		return { failure, guild };
 	}
-	const message = panel.messageId ? await channel.messages.fetch(panel.messageId).catch(() => null) : null;
+	let message = null;
+	if (panel.messageId) {
+		try {
+			message = await channel.messages.fetch(panel.messageId);
+		} catch (err) {
+			// A transient fetch failure cannot prove the old panel disappeared.
+			if (err.code !== 10008) {
+				throw err;
+			}
+		}
+	}
 	return { channel, guild, message };
 }
 
@@ -93,14 +154,20 @@ async function repairVerificationPanel(client, panelOrGuildId, { force = false }
 		return { message: state.message, ok: true, repaired: false };
 	}
 	const message = await state.channel.send(panelPayload());
-	await panel.update({
-		failureCode: null,
-		lastRepairAt: new Date(),
-		messageId: message.id,
-		warningCount: 0,
-		warningLastSentAt: null,
-		warningWindowStartedAt: null,
-	});
+	try {
+		await panel.update({
+			failureCode: null,
+			lastRepairAt: new Date(),
+			messageId: message.id,
+			warningCount: 0,
+			warningLastSentAt: null,
+			warningWindowStartedAt: null,
+		});
+	} catch (err) {
+		await message.delete().catch(cleanupError =>
+			error(`Failed to remove an unsaved Twitch verification panel ${message.id}:`, cleanupError));
+		throw err;
+	}
 	return { message, ok: true, repaired: true };
 }
 
@@ -110,22 +177,38 @@ async function setVerificationPanel(guild, channel) {
 		throw new Error(`Hachi cannot create a verification panel in that channel (${failure}).`);
 	}
 	const oldPanel = await TwitchVerificationPanels.findByPk(guild.id);
-	// Create first so a failed move never destroys the working canonical panel.
+	const oldMessage = await fetchStoredPanelMessage(guild, oldPanel);
+	if (oldPanel?.channelId === channel.id && oldMessage) {
+		await oldMessage.edit(panelPayload());
+		await oldPanel.update({ failureCode: null, lastRepairAt: new Date() });
+		return oldMessage;
+	}
+	// Create the replacement first, but retire the old message before changing
+	// the canonical stored ID. A failed delete keeps the old panel retryable.
 	const message = await channel.send(panelPayload());
-	await TwitchVerificationPanels.upsert({
-		guildId: guild.id,
-		channelId: channel.id,
-		messageId: message.id,
-		failureCode: null,
-		lastRepairAt: new Date(),
-		warningCount: 0,
-		warningLastSentAt: null,
-		warningWindowStartedAt: null,
-	});
-	if (oldPanel?.messageId && oldPanel.messageId !== message.id) {
-		const oldChannel = await guild.channels.fetch(oldPanel.channelId).catch(() => null);
-		const oldMessage = await oldChannel?.messages?.fetch(oldPanel.messageId).catch(() => null);
-		await oldMessage?.delete().catch(() => null);
+	let releaseDeletion = null;
+	try {
+		if (oldMessage) {
+			releaseDeletion = await deleteStoredPanelMessage(guild.id, oldMessage);
+		}
+		await TwitchVerificationPanels.upsert({
+			guildId: guild.id,
+			channelId: channel.id,
+			messageId: message.id,
+			failureCode: null,
+			lastRepairAt: new Date(),
+			warningCount: 0,
+			warningLastSentAt: null,
+			warningWindowStartedAt: null,
+		});
+	} catch (err) {
+		// Discord and SQLite cannot share a transaction. Best-effort rollback
+		// removes the replacement if retiring the old ID or saving the new one fails.
+		await message.delete().catch(cleanupError =>
+			error(`Failed to remove an unsaved Twitch verification panel ${message.id}:`, cleanupError));
+		throw err;
+	} finally {
+		releaseDeletion?.();
 	}
 	return message;
 }
@@ -135,11 +218,14 @@ async function removeVerificationPanel(guild) {
 	if (!panel) {
 		return false;
 	}
-	const channel = await guild.channels.fetch(panel.channelId).catch(() => null);
-	const message = await channel?.messages?.fetch(panel.messageId).catch(() => null);
-	// Remove ownership first so the ensuing MessageDelete event cannot recreate it.
-	await panel.destroy();
-	await message?.delete().catch(() => null);
+	const message = await fetchStoredPanelMessage(guild, panel);
+	const releaseDeletion = message ? await deleteStoredPanelMessage(guild.id, message) : null;
+	try {
+		// The ID remains available until Discord confirms removal or absence.
+		await panel.destroy();
+	} finally {
+		releaseDeletion?.();
+	}
 	return true;
 }
 
@@ -205,6 +291,7 @@ async function sendVerificationPanelWarningToManager(interaction, now = new Date
 }
 
 module.exports = {
+	isIntentionalPanelDeletion,
 	panelPayload,
 	reconcileVerificationPanels,
 	removeVerificationPanel,

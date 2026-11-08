@@ -10,18 +10,21 @@ const {
 } = require(`discord.js`);
 const { URL } = require(`node:url`);
 const { DateTime } = require(`luxon`);
-const { Op } = require(`sequelize`);
-const { BirthdayCards, BirthdayConfigs, BirthdayUsers, Servers } = require(`../database/dbObjects.js`);
+const { Op, Transaction } = require(`sequelize`);
+const { BirthdayCards, BirthdayConfigs, BirthdayUsers, Servers, sequelize } = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
 
 const UPCOMING_BIRTHDAY_DAYS = 14;
 const IMMEDIATE_BIRTHDAY_REMINDER_DAYS = 2;
+const BIRTHDAY_MEMBER_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+const MEMBERSHIP_FETCH_BATCH_SIZE = 100;
 const BIRTHDAY_BOARD_COLOR = 0xf0b83a;
 const RECOCARDS_CREATE_URL = `https://recocards.com/create-card/HAPPY_BIRTHDAY`;
 const CARD_URL_HOSTS = new Set([
 	`recocards.com`,
 	`www.recocards.com`,
 ]);
+let membershipReconciliationComplete = false;
 
 const MONTHS = [
 	`january`,
@@ -275,10 +278,11 @@ function pendingBirthdayCardDeliveryCandidates(candidates, notBefore = null, inc
 	);
 }
 
-async function getBirthdayCardDeliveryCandidates(card) {
+async function getBirthdayCardDeliveryCandidates(card, { transaction } = {}) {
 	const birthdays = await BirthdayUsers.findAll({
 		raw: true,
-		where: { userId: card.userId },
+		transaction,
+		where: { userId: card.userId, leftAt: null },
 	});
 	const guildIds = [...new Set(birthdays.map(birthday => birthday.guildId))];
 
@@ -287,10 +291,11 @@ async function getBirthdayCardDeliveryCandidates(card) {
 	}
 
 	const [configs, activeServers] = await Promise.all([
-		BirthdayConfigs.findAll({ raw: true, where: { guildId: { [Op.in]: guildIds } } }),
+		BirthdayConfigs.findAll({ raw: true, transaction, where: { guildId: { [Op.in]: guildIds } } }),
 		Servers.findAll({
 			attributes: [`guildId`],
 			raw: true,
+			transaction,
 			where: { guildId: { [Op.in]: guildIds }, leftAt: null },
 		}),
 	]);
@@ -325,12 +330,13 @@ async function reverifyBirthdayCardDelivery(card, {
 	includeGuildId = null,
 	notBefore = DateTime.now(),
 	requirePendingAnnouncement = true,
+	transaction = undefined,
 	transferOwnership = true,
 } = {}) {
 	// Ownership controls who may replace or remove the shared card; delivery
 	// controls which server sends its one member notification. Recalculate those
 	// independently as memberships and announcement eligibility change.
-	const ownershipCandidates = await getBirthdayCardDeliveryCandidates(card);
+	const ownershipCandidates = await getBirthdayCardDeliveryCandidates(card, { transaction });
 	const remainingCandidates = ownershipCandidates.filter(candidate => !excludeGuildIds.includes(candidate.guildId));
 	const deliveryCandidates = requirePendingAnnouncement ?
 		pendingBirthdayCardDeliveryCandidates(remainingCandidates, notBefore, includeGuildId) :
@@ -349,7 +355,7 @@ async function reverifyBirthdayCardDelivery(card, {
 	}
 
 	if (card.deliveryGuildId !== deliveryGuildId || card.guildId !== guildId) {
-		await card.update({ deliveryGuildId, guildId });
+		await card.update({ deliveryGuildId, guildId }, { transaction });
 	}
 
 	return { candidates: deliveryCandidates, deliveryGuildId, guildId };
@@ -365,7 +371,7 @@ async function reverifyBirthdayCardsForGuild(guildId, options = {}) {
 	const birthdays = await BirthdayUsers.findAll({
 		attributes: [`userId`],
 		raw: true,
-		where: { guildId },
+		where: { guildId, leftAt: null },
 	});
 	const userIds = [...new Set(birthdays.map(birthday => birthday.userId))];
 
@@ -378,8 +384,9 @@ async function reverifyBirthdayCardsForGuild(guildId, options = {}) {
 	return Promise.all(cards.map(card => reverifyBirthdayCardDelivery(card, options)));
 }
 
-async function transferBirthdayCardsFromGuild(guildId) {
+async function transferBirthdayCardsFromGuild(guildId, { transaction } = {}) {
 	const cards = await BirthdayCards.findAll({
+		transaction,
 		where: {
 			[Op.or]: [
 				{ guildId },
@@ -391,6 +398,7 @@ async function transferBirthdayCardsFromGuild(guildId) {
 	return Promise.all(cards.map(card => reverifyBirthdayCardDelivery(card, {
 		excludeGuildIds: [guildId],
 		force: true,
+		transaction,
 	})));
 }
 
@@ -421,6 +429,7 @@ async function fetchBirthdaysForDate(guildId, target) {
 		raw: true,
 		where: {
 			guildId,
+			leftAt: null,
 			month: target.month,
 			day: target.day,
 		},
@@ -434,6 +443,7 @@ async function fetchBirthdaysForDate(guildId, target) {
 			raw: true,
 			where: {
 				guildId,
+				leftAt: null,
 				month: 2,
 				day: 29,
 			},
@@ -506,6 +516,7 @@ async function getUpcomingBirthdayEntries(guild, config, options = {}) {
 		raw: true,
 		where: {
 			guildId: config.guildId,
+			leftAt: null,
 		},
 	});
 
@@ -751,7 +762,7 @@ function getNewBirthdayAnnouncementAction(daysAway, currentHour, postingHour) {
 async function markBirthdayEntries(entries, field, valueForEntry) {
 	await Promise.all(entries.map(entry => BirthdayUsers.update(
 		{ [field]: valueForEntry(entry) },
-		{ where: { guildId: entry.guildId, userId: entry.userId } },
+		{ where: { guildId: entry.guildId, userId: entry.userId, leftAt: null } },
 	)));
 }
 
@@ -759,7 +770,7 @@ async function sendPendingUpcomingBirthdayReminders(client, config, now, maxDays
 	const birthdays = await BirthdayUsers.findAll({
 		order: [[`month`, `ASC`], [`day`, `ASC`], [`userId`, `ASC`]],
 		raw: true,
-		where: { guildId: config.guildId },
+		where: { guildId: config.guildId, leftAt: null },
 	});
 	const entries = getPendingUpcomingBirthdayEntries(birthdays, now, maxDays);
 
@@ -851,7 +862,7 @@ async function sendLateBirthdayCard(client, card, guildId) {
 
 	const [config, birthday] = await Promise.all([
 		BirthdayConfigs.findByPk(guildId),
-		BirthdayUsers.findOne({ raw: true, where: { guildId, userId: card.userId } }),
+		BirthdayUsers.findOne({ raw: true, where: { guildId, userId: card.userId, leftAt: null } }),
 	]);
 
 	if (!config || !birthday) {
@@ -948,7 +959,7 @@ async function announceNewlyStoredBirthday(client, guildId, userId) {
 		return false;
 	}
 
-	const birthday = await BirthdayUsers.findOne({ raw: true, where: { guildId, userId } });
+	const birthday = await BirthdayUsers.findOne({ raw: true, where: { guildId, userId, leftAt: null } });
 
 	if (!birthday) {
 		return false;
@@ -971,11 +982,15 @@ async function announceNewlyStoredBirthday(client, guildId, userId) {
 
 function getBirthdayBoardRefreshAction(config, entries, existingMessage, options = {}) {
 	if (!config.boardOnlyWhenUpcoming) {
-		return `replace`;
+		return options.inPlace && existingMessage?.edit ? `edit` : `replace`;
 	}
 
 	if (!entries.length && !options.hadBirthdayYesterday) {
 		return `remove`;
+	}
+
+	if (options.inPlace && existingMessage?.edit) {
+		return `edit`;
 	}
 
 	if (options.scheduled) {
@@ -990,11 +1005,25 @@ async function hadBirthdayYesterday(config, now) {
 	const birthdays = await BirthdayUsers.findAll({
 		attributes: [`month`, `day`],
 		raw: true,
-		where: { guildId: config.guildId },
+		where: { guildId: config.guildId, leftAt: null },
 	});
 
 	// Resolve dates through the same leap-day rule used for the upcoming board.
 	return birthdays.some(birthday => getNextBirthdayDate(yesterday, birthday).hasSame(yesterday, `day`));
+}
+
+async function deleteBirthdayBoardMessage(message) {
+	if (!message) {
+		return;
+	}
+	try {
+		await message.delete();
+	} catch (err) {
+		// Discord can confirm the message was already removed by another actor.
+		if (Number(err?.code) !== 10008) {
+			throw err;
+		}
+	}
 }
 
 async function refreshBirthdayBoard(client, config, now, options = {}) {
@@ -1021,19 +1050,27 @@ async function refreshBirthdayBoard(client, config, now, options = {}) {
 	const birthdayYesterday = config.boardOnlyWhenUpcoming && !entries.length ?
 		await hadBirthdayYesterday(config, now) :
 		false;
-	const existingMessage = config.boardMessageId ?
-		await channel.messages.fetch(config.boardMessageId).catch(() => null) :
-		null;
+	let existingMessage = null;
+	if (config.boardMessageId) {
+		try {
+			existingMessage = await channel.messages.fetch(config.boardMessageId);
+		} catch (err) {
+			// Only a confirmed Discord 404 means the stored board ID can be replaced.
+			// Permission, network, and rate-limit errors leave the ID intact for retry.
+			if (Number(err?.code) !== 10008) {
+				throw err;
+			}
+		}
+	}
 	const refreshAction = getBirthdayBoardRefreshAction(config, entries, existingMessage, {
 		hadBirthdayYesterday: birthdayYesterday,
+		inPlace: options.inPlace,
 		scheduled: options.scheduled,
 	});
 
 	// Card changes edit the current board; the scheduled refresh posts a fresh one.
 	if (refreshAction === `remove`) {
-		if (existingMessage) {
-			await existingMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
-		}
+		await deleteBirthdayBoardMessage(existingMessage);
 
 		await config.update({
 			boardMessageId: null,
@@ -1049,18 +1086,20 @@ async function refreshBirthdayBoard(client, config, now, options = {}) {
 		return true;
 	}
 
-	if (config.boardMessageId) {
-		if (existingMessage) {
-			await existingMessage.delete().catch(err => warn(`Failed to delete old birthday board ${config.boardMessageId}:`, err));
-		}
-	}
+	await deleteBirthdayBoardMessage(existingMessage);
 
 	const message = await channel.send(payload);
 
-	await config.update({
-		boardMessageId: message.id,
-		...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
-	});
+	try {
+		await config.update({
+			boardMessageId: message.id,
+			...(options.scheduled ? { lastBoardPostDate: now.toISODate() } : {}),
+		});
+	} catch (err) {
+		await deleteBirthdayBoardMessage(message).catch(deleteError =>
+			error(`Could not remove an unsaved birthday board ${message.id}:`, deleteError));
+		throw err;
+	}
 
 	return true;
 }
@@ -1069,7 +1108,7 @@ async function refreshBirthdayBoardsForUser(client, userId) {
 	const birthdays = await BirthdayUsers.findAll({
 		attributes: [`guildId`],
 		raw: true,
-		where: { userId },
+		where: { userId, leftAt: null },
 	});
 	const guildIds = [...new Set(birthdays.map(birthday => birthday.guildId))];
 
@@ -1096,6 +1135,216 @@ async function refreshBirthdayBoardsForUser(client, userId) {
 	return results.filter(Boolean).length;
 }
 
+async function refreshBirthdayBoardForMembership(client, guildId) {
+	const config = await BirthdayConfigs.findByPk(guildId);
+
+	if (!config) {
+		return;
+	}
+
+	const now = DateTime.now().setZone(config.timezone);
+
+	if (now.isValid) {
+		// Membership changes update the visible board without counting as a daily post.
+		await refreshBirthdayBoard(client, config, now, { inPlace: true });
+	}
+}
+
+async function markBirthdayMemberLeft(client, guildId, userId, { now = new Date() } = {}) {
+	const [changed] = await BirthdayUsers.update(
+		{ leftAt: now },
+		{ where: { guildId, userId, leftAt: null } },
+	);
+
+	if (!changed) {
+		return false;
+	}
+
+	// Update both visible board state and shared-card ownership even if one
+	// operation fails. A failed half remains eligible for the next retry.
+	const updates = await Promise.allSettled([
+		refreshBirthdayBoardForMembership(client, guildId),
+		reverifyBirthdayCardsForUser(userId, { force: true }),
+	]);
+	const failures = updates.filter(result => result.status === `rejected`).map(result => result.reason);
+	if (failures.length) {
+		throw new AggregateError(failures, `Failed to finish birthday departure updates for ${userId} in ${guildId}.`);
+	}
+	return true;
+}
+
+async function markBirthdayMemberJoined(client, guildId, userId, {
+	joinedAt = new Date(),
+	now = new Date(),
+} = {}) {
+	const birthday = await BirthdayUsers.findOne({ raw: true, where: { guildId, userId } });
+
+	if (!birthday?.leftAt) {
+		return false;
+	}
+
+	const expiresAt = new Date(birthday.leftAt).getTime() + BIRTHDAY_MEMBER_RETENTION_MS;
+
+	if (new Date(joinedAt).getTime() > expiresAt) {
+		// Expiration is based on the actual rejoin time, not when an offline bot
+		// happened to observe the member again.
+		await purgeExpiredBirthdayDepartures({ guildId, now, userId });
+		return false;
+	}
+
+	const [changed] = await BirthdayUsers.update(
+		{ leftAt: null },
+		{ where: { guildId, userId, leftAt: { [Op.ne]: null } } },
+	);
+
+	if (!changed) {
+		return false;
+	}
+
+	const updates = await Promise.allSettled([
+		refreshBirthdayBoardForMembership(client, guildId),
+		reverifyBirthdayCardsForUser(userId, { force: true }),
+	]);
+	const failures = updates.filter(result => result.status === `rejected`).map(result => result.reason);
+	if (failures.length) {
+		throw new AggregateError(failures, `Failed to finish birthday rejoin updates for ${userId} in ${guildId}.`);
+	}
+	return true;
+}
+
+async function removeBirthdayMembership(guildId, userId) {
+	return sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const birthday = await BirthdayUsers.findOne({ transaction, where: { guildId, userId } });
+		if (!birthday) {
+			return 0;
+		}
+
+		const otherMemberships = await BirthdayUsers.count({
+			transaction,
+			where: { guildId: { [Op.ne]: guildId }, userId },
+		});
+		if (!otherMemberships) {
+			// A shared card has no valid owner after the final membership is gone.
+			await BirthdayCards.destroy({ transaction, where: { userId } });
+		}
+		return BirthdayUsers.destroy({ transaction, where: { guildId, userId } });
+	});
+}
+
+async function purgeExpiredBirthdayDepartures({ guildId = null, now = new Date(), userId = null } = {}) {
+	const cutoff = new Date(now.getTime() - BIRTHDAY_MEMBER_RETENTION_MS);
+	return sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const expired = await BirthdayUsers.findAll({
+			attributes: [`id`, `userId`],
+			raw: true,
+			transaction,
+			where: {
+				...(guildId ? { guildId } : {}),
+				...(userId ? { userId } : {}),
+				leftAt: { [Op.ne]: null, [Op.lte]: cutoff },
+			},
+		});
+		if (!expired.length) {
+			return { birthdays: 0, cards: 0 };
+		}
+
+		const expiredIds = expired.map(row => row.id);
+		const candidateUserIds = [...new Set(expired.map(row => row.userId))];
+		const retained = await BirthdayUsers.findAll({
+			attributes: [`userId`],
+			raw: true,
+			transaction,
+			where: {
+				id: { [Op.notIn]: expiredIds },
+				userId: { [Op.in]: candidateUserIds },
+			},
+		});
+		const retainedUserIds = new Set(retained.map(row => row.userId));
+		const orphanedUserIds = candidateUserIds.filter(candidateUserId => !retainedUserIds.has(candidateUserId));
+		// Delete global cards before their final membership IDs. The immediate
+		// transaction prevents a concurrent rejoin from racing this decision.
+		let cards = 0;
+		if (orphanedUserIds.length) {
+			cards = await BirthdayCards.destroy({
+				transaction,
+				where: { userId: { [Op.in]: orphanedUserIds } },
+			});
+		}
+		const birthdays = await BirthdayUsers.destroy({
+			transaction,
+			where: {
+				id: { [Op.in]: expiredIds },
+				leftAt: { [Op.ne]: null, [Op.lte]: cutoff },
+			},
+		});
+		return { birthdays, cards };
+	});
+}
+
+async function reconcileStoredBirthdayMemberships(client, { now = new Date() } = {}) {
+	membershipReconciliationComplete = false;
+	const birthdays = await BirthdayUsers.findAll({
+		attributes: [`guildId`, `userId`, `leftAt`],
+		raw: true,
+	});
+	const birthdaysByGuild = new Map();
+	for (const birthday of birthdays) {
+		if (!birthdaysByGuild.has(birthday.guildId)) {
+			birthdaysByGuild.set(birthday.guildId, []);
+		}
+		birthdaysByGuild.get(birthday.guildId).push(birthday);
+	}
+	let left = 0;
+	let restored = 0;
+	let unverified = 0;
+
+	for (const [guildId, guildBirthdays] of birthdaysByGuild) {
+		const guild = client.guilds.cache.get(guildId);
+		if (!guild) {
+			unverified += guildBirthdays.length;
+			warn(`Could not verify ${guildBirthdays.length} birthday memberships because guild ${guildId} is unavailable.`);
+			continue;
+		}
+
+		for (let offset = 0; offset < guildBirthdays.length; offset += MEMBERSHIP_FETCH_BATCH_SIZE) {
+			const batch = guildBirthdays.slice(offset, offset + MEMBERSHIP_FETCH_BATCH_SIZE);
+			let members;
+			try {
+				// Discord's member gateway accepts multiple IDs per request. An empty
+				// successful result means absent; a failed request remains unknown.
+				members = await guild.members.fetch({
+					user: batch.map(birthday => birthday.userId),
+					time: 30_000,
+				});
+			} catch (err) {
+				unverified += batch.length;
+				warn(`Could not verify ${batch.length} birthday memberships for guild ${guildId}:`, err);
+				continue;
+			}
+
+			for (const birthday of batch) {
+				const member = members.get(birthday.userId);
+				try {
+					if (member && birthday.leftAt) {
+						restored += Number(await markBirthdayMemberJoined(client, guildId, birthday.userId, {
+							joinedAt: member.joinedAt || now,
+							now,
+						}));
+					} else if (!member && !birthday.leftAt) {
+						left += Number(await markBirthdayMemberLeft(client, guildId, birthday.userId, { now }));
+					}
+				} catch (err) {
+					unverified++;
+					warn(`Could not update birthday membership for guild ${guildId}, user ${birthday.userId}:`, err);
+				}
+			}
+		}
+	}
+
+	membershipReconciliationComplete = unverified === 0;
+	return { left, restored, unverified };
+}
+
 async function processBirthdayConfig(client, config) {
 	const now = DateTime.now().setZone(config.timezone);
 
@@ -1117,6 +1366,11 @@ async function processBirthdayConfig(client, config) {
 }
 
 async function checkBirthdays(client) {
+	// A failed member fetch could hide a timely offline rejoin. Automatic purges
+	// wait until every stored membership has been verified successfully.
+	if (membershipReconciliationComplete) {
+		await purgeExpiredBirthdayDepartures();
+	}
 	const configs = await BirthdayConfigs.findAll();
 
 	for (const config of configs) {
@@ -1146,13 +1400,19 @@ module.exports = {
 	pendingBirthdayCardDeliveryCandidates,
 	getUpcomingBirthdayEntries,
 	isValidTimezone,
+	markBirthdayMemberJoined,
+	markBirthdayMemberLeft,
 	deriveBirthdayDeliveryUrl,
 	normalizeBirthdayCardUrl,
 	parseBirthdayDate,
 	parseHour,
 	parseMonth,
 	refreshBirthdayBoard,
+	refreshBirthdayBoardForMembership,
 	refreshBirthdayBoardsForUser,
+	reconcileStoredBirthdayMemberships,
+	removeBirthdayMembership,
+	purgeExpiredBirthdayDepartures,
 	reverifyBirthdayCardDelivery,
 	reverifyBirthdayCardsForGuild,
 	reverifyBirthdayCardsForUser,

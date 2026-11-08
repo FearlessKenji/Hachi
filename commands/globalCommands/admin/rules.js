@@ -14,10 +14,11 @@ const {
 	TextInputBuilder,
 	TextInputStyle,
 } = require(`discord.js`);
-const { RulesVerificationMessages, Servers } = require(`../../../database/dbObjects.js`);
+const { RulesVerificationMessages, Servers, sequelize } = require(`../../../database/dbObjects.js`);
 const { normalizeColorInput, supportedColorText } = require(`../../../utils/colors.js`);
 const { RULES_VERIFICATION_EMOJI } = require(`../../../utils/rulesVerification.js`);
 const { roleIsAssignable } = require(`../../../utils/reactionRoles.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 const { error } = require(`../../../utils/writeLog.js`);
 
 const pendingRules = new Map();
@@ -230,18 +231,22 @@ async function getVerificationRole(interaction, pending) {
 	return role;
 }
 
-async function saveRulesVerification(interaction, pending, message, role) {
-	await Servers.upsert({ guildId: pending.guildId });
+async function saveRulesVerification(pending, message, role) {
 	await message.react(RULES_VERIFICATION_EMOJI);
-	await RulesVerificationMessages.destroy({
-		where: { guildId: pending.guildId },
-	});
-	await RulesVerificationMessages.create({
-		channelId: pending.channelId,
-		emoji: RULES_VERIFICATION_EMOJI,
-		guildId: pending.guildId,
-		messageId: message.id,
-		roleId: role.id,
+	await sequelize.transaction(async transaction => {
+		await Servers.upsert({ guildId: pending.guildId }, { transaction });
+		// The old verification ID remains usable if saving its replacement fails.
+		await RulesVerificationMessages.destroy({
+			transaction,
+			where: { guildId: pending.guildId },
+		});
+		await RulesVerificationMessages.create({
+			channelId: pending.channelId,
+			emoji: RULES_VERIFICATION_EMOJI,
+			guildId: pending.guildId,
+			messageId: message.id,
+			roleId: role.id,
+		}, { transaction });
 	});
 }
 
@@ -270,7 +275,13 @@ async function postRulesFromModal(interaction, pending) {
 	const message = await channel.send({ embeds });
 
 	if (verificationRole) {
-		await saveRulesVerification(interaction, pending, message, verificationRole);
+		try {
+			await saveRulesVerification(pending, message, verificationRole);
+		} catch (err) {
+			await message.delete().catch(deleteError =>
+				error(`Failed to remove an unsaved rules verification message ${message.id}:`, deleteError));
+			throw err;
+		}
 	}
 
 	const verificationText = verificationRole ?
@@ -352,6 +363,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		try {
 			await startPost(interaction);
 		} catch (err) {

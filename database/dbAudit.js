@@ -180,10 +180,12 @@ const EXPECTED_SCHEMA = [
 			column(`day`, `INTEGER`),
 			column(`lastUpcomingReminderDate`, `VARCHAR(255)`, { nullable: true }),
 			column(`lastBirthdayAnnouncementDate`, `VARCHAR(255)`, { nullable: true }),
+			column(`leftAt`, `DATETIME`, { nullable: true }),
 		],
 		indexes: [
 			index(`birthdayUsersGuildUser`, [`guildId`, `userId`], { unique: true }),
 			index(`birthdayUsersGuildDate`, [`guildId`, `month`, `day`]),
+			index(`birthdayUsersLeftAt`, [`leftAt`]),
 		],
 	},
 	{

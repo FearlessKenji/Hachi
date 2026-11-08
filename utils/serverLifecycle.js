@@ -5,14 +5,21 @@
 // Discord guilds against persisted rows at startup.
 const fs = require(`node:fs`);
 const path = require(`node:path`);
-const { Op } = require(`sequelize`);
+const { Op, Transaction } = require(`sequelize`);
 const {
+	AnnouncementDeliveryProgress,
+	BirthdayCards,
 	BirthdayConfigs,
 	BirthdayUsers,
 	Channels,
 	CommandMonitorWhitelists,
+	KickLiveSessions,
+	LinkBlockRules,
+	LinkConfigs,
+	LinkFixRules,
 	ModmailConfigs,
 	ModmailTickets,
+	PendingStreamVods,
 	RaidConfigs,
 	RaidIncidentFiles,
 	RaidIncidentMessages,
@@ -22,8 +29,10 @@ const {
 	ReactionRoleMessages,
 	RulesVerificationMessages,
 	Servers,
+	StreamChannelIdentities,
 	TwitchRoleConfigs,
 	TwitchRoleLinks,
+	TwitchVerificationPanels,
 	sequelize,
 } = require(`../database/dbObjects.js`);
 const { debug, info, warn } = require(`./writeLog.js`);
@@ -196,7 +205,7 @@ async function deleteEvidenceDirectories(guildIds) {
 				},
 				module: `server-lifecycle`,
 			});
-			continue;
+			throw new Error(`Refusing to delete server ${guildId} while its evidence path is unsafe.`);
 		}
 
 		try {
@@ -210,18 +219,69 @@ async function deleteEvidenceDirectories(guildIds) {
 				},
 				module: `server-lifecycle`,
 			});
+			throw err;
 		}
 	}
 }
 
-async function deleteGuildScopedRows(guildIds) {
-	const guildWhere = whereGuildIds(guildIds);
+async function deleteGuildScopedRows(guildIds, cutoff) {
+	return sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		// Recheck the cutoff under the write lock. A guild that rejoined while
+		// cleanup was waiting must keep its server ID and all dependent rows.
+		const expiredServers = await Servers.findAll({
+			attributes: [`guildId`],
+			raw: true,
+			transaction,
+			where: {
+				guildId: { [Op.in]: guildIds },
+				leftAt: { [Op.ne]: null, [Op.lte]: cutoff },
+			},
+		});
+		const expiredGuildIds = expiredServers.map(server => server.guildId);
+		if (!expiredGuildIds.length) {
+			return [];
+		}
+		const guildWhere = whereGuildIds(expiredGuildIds);
+		const associatedCardRows = await BirthdayCards.findAll({
+			attributes: [`userId`],
+			raw: true,
+			transaction,
+			where: {
+				[Op.or]: [
+					guildWhere,
+					{ deliveryGuildId: { [Op.in]: expiredGuildIds } },
+				],
+			},
+		});
+		// Transfer cards only for guilds that are still expired under the lock.
+		// This keeps card ownership changes in the same transaction as cleanup.
+		for (const guildId of expiredGuildIds) {
+			await transferBirthdayCardsFromGuild(guildId, { transaction });
+		}
+		const channelRows = await Channels.findAll({ attributes: [`id`], raw: true, transaction, where: guildWhere });
+		const birthdayRows = await BirthdayUsers.findAll({ attributes: [`userId`], raw: true, transaction, where: guildWhere });
+		const channelIds = channelRows.map(channel => channel.id);
+		const candidateUserIds = [...new Set([...birthdayRows, ...associatedCardRows].map(row => row.userId))];
+		if (candidateUserIds.length) {
+			const retainedBirthdayRows = await BirthdayUsers.findAll({
+				attributes: [`userId`],
+				raw: true,
+				transaction,
+				where: {
+					guildId: { [Op.notIn]: expiredGuildIds },
+					userId: { [Op.in]: candidateUserIds },
+				},
+			});
+			const retainedUserIds = new Set(retainedBirthdayRows.map(row => row.userId));
+			const orphanedUserIds = candidateUserIds.filter(userId => !retainedUserIds.has(userId));
+			if (orphanedUserIds.length) {
+				await BirthdayCards.destroy({
+					transaction,
+					where: { userId: { [Op.in]: orphanedUserIds } },
+				});
+			}
+		}
 
-	// Global birthday cards survive server cleanup; ownership and notification
-	// responsibility move before the departed server's scoped rows are removed.
-	await Promise.all(guildIds.map(guildId => transferBirthdayCardsFromGuild(guildId)));
-
-	await sequelize.transaction(async transaction => {
 		const incidentRows = await RaidIncidents.findAll({
 			attributes: [`id`],
 			raw: true,
@@ -243,7 +303,12 @@ async function deleteGuildScopedRows(guildIds) {
 		await RaidIncidentUsers.destroy({ transaction, where: guildWhere });
 		await RaidIncidents.destroy({ transaction, where: guildWhere });
 		await RaidConfigs.destroy({ transaction, where: guildWhere });
+		await AnnouncementDeliveryProgress.destroy({ transaction, where: guildWhere });
+		await LinkBlockRules.destroy({ transaction, where: guildWhere });
+		await LinkFixRules.destroy({ transaction, where: guildWhere });
+		await LinkConfigs.destroy({ transaction, where: guildWhere });
 		await TwitchRoleLinks.destroy({ transaction, where: guildWhere });
+		await TwitchVerificationPanels.destroy({ transaction, where: guildWhere });
 		await TwitchRoleConfigs.destroy({ transaction, where: guildWhere });
 		await CommandMonitorWhitelists.destroy({ transaction, where: guildWhere });
 		await ModmailTickets.destroy({ transaction, where: guildWhere });
@@ -253,8 +318,18 @@ async function deleteGuildScopedRows(guildIds) {
 		await RulesVerificationMessages.destroy({ transaction, where: guildWhere });
 		await ReactionRoleItems.destroy({ transaction, where: guildWhere });
 		await ReactionRoleMessages.destroy({ transaction, where: guildWhere });
+		if (channelIds.length) {
+			const channelWhere = { channelId: { [Op.in]: channelIds } };
+			await StreamChannelIdentities.destroy({ transaction, where: channelWhere });
+			await PendingStreamVods.destroy({ transaction, where: channelWhere });
+			await KickLiveSessions.destroy({ transaction, where: channelWhere });
+		}
 		await Channels.destroy({ transaction, where: guildWhere });
+		// If evidence cleanup fails, roll the database transaction back so the
+		// server ID remains available for a later cleanup attempt.
+		await deleteEvidenceDirectories(expiredGuildIds);
 		await Servers.destroy({ transaction, where: guildWhere });
+		return expiredGuildIds;
 	});
 }
 
@@ -288,20 +363,19 @@ async function deleteExpiredLeftServers({ now = new Date() } = {}) {
 		};
 	}
 
-	await deleteGuildScopedRows(guildIds);
-	await deleteEvidenceDirectories(guildIds);
+	const deletedGuildIds = await deleteGuildScopedRows(guildIds, cutoff);
 
-	info(`Deleted ${guildIds.length} server record(s) left for at least 7 days.`, {
+	info(`Deleted ${deletedGuildIds.length} server record(s) left for at least 7 days.`, {
 		meta: {
 			cutoff: cutoff.toISOString(),
-			guildIds,
+			guildIds: deletedGuildIds,
 		},
 		module: `server-lifecycle`,
 	});
 
 	return {
-		deleted: guildIds.length,
-		guildIds,
+		deleted: deletedGuildIds.length,
+		guildIds: deletedGuildIds,
 	};
 }
 
@@ -309,13 +383,17 @@ async function reconcileServerRows(client, { now = new Date() } = {}) {
 	const guilds = getGuilds(client);
 
 	if (!guilds.length) {
-		debug(`Server table reconciliation skipped: bot is not in any guilds.`, {
+		const hasLeftAt = await supportsLeftAt();
+		const markedLeftGuildIds = hasLeftAt ? await markMissingServersLeft([], now) : [];
+		const cleanupResult = hasLeftAt ? await deleteExpiredLeftServers({ now }) : { deleted: 0 };
+		debug(`Server table reconciliation found no current guilds.`, {
 			module: `server-lifecycle`,
 		});
 
 		return {
 			created: 0,
-			deleted: 0,
+			deleted: cleanupResult.deleted,
+			markedLeft: markedLeftGuildIds.length,
 			rejoined: 0,
 			total: 0,
 		};

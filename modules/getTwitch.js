@@ -16,8 +16,11 @@ const {
 	fetchMessage,
 	liveEmbed,
 	loadState,
+	notificationRoleId,
 	offlineEmbed,
 	roleMention,
+	streamCategory,
+	streamViewerCount,
 	syncMessage,
 	targetChannel,
 	vodWaitExpired,
@@ -290,21 +293,27 @@ async function getTwitch(client) {
 			const displayName = streamInfo.user_name || searchedChannel?.display_name || twitchUser?.display_name || login;
 			const profileImageUrl = twitchUser?.profile_image_url || searchedChannel?.thumbnail_url || null;
 			const streamUrl = `https://www.twitch.tv/${broadcasterLogin}`;
+			const categoryName = streamCategory(streamInfo.game_name);
+			const viewerCount = streamViewerCount(streamInfo.viewer_count);
+			const streamTitle = typeof streamInfo.title === `string` && streamInfo.title.trim() ?
+				streamInfo.title :
+				`Live now`;
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x9146FF,
 				name: displayName,
-				title: streamInfo.title,
+				title: streamTitle,
 				url: streamUrl,
-				category: streamInfo.game_name,
-				viewers: streamInfo.viewer_count,
+				category: categoryName,
+				viewers: viewerCount,
 				thumbnail: profileImageUrl,
 				image: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${broadcasterLogin}-640x360.jpg?cacheBypass=${Date.now()}`,
 				discordUrl: chan.discordUrl,
 				startedAt: streamInfo.started_at,
 			});
+			const allowedRoleId = notificationRoleId(chan, server, `selfTwitchRoleId`);
 			const roleText = roleMention(chan, server, `selfTwitchRoleId`);
-			const content = `${roleText}${displayName} just went live on Twitch streaming ${streamInfo.game_name}!`;
+			const content = `${roleText}${displayName} just went live on Twitch streaming ${categoryName}!`;
 
 			try {
 				await syncMessage({
@@ -313,6 +322,7 @@ async function getTwitch(client) {
 					shouldEdit: chan.twitchStreamId === streamInfo.id,
 					content,
 					embed: sendEmbed,
+					allowedRoleId,
 					onSend: message => Channels.update(
 						{ twitchMessageId: message.id, twitchStreamId: streamInfo.id },
 						{ where: { id: chan.id } },

@@ -256,6 +256,10 @@ role. The closed panel contains Transcript, Open, Delete, and Store buttons.
 Unstored closed channels are deleted after 15 days, including across restarts.
 Storing a ticket saves its text transcript, cancels automatic deletion, and uses
 one slot from the configured quota. Hachi never silently evicts stored tickets.
+Transcript downloads include message text, attachment links, and visible embed
+and sticker details. Long transcripts arrive as numbered text files. Hachi
+reports an error rather than silently truncating a ticket that exceeds 10,000
+messages, 24 MiB of text, or the upload limits.
 
 ### Link Management
 
@@ -317,9 +321,9 @@ Use `/stream remove name: streamername` to remove a streamer from the database.
 
 ### Twitch VIP Role Sync
 
-Use `/twitch connect` to connect the Discord server to the broadcaster's Twitch account. Hachi uses Twitch's device-code flow, so no public callback URL, domain, tunnel, or web server is required. The broadcaster opens Twitch, enters the activation code, and grants `channel:read:vips`.
+Use `/twitch connect` with Manage Server permission to connect the Discord server to the broadcaster's Twitch account. Hachi uses Twitch's device-code flow, so no public callback URL, domain, tunnel, or web server is required. The broadcaster opens Twitch, enters the activation code, and grants `channel:read:vips`. Hachi checks Manage Server again when the device approval finishes.
 
-Use `/twitch roles` to choose the Discord role for Twitch VIPs. Hachi must have Manage Roles, and Hachi's highest role must be above the mapped role.
+Use `/twitch roles` to choose the Discord role for Twitch VIPs. The person running `/twitch roles` or `/twitch sync` needs Manage Server and Manage Roles. Hachi also needs Manage Roles, and Hachi's highest role must be above the mapped role.
 
 Use `/twitch panel` to create or move the server's canonical verification panel. Hachi refreshes the stored message on startup and recreates it if deleted. The `action` option can force a refresh or remove the managed panel, and `/twitch status` reports its health.
 
@@ -391,6 +395,12 @@ Numeric birthday dates use American `MM/DD` order.
 - `/birthday view user: @member` shows a member's stored birthday.
 - `/birthday list month: January` lists birthdays for a month. Month input accepts names, abbreviations, or numbers, and the command provides month autocomplete.
 - `/birthday remove` removes your stored birthday from the current server.
+
+When Hachi observes a member leave, their birthday stops appearing in that
+server's posts and board. The saved birthday can return if they rejoin within
+seven days; after that grace period, Hachi removes the expired record and any
+card that is no longer shared with another server. Startup membership checks
+are batched, and unavailable checks are retried before automatic cleanup.
 
 Administrators can configure automatic birthday posts:
 

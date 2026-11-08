@@ -6,6 +6,29 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 # Unreleased
 
+# v3.13.0 - 2026-11-08
+
+### Birthdays
+
+- When Hachi observes a member leave, their birthday is removed from that server's posts and board while the record is kept for seven days. Rejoining within that period restores it. Hachi retries unavailable membership checks before deleting expired birthdays or cards.
+
+### Server Setup
+
+- Administrative commands require Manage Server when used, including after Discord command-permission overrides. Twitch VIP mapping and manual sync also require Manage Roles. A Twitch broadcaster connection checks Manage Server again when device approval finishes.
+- A failed startup initialization stops Hachi instead of repeatedly restarting with the supplied PM2 configuration. Failed Twitch and Kick app-token requests get up to five follow-up attempts per provider in a rolling hour.
+
+### Stream Notifications
+
+- Live alerts ping only the configured notification role. If a stream lacks category or viewer data, the alert shows `No Category` and `0` viewers.
+
+### Modmail
+
+- Longer ticket transcripts include the full available message history and can download as numbered text files. Transcripts include attachment links and visible embed and sticker details; Hachi gives a clear error when a ticket exceeds the export limits.
+
+### Twitch Verification
+
+- A failed panel deletion keeps its saved panel available for retry, and temporary Discord fetch failures no longer create a duplicate panel.
+
 # v3.12.3 - 2026-10-28
 
 ### Stream Notifications

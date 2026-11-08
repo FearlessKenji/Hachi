@@ -5,6 +5,7 @@
 // server/channel state efficiently for each cron tick.
 const { EmbedBuilder } = require(`discord.js`);
 const { Servers, Channels } = require(`../database/dbObjects.js`);
+const { warn } = require(`../utils/writeLog.js`);
 
 const STREAM_TIME_ZONE = `America/New_York`;
 // Retry age begins when Hachi confirms the stream ended, not when it started.
@@ -105,11 +106,14 @@ function targetChannel(client, chan, server, selfChannelKey) {
 	};
 }
 
-function roleMention(chan, server, selfRoleKey) {
-	const roleId = chan.isSelf ?
+function notificationRoleId(chan, server, selfRoleKey) {
+	return chan.isSelf ?
 		server[selfRoleKey] :
 		server.affiliateRoleId;
+}
 
+function roleMention(chan, server, selfRoleKey) {
+	const roleId = notificationRoleId(chan, server, selfRoleKey);
 	return roleId ? `<@&${roleId}> ` : ``;
 }
 
@@ -136,17 +140,40 @@ async function fetchMessage(discordChannel, messageId) {
 	}
 }
 
-async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, onSend }) {
+async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, allowedRoleId, onSend }) {
 	const existingMessage = await fetchMessage(discordChannel, messageId);
+	// Provider text can contain Discord mention syntax. Only the configured
+	// notification role may ping when an alert is sent or refreshed.
+	const allowedMentions = { parse: [], roles: allowedRoleId ? [allowedRoleId] : [] };
 
 	if (existingMessage && shouldEdit) {
-		await existingMessage.edit({ content, embeds: [embed] });
+		await existingMessage.edit({ content, embeds: [embed], allowedMentions });
 		return existingMessage;
 	}
 
-	const message = await discordChannel.send({ content, embeds: [embed] });
-	await onSend(message);
+	const message = await discordChannel.send({ content, embeds: [embed], allowedMentions });
+	try {
+		await onSend(message);
+	} catch (err) {
+		// Discord and the database cannot commit atomically. Remove an alert
+		// whose ID was not saved so the next poll can safely send it again.
+		try {
+			await message.delete();
+		} catch (cleanupError) {
+			warn(`Failed to delete unsaved stream alert ${message.id}:`, cleanupError);
+		}
+		throw err;
+	}
 	return message;
+}
+
+function streamCategory(value) {
+	return typeof value === `string` && value.trim() ? value : `No Category`;
+}
+
+function streamViewerCount(value) {
+	const count = Number(value);
+	return Number.isSafeInteger(count) && count >= 0 ? count : 0;
 }
 
 function liveEmbed({
@@ -257,8 +284,11 @@ module.exports = {
 	groupChannels,
 	liveEmbed,
 	loadState,
+	notificationRoleId,
 	offlineEmbed,
 	roleMention,
+	streamCategory,
+	streamViewerCount,
 	syncMessage,
 	targetChannel,
 	vodWaitExpired,

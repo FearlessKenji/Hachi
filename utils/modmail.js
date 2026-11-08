@@ -11,13 +11,25 @@ const {
 } = require(`discord.js`);
 const { Op, Transaction } = require(`sequelize`);
 const { Buffer } = require(`node:buffer`);
+const { promisify } = require(`node:util`);
+const { gzip, gunzip } = require(`node:zlib`);
 const { ModmailConfigs, ModmailTickets, sequelize } = require(`../database/dbObjects.js`);
-const { error, info, warn } = require(`./writeLog.js`);
+const { error, info } = require(`./writeLog.js`);
 
 const MODMAIL_COLOR = 0x5865f2;
 const CLOSED_COLOR = 0xfee75c;
 const DELETE_DELAY_MS = 15 * 24 * 60 * 60 * 1000;
 const INCOMPLETE_TICKET_AGE_MS = 10 * 60 * 1000;
+const MAX_TRANSCRIPT_MESSAGES = 10_000;
+const MAX_TRANSCRIPT_BYTES = 24 * 1024 * 1024;
+const MAX_STORED_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const TRANSCRIPT_PART_BYTES = 8 * 1024 * 1024;
+const MAX_TRANSCRIPT_PARTS = 25;
+const TRANSCRIPT_GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
+const COMPRESSED_TRANSCRIPT_PREFIX = `hachi-gzip-v1:`;
+const TRANSCRIPT_COMPRESSION_THRESHOLD_BYTES = 256 * 1024;
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 const ENTRY_CHANNEL_CACHE_TTL_MS = 30 * 1000;
 const ENTRY_CHANNEL_CACHE_MAX_GUILDS = 1024;
 const entryChannelCache = new Map();
@@ -180,8 +192,24 @@ async function getEntryChannelId(guildId) {
 	}
 }
 
+async function fetchGuildChannelIfPresent(guild, channelId) {
+	if (!channelId) {
+		return null;
+	}
+	try {
+		return await guild.channels.fetch(channelId);
+	} catch (err) {
+		// Only a confirmed missing channel justifies replacing a saved channel ID.
+		// A transient Discord error must leave the existing identity retryable.
+		if (Number(err?.code) === 10003) {
+			return null;
+		}
+		throw err;
+	}
+}
+
 async function ensureEntryPanel(guild, config) {
-	let channel = config.entryChannelId ? await guild.channels.fetch(config.entryChannelId).catch(() => null) : null;
+	let channel = await fetchGuildChannelIfPresent(guild, config.entryChannelId);
 
 	if (!channel) {
 		channel = await guild.channels.create({
@@ -202,9 +230,21 @@ async function ensureEntryPanel(guild, config) {
 		{ id: guild.members.me.id, allow: entryBotAllow },
 	], `Hachi Modmail managed-channel permissions`);
 
-	// Clear the saved ID before purging so MessageDelete does not interpret this
-	// intentional setup refresh as a panel that needs immediate restoration.
-	await config.update({ panelMessageId: null });
+	let panel = null;
+	if (config.panelMessageId) {
+		try {
+			panel = await channel.messages.fetch(config.panelMessageId);
+		} catch (err) {
+			if (Number(err?.code) !== 10008) {
+				throw err;
+			}
+		}
+	}
+	if (panel) {
+		// Repair the current panel in place. Its saved ID remains valid throughout
+		// the purge, and MessageDelete never sees an intentional panel deletion.
+		await panel.edit(buildEntryPanel());
+	}
 
 	// This channel is deliberately Hachi-managed. Purging guarantees the panel is
 	// the only message even when setup repairs a previously altered channel.
@@ -213,23 +253,34 @@ async function ensureEntryPanel(guild, config) {
 		messages = await channel.messages.fetch({ limit: 100 });
 		let deleted = 0;
 		for (const message of messages.values()) {
-			await message.delete()
-				.then(() => deleted += 1)
-				.catch(err => warn(`Failed to clear Modmail entry message ${message.id}: ${err.message}`));
+			if (message.id === panel?.id) {
+				continue;
+			}
+			await message.delete();
+			deleted++;
 		}
 		if (!deleted) {
 			break;
 		}
 	} while (messages.size === 100);
 
-	const panel = await channel.send(buildEntryPanel());
-	await config.update({ panelMessageId: panel.id });
+	if (!panel) {
+		const replacementPanel = await channel.send(buildEntryPanel());
+		// Retire the stale ID only after a complete purge and a replacement panel.
+		try {
+			await config.update({ panelMessageId: replacementPanel.id });
+		} catch (err) {
+			await replacementPanel.delete().catch(deleteError =>
+				error(`Could not remove an unsaved Modmail panel ${replacementPanel.id}:`, deleteError));
+			throw err;
+		}
+	}
 
 	return channel;
 }
 
 async function ensureInfrastructure(guild, settings) {
-	let category = settings.ticketCategoryId ? await guild.channels.fetch(settings.ticketCategoryId).catch(() => null) : null;
+	let category = await fetchGuildChannelIfPresent(guild, settings.ticketCategoryId);
 
 	if (!category || category.type !== ChannelType.GuildCategory) {
 		category = await guild.channels.create({ name: `Modmail Tickets`, type: ChannelType.GuildCategory, reason: `Hachi Modmail setup` });
@@ -555,46 +606,196 @@ async function reopenTicket(interaction, ticket) {
 	await interaction.channel.send({ content: `Ticket reopened by <@${interaction.user.id}>.`, allowedMentions: { parse: [] }, components: buildOpenControls(ticket.id) });
 }
 
-async function fetchAllMessages(channel) {
-	const messages = [];
-	let before;
+class TranscriptLimitError extends Error {}
 
-	do {
-		const batch = await channel.messages.fetch({ before, limit: 100 });
-		messages.push(...batch.values());
-		before = batch.last()?.id;
-		if (batch.size < 100) {
-			break;
-		}
-	} while (before);
-
-	return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+function formatTranscriptMessage(message) {
+	const details = [message.content || ``];
+	for (const attachment of message.attachments?.values() || []) {
+		details.push(`Attachment: ${attachment.url}`);
+	}
+	for (const embed of message.embeds || []) {
+		const embedDetails = [
+			embed.title,
+			embed.description,
+			embed.url,
+			...(embed.fields || []).map(field => `${field.name}: ${field.value}`),
+			embed.image?.url,
+			embed.thumbnail?.url,
+		].filter(Boolean);
+		details.push(`Embed: ${embedDetails.join(` | `) || `[no text]`}`);
+	}
+	for (const sticker of message.stickers?.values() || []) {
+		details.push(`Sticker: ${sticker.name} (${sticker.id})`);
+	}
+	return `[${message.createdAt.toISOString()}] ${message.author.tag || message.author.id} (${message.author.id}): ${details.filter(Boolean).join(` | `)}`;
 }
 
 async function generateTranscript(channel, ticket) {
-	const messages = await fetchAllMessages(channel);
-	const lines = [
+	const header = [
 		`Modmail ticket ${ticketName(ticket.ticketNumber)}`,
 		`Guild: ${channel.guild.name} (${channel.guild.id})`,
 		`Opened by: ${ticket.openerId}`,
 		`Opened: ${ticket.openedAt.toISOString()}`,
 		``,
-	];
+	].join(`\n`);
+	const pages = [];
+	let totalBytes = Buffer.byteLength(header, `utf8`);
+	let messageCount = 0;
+	let before;
+	const startedAt = Date.now();
 
-	for (const message of messages) {
-		const attachments = [...message.attachments.values()].map(item => item.url).join(` `);
-		lines.push(`[${message.createdAt.toISOString()}] ${message.author.tag} (${message.author.id}): ${message.content || ``}${attachments ? ` ${attachments}` : ``}`);
+	// Discord returns newest first. Keep only one fetched batch of message objects at a
+	// time, and prepend its formatted text so the finished transcript reads oldest first.
+	while (true) {
+		if (Date.now() - startedAt > TRANSCRIPT_GENERATION_TIMEOUT_MS) {
+			throw new TranscriptLimitError(`Transcript generation exceeded five minutes. No partial transcript was saved or sent; please retry.`);
+		}
+		const batch = await channel.messages.fetch({ before, limit: 100 });
+		if (Date.now() - startedAt > TRANSCRIPT_GENERATION_TIMEOUT_MS) {
+			throw new TranscriptLimitError(`Transcript generation exceeded five minutes. No partial transcript was saved or sent; please retry.`);
+		}
+		if (messageCount + batch.size > MAX_TRANSCRIPT_MESSAGES) {
+			throw new TranscriptLimitError(
+				`This transcript exceeds the ${MAX_TRANSCRIPT_MESSAGES.toLocaleString()}-message limit. ` +
+				`No partial transcript was saved or sent; ask the bot owner to export the ticket manually.`,
+			);
+		}
+		if (batch.size === 0) {
+			break;
+		}
+
+		const pageLines = [];
+		for (const message of [...batch.values()].reverse()) {
+			pageLines.push(formatTranscriptMessage(message));
+		}
+		const pageText = pageLines.join(`\n`);
+		totalBytes += Buffer.byteLength(pageText, `utf8`) + 1;
+		if (totalBytes > MAX_TRANSCRIPT_BYTES) {
+			throw new TranscriptLimitError(`This transcript exceeds the 24 MiB size limit. No partial transcript was saved or sent; ask the bot owner to export the ticket manually.`);
+		}
+		pages.unshift(pageText);
+		messageCount += batch.size;
+
+		if (batch.size < 100) {
+			break;
+		}
+		const nextBefore = batch.last()?.id;
+		if (!nextBefore || nextBefore === before) {
+			throw new Error(`Discord did not advance Modmail transcript pagination.`);
+		}
+		before = nextBefore;
 	}
 
-	return lines.join(`\n`);
+	return [header, ...pages].join(`\n`);
+}
+
+async function encodeStoredTranscript(transcript) {
+	const rawBytes = Buffer.byteLength(transcript, `utf8`);
+	let storedTranscript = transcript;
+	if (rawBytes > TRANSCRIPT_COMPRESSION_THRESHOLD_BYTES) {
+		// The existing TEXT column can hold a versioned compressed snapshot without a
+		// schema change. Older plain-text tickets remain readable.
+		const compressed = `${COMPRESSED_TRANSCRIPT_PREFIX}${(await gzipAsync(Buffer.from(transcript, `utf8`))).toString(`base64`)}`;
+		if (Buffer.byteLength(compressed, `utf8`) < rawBytes) {
+			storedTranscript = compressed;
+		}
+	}
+	if (Buffer.byteLength(storedTranscript, `utf8`) > MAX_STORED_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This transcript exceeds the 8 MiB stored-ticket limit after compression. The ticket was not stored; ask the bot owner to export it manually.`);
+	}
+	return storedTranscript;
+}
+
+async function decodeStoredTranscript(storedTranscript) {
+	if (!storedTranscript.startsWith(COMPRESSED_TRANSCRIPT_PREFIX)) {
+		// Pre-compression tickets were stored as plain text and may exceed today's
+		// snapshot limit. They remain downloadable up to the transcript output cap.
+		return storedTranscript;
+	}
+	if (Buffer.byteLength(storedTranscript, `utf8`) > MAX_STORED_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This stored transcript exceeds the supported 8 MiB snapshot limit. Ask the bot owner to export the ticket manually.`);
+	}
+	try {
+		const compressed = Buffer.from(storedTranscript.slice(COMPRESSED_TRANSCRIPT_PREFIX.length), `base64`);
+		return (await gunzipAsync(compressed, { maxOutputLength: MAX_TRANSCRIPT_BYTES })).toString(`utf8`);
+	} catch (err) {
+		error(`Could not decode a stored Modmail transcript:`, err);
+		throw new TranscriptLimitError(`The stored transcript could not be read. Ask the bot owner to inspect this ticket.`);
+	}
+}
+
+function splitTranscript(transcript, attachmentSizeLimit) {
+	const transcriptBytes = Buffer.from(transcript, `utf8`);
+	if (!transcriptBytes.length) {
+		throw new TranscriptLimitError(`This stored transcript is empty. Ask the bot owner to inspect this ticket.`);
+	}
+	if (transcriptBytes.length > MAX_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This transcript exceeds the 24 MiB size limit. Ask the bot owner to export the ticket manually.`);
+	}
+	// Leave room below Discord's per-interaction upload limit for request overhead.
+	const uploadLimit = Number.isSafeInteger(attachmentSizeLimit) ? attachmentSizeLimit - 1024 : TRANSCRIPT_PART_BYTES;
+	const partSizeLimit = Math.min(TRANSCRIPT_PART_BYTES, uploadLimit);
+	if (partSizeLimit < 1024) {
+		throw new TranscriptLimitError(`Discord's upload limit for this interaction is too small to deliver a transcript.`);
+	}
+	const parts = [];
+	for (let start = 0; start < transcriptBytes.length;) {
+		let end = Math.min(start + partSizeLimit, transcriptBytes.length);
+		if (end < transcriptBytes.length) {
+			const lastNewline = transcriptBytes.lastIndexOf(10, end - 1);
+			if (lastNewline >= end - Math.min(4096, Math.floor(partSizeLimit / 8))) {
+				end = lastNewline + 1;
+			} else {
+				// A long line can still be split without cutting a UTF-8 character.
+				while (end > start && (transcriptBytes[end] & 0xc0) === 0x80) {
+					end--;
+				}
+			}
+		}
+		parts.push(transcriptBytes.subarray(start, end));
+		if (parts.length > MAX_TRANSCRIPT_PARTS) {
+			throw new TranscriptLimitError(`Discord's upload limit would require more than ${MAX_TRANSCRIPT_PARTS} transcript attachments. No partial transcript was sent.`);
+		}
+		start = end;
+	}
+	return parts;
 }
 
 async function sendTranscript(interaction, ticket) {
 	await interaction.deferReply({ ephemeral: true });
-	const transcript = ticket.transcript || await generateTranscript(interaction.channel, ticket);
-	const attachment = new AttachmentBuilder(Buffer.from(transcript, `utf8`), { name: `${ticketName(ticket.ticketNumber)}.txt` });
+	let parts;
+	try {
+		const transcript = ticket.transcript === null || ticket.transcript === undefined ?
+			await generateTranscript(interaction.channel, ticket) :
+			await decodeStoredTranscript(ticket.transcript);
+		parts = splitTranscript(transcript, interaction.attachmentSizeLimit);
+	} catch (err) {
+		if (err instanceof TranscriptLimitError) {
+			return interaction.editReply({ content: err.message });
+		}
+		throw err;
+	}
 
-	await interaction.editReply({ content: `Transcript for ${ticketName(ticket.ticketNumber)}.`, files: [attachment] });
+	const name = ticketName(ticket.ticketNumber);
+	let sentParts = 0;
+	try {
+		for (const [partIndex, part] of parts.entries()) {
+			const filename = parts.length === 1 ? `${name}.txt` : `${name}-part-${String(partIndex + 1).padStart(2, `0`)}.txt`;
+			const payload = {
+				content: parts.length === 1 ? `Transcript for ${name}.` : `Transcript for ${name}, part ${partIndex + 1} of ${parts.length}.`,
+				files: [new AttachmentBuilder(part, { name: filename })],
+			};
+			if (partIndex === 0) {
+				await interaction.editReply(payload);
+			} else {
+				await interaction.followUp({ ...payload, ephemeral: true });
+			}
+			sentParts++;
+		}
+	} catch (err) {
+		error(`Could not deliver Modmail transcript ${ticket.id}:`, err);
+		await interaction.editReply({ content: `Could not deliver the complete transcript (${sentParts} of ${parts.length} parts sent). Please retry.` });
+	}
 }
 
 async function storeTicket(interaction, ticket, config) {
@@ -609,12 +810,21 @@ async function storeTicket(interaction, ticket, config) {
 	}
 
 	await interaction.deferReply({ ephemeral: true });
+	let transcript;
+	try {
+		transcript = await encodeStoredTranscript(await generateTranscript(interaction.channel, ticket));
+	} catch (err) {
+		if (err instanceof TranscriptLimitError) {
+			return interaction.editReply({ content: err.message });
+		}
+		throw err;
+	}
 	await ticket.update({
 		deleteAt: null,
 		status: `stored`,
 		storedAt: new Date(),
 		storedBy: interaction.user.id,
-		transcript: await generateTranscript(interaction.channel, ticket),
+		transcript,
 	});
 	await interaction.editReply(`Stored ${ticketName(ticket.ticketNumber)}. Its automatic deletion has been cancelled.`);
 }
@@ -733,8 +943,13 @@ async function restoreDeletedPanel(message) {
 		return false;
 	}
 	const panel = await message.channel.send(buildEntryPanel());
-	config.panelMessageId = panel.id;
-	await config.save();
+	try {
+		await config.update({ panelMessageId: panel.id });
+	} catch (err) {
+		await panel.delete().catch(deleteError =>
+			error(`Could not remove an unsaved replacement Modmail panel ${panel.id}:`, deleteError));
+		throw err;
+	}
 	return true;
 }
 

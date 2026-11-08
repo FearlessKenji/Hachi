@@ -38,6 +38,7 @@ const {
 	syncQuarantineOverwrites,
 } = require(`../../../utils/raidProtection.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 const RAID_COLOR = 0xed4245;
 const EMBED_FIELD_VALUE_LIMIT = 1024;
@@ -824,6 +825,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const subcommand = interaction.options.getSubcommand();
 
 		try {

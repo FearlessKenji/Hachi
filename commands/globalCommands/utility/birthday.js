@@ -38,7 +38,9 @@ const {
 	normalizeBirthdayCardUrl,
 	parseBirthdayDate,
 	parseMonth,
+	refreshBirthdayBoardForMembership,
 	refreshBirthdayBoardsForUser,
+	removeBirthdayMembership,
 	reverifyBirthdayCardDelivery,
 	reverifyBirthdayCardsForGuild,
 	reverifyBirthdayCardsForUser,
@@ -80,6 +82,7 @@ async function saveUserBirthday(guildId, userId, parsed) {
 	await BirthdayUsers.upsert({
 		day: parsed.day,
 		guildId,
+		leftAt: null,
 		month: parsed.month,
 		userId,
 	});
@@ -113,6 +116,7 @@ async function viewBirthday(interaction) {
 		raw: true,
 		where: {
 			guildId: interaction.guild.id,
+			leftAt: null,
 			userId: user.id,
 		},
 	});
@@ -173,6 +177,7 @@ async function listBirthdays(interaction) {
 		raw: true,
 		where: {
 			guildId: interaction.guild.id,
+			leftAt: null,
 			month,
 		},
 	});
@@ -194,19 +199,26 @@ async function listBirthdays(interaction) {
 }
 
 async function removeBirthday(interaction) {
-	const count = await BirthdayUsers.destroy({
-		where: {
-			guildId: interaction.guild.id,
-			userId: interaction.user.id,
-		},
-	});
+	const count = await removeBirthdayMembership(interaction.guild.id, interaction.user.id);
 
+	let refreshFailed = false;
 	if (count) {
-		await reverifyBirthdayCardsForUser(interaction.user.id, { force: true });
+		const updates = await Promise.allSettled([
+			reverifyBirthdayCardsForUser(interaction.user.id, { force: true }),
+			refreshBirthdayBoardForMembership(interaction.client, interaction.guild.id),
+		]);
+		for (const result of updates) {
+			if (result.status === `rejected`) {
+				refreshFailed = true;
+				logError(`Failed to refresh birthday state after a member removed their birthday:`, result.reason);
+			}
+		}
 	}
 
 	await interaction.reply({
-		content: count ? `Your birthday has been removed.` : `You do not have a birthday set.`,
+		content: count ?
+			`Your birthday has been removed.${refreshFailed ? ` The birthday board could not be refreshed yet.` : ``}` :
+			`You do not have a birthday set.`,
 		flags: MessageFlags.Ephemeral,
 	});
 }
@@ -229,6 +241,7 @@ async function getStoredBirthday(guildId, userId) {
 		raw: true,
 		where: {
 			guildId,
+			leftAt: null,
 			userId,
 		},
 	});

@@ -16,8 +16,11 @@ const {
 	formatStreamTime,
 	liveEmbed,
 	loadState,
+	notificationRoleId,
 	offlineEmbed,
 	roleMention,
+	streamCategory,
+	streamViewerCount,
 	syncMessage,
 	targetChannel,
 	vodWaitExpired,
@@ -377,31 +380,39 @@ async function getKick(client) {
 			const displayName = user?.name || streamInfo.slug;
 
 			const streamUrl = `https://www.kick.com/${streamInfo.slug}`;
+			const categoryName = streamCategory(streamInfo.category?.name);
+			const viewerCount = streamViewerCount(streamInfo.stream?.viewer_count);
+			const streamTitle = typeof streamInfo.stream_title === `string` && streamInfo.stream_title.trim() ?
+				streamInfo.stream_title :
+				`Live now`;
+			const streamThumbnail = streamInfo.stream?.thumbnail;
+			const imageUrl = streamThumbnail ? `${streamThumbnail}?cacheBypass=${Date.now()}` : null;
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x00E701,
 				name: displayName,
-				title: streamInfo.stream_title,
+				title: streamTitle,
 				url: streamUrl,
-				category: streamInfo.category.name,
-				viewers: streamInfo.stream.viewer_count,
+				category: categoryName,
+				viewers: viewerCount,
 				thumbnail: user?.profile_picture,
-				image: `${streamInfo.stream.thumbnail}?cacheBypass=${Date.now()}`,
+				image: imageUrl,
 				discordUrl: chan.discordUrl,
-				startedAt: streamInfo.stream.start_time,
+				startedAt: streamInfo.stream?.start_time,
 				discordInline: true,
 			});
+			const allowedRoleId = notificationRoleId(chan, server, `selfKickRoleId`);
 			const roleText = roleMention(chan, server, `selfKickRoleId`);
-			const content = `${roleText}${displayName} just went live on Kick streaming ${streamInfo.category.name}!`;
+			const content = `${roleText}${displayName} just went live on Kick streaming ${categoryName}!`;
 
 			try {
 				const previousMessage = chan.kickIsLive ?
 					await fetchMessage(discordChannel, chan.kickMessageId) :
 					null;
 				const liveSession = liveSessionFor(chan, sessionsByChannel);
-				const currentExactStart = kickVods.parseKickStartTime(streamInfo.stream.start_time);
+				const currentExactStart = kickVods.parseKickStartTime(streamInfo.stream?.start_time);
 				const previousStart = getStartLabel(previousMessage?.embeds[0]);
-				const currentStart = formatStreamTime(streamInfo.stream.start_time);
+				const currentStart = formatStreamTime(streamInfo.stream?.start_time);
 				const isNewStream = liveSession && currentExactStart ?
 					new Date(liveSession.startTime).getTime() !== currentExactStart.getTime() :
 					Boolean(previousStart && currentStart !== `unknown time` && previousStart !== currentStart);
@@ -424,6 +435,7 @@ async function getKick(client) {
 					shouldEdit: chan.kickIsLive && !isNewStream && !previousEnded,
 					content,
 					embed: sendEmbed,
+					allowedRoleId,
 					onSend: message => Channels.update(
 						{ kickMessageId: message.id, kickIsLive: true },
 						{ where: { id: chan.id } },
