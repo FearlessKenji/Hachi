@@ -7,6 +7,7 @@
 const Sequelize = require(`sequelize`);
 const path = require(`path`);
 const { isEncryptedDatabaseRuntimeEnabled } = require(`./dbEncryption.js`);
+const { installSqliteConnectionCleanup } = require(`./sqliteConnectionCleanup.js`);
 
 const dbPath = path.join(__dirname, `database.sqlite`);
 const encryptedRuntimeEnabled = isEncryptedDatabaseRuntimeEnabled(process.env.HACHI_DB_ENCRYPTION);
@@ -15,6 +16,13 @@ const sequelizeOptions = {
 	dialect: `sqlite`,
 	logging: false,
 	storage: dbPath,
+	// The SQLCipher adapter reports a busy writer as "database is locked" without
+	// Sequelize's usual SQLITE_BUSY prefix. Retry only that failed SQL statement;
+	// rerunning a whole birthday job could resend a Discord message.
+	retry: {
+		max: 3,
+		match: [/SQLITE_BUSY|database is locked/iu],
+	},
 };
 
 if (encryptedRuntimeEnabled) {
@@ -22,6 +30,7 @@ if (encryptedRuntimeEnabled) {
 }
 
 const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
+installSqliteConnectionCleanup(sequelize);
 
 // Models
 // Every model is registered against the shared Sequelize instance before any

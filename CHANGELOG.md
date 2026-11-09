@@ -2,9 +2,7 @@
 
 Notable changes to Hachi are documented here.
 
-## Unreleased
-
-## v3.13.0 - 2026-11-08
+## v3.13.0 - 2026-11-09
 
 ### Changed
 
@@ -12,6 +10,8 @@ Notable changes to Hachi are documented here.
 - Retried failed Twitch and Kick app-token requests independently with a durable six-attempt rolling-hour limit, refreshed rejected app tokens without a poll storm, and deferred stream polling until each provider has a token.
 - Skipped unchanged stream-alert edits and identity writes, and processed replay retries in bounded background batches so slow archives do not hold live polls open.
 - Updated the transitive `minimatch` development dependency to a patched release to address its glob-pattern denial-of-service advisory.
+- Moved birthday departure and board-retry maintenance to minute 7 and expired Modmail cleanup to minute 17, while keeping configured feature checks on their original schedules; retried SQLite busy statements with a bounded query-level policy.
+- Suppressed repeated replay lookup failures for the same stream or channel and logged provider recovery after an outage.
 
 ### Fixed
 
@@ -23,6 +23,9 @@ Notable changes to Hachi are documented here.
 - Retried failed birthday-board updates and retired old board messages after saving their replacements.
 - Kept rules verification records recoverable if a replacement could not be saved.
 - Expanded smoke coverage for birthday reconciliation, Modmail transition failures, server evidence recovery, stream update suppression, replay limits, and durable OAuth budgets.
+- Closed SQLite transaction connections after failed commits or rollbacks instead of leaving their write locks active until the bot exits.
+- Drained active cron, Discord event, replay, OAuth retry, and startup reconciliation work within PM2's stop window before closing SQLite; routed `/restart` through the same shutdown path.
+- Preserved error details in warning logs, routed named cron failures through structured logging, and clarified OAuth recovery, birthday posting and board retries, Modmail transcript, and server cleanup diagnostics.
 
 ## v3.12.3 - 2026-10-28
 

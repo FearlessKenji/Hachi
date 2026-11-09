@@ -926,7 +926,9 @@ async function sendTranscript(interaction, ticket) {
 		if (err instanceof TranscriptLimitError) {
 			return interaction.editReply({ content: err.message });
 		}
-		throw err;
+		// The interaction handler logs unexpected failures. Include the ticket
+		// so the operator can identify which transcript needs attention.
+		throw new Error(`Could not prepare Modmail transcript for ticket ${ticket.id}.`, { cause: err });
 	}
 
 	const name = ticketName(ticket.ticketNumber);

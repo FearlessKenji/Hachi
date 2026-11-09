@@ -18,15 +18,28 @@ const {
 } = require(`../utils/birthdays.js`);
 const BIRTHDAY_RECONCILIATION_RETRY_MS = 60 * 60 * 1000;
 let birthdayRetryTimer = null;
+let stoppingReadyTasks = false;
+const activeReadyTasks = new Set();
+
+function trackReadyTask(task) {
+	activeReadyTasks.add(task);
+	void task.then(
+		() => activeReadyTasks.delete(task),
+		() => activeReadyTasks.delete(task),
+	);
+	return task;
+}
 
 function scheduleBirthdayRetry(client) {
-	if (birthdayRetryTimer) {
+	if (stoppingReadyTasks || birthdayRetryTimer) {
 		return;
 	}
 
 	birthdayRetryTimer = setTimeout(() => {
 		birthdayRetryTimer = null;
-		void reconcileBirthdays(client);
+		if (!stoppingReadyTasks) {
+			void trackReadyTask(reconcileBirthdays(client));
+		}
 	}, BIRTHDAY_RECONCILIATION_RETRY_MS);
 	birthdayRetryTimer.unref();
 }
@@ -52,25 +65,45 @@ async function reconcileBirthdays(client) {
 }
 
 function runOptionalStartupTask(name, task) {
-	void Promise.resolve().then(task).catch(err => {
+	const pending = Promise.resolve().then(() => stoppingReadyTasks ? null : task()).catch(err => {
 		error(`Failed to initialize ${name}.`, err, { module: `ready` });
 	});
+	void trackReadyTask(pending);
+}
+
+function stopReadyTasks() {
+	stoppingReadyTasks = true;
+	if (birthdayRetryTimer) {
+		clearTimeout(birthdayRetryTimer);
+		birthdayRetryTimer = null;
+	}
+	return Promise.allSettled([...activeReadyTasks]);
 }
 
 module.exports = {
 	name: Events.ClientReady,
 	once: true,
 	reconcileServerRows,
+	stopReadyTasks,
 	async execute(client) {
 		// Database and server rows are required by command and cron handlers.
 		// Their failure propagates to index.js, which stops PM2 restart loops.
 		await dbInit();
+		if (stoppingReadyTasks) {
+			return;
+		}
 		await reconcileServerRows(client);
+		if (stoppingReadyTasks) {
+			return;
+		}
 
 		// Prime runtime auth tokens before stream checks begin.
 		info(`Priming auth tokens...`);
 
 		await Promise.all([updateTwitch(), updateKick()]);
+		if (stoppingReadyTasks) {
+			return;
+		}
 
 		// Start all cron jobs
 		for (const [name, job] of Object.entries(client.cronJobs)) {
@@ -88,7 +121,7 @@ module.exports = {
 
 		// These operations can need many Discord or provider calls. They run with
 		// explicit error handling after core startup so polling is not held back.
-		void reconcileBirthdays(client);
+		void trackReadyTask(reconcileBirthdays(client));
 		runOptionalStartupTask(`birthday board cleanup`, () => retryPendingBirthdayBoardWork(client));
 		runOptionalStartupTask(`Twitch role EventSub`, () => {
 			client.twitchRoleEventSub = startTwitchRoleEventSub(client);

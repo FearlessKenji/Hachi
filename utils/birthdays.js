@@ -19,7 +19,7 @@ const {
 	Servers,
 	sequelize,
 } = require(`../database/dbObjects.js`);
-const { error, warn } = require(`./writeLog.js`);
+const { error, info, warn } = require(`./writeLog.js`);
 
 const UPCOMING_BIRTHDAY_DAYS = 14;
 const IMMEDIATE_BIRTHDAY_REMINDER_DAYS = 2;
@@ -31,8 +31,30 @@ const CARD_URL_HOSTS = new Set([
 	`recocards.com`,
 	`www.recocards.com`,
 ]);
+const MAX_PENDING_BOARD_WARNINGS = 200;
 let membershipReconciliationComplete = false;
 const boardWorkTails = new Map();
+const pendingBoardWarnings = new Map();
+
+function warnPendingBoardUnavailable(guildId, reason) {
+	if (pendingBoardWarnings.get(guildId) === reason) {
+		return;
+	}
+
+	// Keep one actionable warning per guild/reason without flooding hourly retries.
+	pendingBoardWarnings.delete(guildId);
+	pendingBoardWarnings.set(guildId, reason);
+	if (pendingBoardWarnings.size > MAX_PENDING_BOARD_WARNINGS) {
+		pendingBoardWarnings.delete(pendingBoardWarnings.keys().next().value);
+	}
+	warn(`Birthday board refresh remains queued for guild ${guildId}: ${reason}.`);
+}
+
+function logPendingBoardRecovery(guildId) {
+	if (pendingBoardWarnings.delete(guildId)) {
+		info(`Birthday board refresh completed after an unavailable destination for guild ${guildId}.`);
+	}
+}
 
 function serializeBirthdayBoardWork(guildId, operation) {
 	// Board replacement, membership edits, and cleanup must not race for one guild.
@@ -1094,19 +1116,29 @@ async function refreshBirthdayBoardUnlocked(client, config, now, options = {}) {
 	const channelId = getBirthdayChannelId(config, `board`);
 
 	if (!channelId) {
+		if (options.pending) {
+			warnPendingBoardUnavailable(config.guildId, `no board channel is configured`);
+		}
 		return `unavailable`;
 	}
 
 	const guild = await getBirthdayGuild(client, config.guildId);
 
 	if (!guild) {
+		if (options.pending) {
+			warnPendingBoardUnavailable(config.guildId, `guild is unavailable`);
+		}
 		return `unavailable`;
 	}
 
 	const channel = guild.channels.cache.get(channelId) || await guild.channels.fetch(channelId).catch(() => null);
 
 	if (!channel?.send) {
-		warn(`Skipping birthday board refresh for guild ${config.guildId}; channel ${channelId} is unavailable`);
+		if (options.pending) {
+			warnPendingBoardUnavailable(config.guildId, `channel ${channelId} is unavailable`);
+		} else {
+			warn(`Skipping birthday board refresh for guild ${config.guildId}; channel ${channelId} is unavailable`);
+		}
 		return `unavailable`;
 	}
 
@@ -1218,9 +1250,10 @@ function refreshPendingBirthdayBoard(client, guildId) {
 		const revision = config.boardRevision;
 		const now = DateTime.now().setZone(config.timezone);
 		if (!now.isValid) {
+			warnPendingBoardUnavailable(guildId, `configured timezone is invalid`);
 			return false;
 		}
-		const outcome = await refreshBirthdayBoardUnlocked(client, config, now, { inPlace: true });
+		const outcome = await refreshBirthdayBoardUnlocked(client, config, now, { inPlace: true, pending: true });
 		if (outcome === `unavailable`) {
 			return false;
 		}
@@ -1229,6 +1262,7 @@ function refreshPendingBirthdayBoard(client, guildId) {
 		await BirthdayConfigs.update({ boardPublishedRevision: revision }, {
 			where: { guildId, boardPublishedRevision: { [Op.lt]: revision } },
 		});
+		logPendingBoardRecovery(guildId);
 		return true;
 	});
 }
@@ -1491,6 +1525,16 @@ async function reconcileStoredBirthdayMemberships(client, { now = new Date() } =
 	return { left, restored, unverified };
 }
 
+async function runBirthdayPostingStage(stage, operation) {
+	try {
+		return await operation();
+	} catch (err) {
+		// The outer cron logs one failure per guild. Retain the original SQL or
+		// Discord error as the cause while identifying the interrupted stage.
+		throw new Error(`Birthday ${stage} failed.`, { cause: err });
+	}
+}
+
 async function processBirthdayConfig(client, config) {
 	const now = DateTime.now().setZone(config.timezone);
 
@@ -1503,21 +1547,18 @@ async function processBirthdayConfig(client, config) {
 
 	const todayKey = now.toISODate();
 
-	await sendPendingUpcomingBirthdayReminders(client, config, now);
-	await sendPendingBirthdayAnnouncements(client, config, now);
+	await runBirthdayPostingStage(`upcoming reminders`, () =>
+		sendPendingUpcomingBirthdayReminders(client, config, now));
+	await runBirthdayPostingStage(`day announcements`, () =>
+		sendPendingBirthdayAnnouncements(client, config, now));
 
 	if (config.lastBoardPostDate !== todayKey) {
-		await refreshBirthdayBoard(client, config, now, { scheduled: true });
+		await runBirthdayPostingStage(`board refresh`, () =>
+			refreshBirthdayBoard(client, config, now, { scheduled: true }));
 	}
 }
 
 async function checkBirthdays(client) {
-	// A failed member fetch could hide a timely offline rejoin. Automatic purges
-	// wait until every stored membership has been verified successfully.
-	if (membershipReconciliationComplete) {
-		await purgeExpiredBirthdayDepartures();
-	}
-	await retryPendingBirthdayBoardWork(client);
 	const configs = await BirthdayConfigs.findAll();
 
 	for (const config of configs) {
@@ -1527,6 +1568,17 @@ async function checkBirthdays(client) {
 			error(`Failed to process birthday config for guild ${config.guildId}:`, err);
 		}
 	}
+}
+
+async function runBirthdayMaintenance(client) {
+	// Cleanup is independent of each guild's configured posting hour. Run it on
+	// a separate cron tick so it does not compete with timely birthday posts.
+	// A failed member fetch could hide a timely offline rejoin. Automatic purges
+	// wait until every stored membership has been verified successfully.
+	if (membershipReconciliationComplete) {
+		await purgeExpiredBirthdayDepartures();
+	}
+	await retryPendingBirthdayBoardWork(client);
 }
 
 module.exports = {
@@ -1559,6 +1611,7 @@ module.exports = {
 	refreshBirthdayBoardsForUser,
 	reconcileStoredBirthdayMemberships,
 	retryPendingBirthdayBoardWork,
+	runBirthdayMaintenance,
 	removeBirthdayMembership,
 	purgeExpiredBirthdayDepartures,
 	reverifyBirthdayCardDelivery,

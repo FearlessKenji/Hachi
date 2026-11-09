@@ -1300,6 +1300,7 @@ async function validateUnauthorizedAppTokenRecovery() {
 	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
 	const budget = require(resolveProject(`auth`, `authAttemptBudget.js`));
 	const tokenRequester = require(resolveProject(`auth`, `fetchAuthToken.js`));
+	const logger = require(resolveProject(`utils`, `writeLog.js`));
 	const refreshPath = resolveProject(`auth`, `refreshAuthTokens.js`);
 	const providerFetchPath = resolveProject(`modules`, `providerFetch.js`);
 	const original = {
@@ -1308,11 +1309,16 @@ async function validateUnauthorizedAppTokenRecovery() {
 		updateAuthTokens: authTokens.updateAuthTokens,
 		reserveAuthAttempt: budget.reserveAuthAttempt,
 		fetchAuthToken: tokenRequester.fetchAuthToken,
+		info: logger.info,
+		warn: logger.warn,
 	};
 	let currentToken = `rejected-token`;
 	let requestCount = 0;
 	let resolveTokenRequest;
+	const recoveryMessages = [];
 	try {
+		logger.info = message => recoveryMessages.push(message);
+		logger.warn = () => null;
 		authTokens.invalidateAuthToken = (_key, rejectedToken) => {
 			if (currentToken !== rejectedToken) {
 				return false;
@@ -1348,6 +1354,8 @@ async function validateUnauthorizedAppTokenRecovery() {
 		resolveTokenRequest(`replacement-token`);
 		await recovery;
 		assert(currentToken === `replacement-token`, `OAuth recovery did not install its replacement token.`);
+		assert(recoveryMessages.length === 1 && /Twitch OAuth.*recovered/iu.test(recoveryMessages[0]),
+			`A deduplicated 401 recovery did not log exactly one token recovery.`);
 		await fetchProviderApi(`https://example.com/stale`, requestOptions);
 		global.fetch = async () => ({ status: 503 });
 		await fetchProviderApi(`https://example.com/unavailable`, {
@@ -1361,6 +1369,8 @@ async function validateUnauthorizedAppTokenRecovery() {
 		authTokens.updateAuthTokens = original.updateAuthTokens;
 		budget.reserveAuthAttempt = original.reserveAuthAttempt;
 		tokenRequester.fetchAuthToken = original.fetchAuthToken;
+		logger.info = original.info;
+		logger.warn = original.warn;
 		delete require.cache[require.resolve(refreshPath)];
 		delete require.cache[require.resolve(providerFetchPath)];
 	}
@@ -1588,6 +1598,54 @@ async function validateEncryptedSequelizeRuntime() {
 		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
 		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
 
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateSqliteForcedConnectionCleanup() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const { installSqliteConnectionCleanup } = requireFresh(`database`, `sqliteConnectionCleanup.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-forced-sqlite-cleanup-`));
+	const dbPath = path.join(tempDir, `runtime.sqlite`);
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	let database = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-forced-cleanup-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		database = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		installSqliteConnectionCleanup(database);
+		await database.query(`CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`);
+
+		// Simulate Sequelize's failed-COMMIT cleanup with an uncommitted writer.
+		// Closing that connection must release its file lock and roll back the row.
+		const transactionId = `smoke-failed-commit`;
+		const writer = await database.connectionManager.getConnection({ uuid: transactionId });
+		writer.uuid = transactionId;
+		await adapterRun(writer, `BEGIN IMMEDIATE TRANSACTION`);
+		await adapterRun(writer, `INSERT INTO sample (value) VALUES (?)`, [`uncommitted`]);
+		await database.connectionManager.destroyConnection(writer);
+
+		assert(writer.open === false, `Failed SQLite transaction connection remained open.`);
+		assert(!database.connectionManager.connections[transactionId],
+			`Failed SQLite transaction connection remained cached.`);
+		const rows = await database.query(`SELECT COUNT(*) AS count FROM sample`, {
+			type: Sequelize.QueryTypes.SELECT,
+		});
+		assert(Number(rows[0]?.count) === 0, `Failed SQLite transaction was not rolled back on forced cleanup.`);
+	} finally {
+		if (database) {
+			await database.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }
@@ -2222,13 +2280,16 @@ async function validateKickVodLookup() {
 	const log = require(resolveProject(`utils`, `writeLog.js`));
 	const originalWarn = log.warn;
 	const originalError = log.error;
+	const originalInfo = log.info;
 	const warnings = [];
 	const errors = [];
+	const recoveryMessages = [];
 	const vodModulePath = resolveProject(`modules`, `kickVods.js`);
 
 	try {
 		log.warn = message => warnings.push(message);
 		log.error = (message, err) => errors.push({ message, err });
+		log.info = message => recoveryMessages.push(message);
 		const { getLatest } = requireFresh(`modules`, `kickVods.js`);
 		const missingChannelBody = `No query results for model [App\\Models\\Channel].`;
 
@@ -2266,6 +2327,7 @@ async function validateKickVodLookup() {
 			};
 		};
 		const vod = await getLatest(`current_kick_channel`);
+		assert(recoveryMessages.length === 0, `An unrelated Kick VoD lookup logged a false recovery.`);
 		assert(requestedUrl === `https://kick.com/api/v1/channels/current_kick_channel`, `Kick VoD lookup used the wrong channel endpoint.`);
 		assert(vod?.url === `https://kick.com/current_kick_channel/videos/test-vod`, `Kick VoD lookup did not return the replay link.`);
 		assert(vod?.title === `Test stream`, `Kick VoD lookup lost the replay title.`);
@@ -2306,7 +2368,50 @@ async function validateKickVodLookup() {
 		global.fetch = originalFetch;
 		log.warn = originalWarn;
 		log.error = originalError;
+		log.info = originalInfo;
 		delete require.cache[require.resolve(vodModulePath)];
+	}
+}
+
+async function validateReplayFailureLogging() {
+	const originalFetch = global.fetch;
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = log.error;
+	const originalInfo = log.info;
+	const errors = [];
+	const recoveries = [];
+	const twitchPath = resolveProject(`modules`, `twitchVods.js`);
+	const kickPath = resolveProject(`modules`, `kickVods.js`);
+
+	try {
+		log.error = (message, err) => errors.push({ message, err });
+		log.info = message => recoveries.push(message);
+		const twitchVods = requireFresh(`modules`, `twitchVods.js`);
+		const kickVods = requireFresh(`modules`, `kickVods.js`);
+		global.fetch = async () => ({ ok: false, status: 503, text: async () => `provider unavailable` });
+		for (let attempt = 0; attempt < 3; attempt++) {
+			assert((await twitchVods.getForStream(`broadcaster`, `stream`, `client`, `token`))?.retryable,
+				`Twitch VoD failure was not retryable.`);
+			assert((await kickVods.getLatest(`broadcaster`))?.retryable,
+				`Kick VoD failure was not retryable.`);
+		}
+		assert(errors.length === 2 && errors.every(entry => entry.err instanceof Error),
+			`Repeated replay outages should log once per provider lookup with the original errors.`);
+
+		global.fetch = async url => url.includes(`twitch.tv`) ?
+			{ ok: true, json: async () => ({ data: [] }) } :
+			{ ok: true, json: async () => ({ previous_livestreams: [] }) };
+		await twitchVods.getForStream(`broadcaster`, `stream`, `client`, `token`);
+		await kickVods.getLatest(`broadcaster`);
+		assert(recoveries.length === 2 && recoveries.some(message => message.includes(`Twitch`)) &&
+			recoveries.some(message => message.includes(`Kick`)),
+		`Replay lookups did not log one recovery per previously failing provider.`);
+	} finally {
+		Reflect.set(global, `fetch`, originalFetch);
+		log.error = originalError;
+		log.info = originalInfo;
+		delete require.cache[require.resolve(twitchPath)];
+		delete require.cache[require.resolve(kickPath)];
 	}
 }
 
@@ -4742,6 +4847,160 @@ async function validateLogArchiveRetention() {
 	}
 }
 
+function validateWarningErrorLogging() {
+	const logsPath = resolveProject(`logs`);
+	const originalExistsSync = fs.existsSync;
+	const originalAppendFileSync = fs.appendFileSync;
+	const originalConsoleWarn = console.warn;
+	const structuredEntries = [];
+
+	try {
+		// Keep the logger's writes in memory; smoke checks must never touch
+		// a running installation's log files.
+		Reflect.set(fs, `existsSync`, filePath =>
+			(typeof filePath === `string` && (filePath === logsPath || filePath.startsWith(`${logsPath}${path.sep}`))) ||
+			originalExistsSync(filePath));
+		Reflect.set(fs, `appendFileSync`, (filePath, content, options) => {
+			if (filePath === path.join(logsPath, new Date().toISOString().slice(0, 10), `structured.log`)) {
+				structuredEntries.push(JSON.parse(content));
+				return;
+			}
+			if (typeof filePath === `string` && filePath.startsWith(`${logsPath}${path.sep}`)) {
+				return;
+			}
+			originalAppendFileSync(filePath, content, options);
+		});
+		console.warn = () => null;
+		const logger = requireFresh(`utils`, `writeLog.js`);
+		logger.warn(`Birthday board update failed.`, new Error(`database is locked`));
+		logger.warn(`Birthday board retry queued.`, { module: `birthday`, meta: { guildId: `123` } });
+		assert(structuredEntries.length === 2 &&
+			structuredEntries[0].level === `WARNING` &&
+			structuredEntries[0].error?.message === `database is locked` &&
+			structuredEntries[0].error?.stack?.includes(`validateWarningErrorLogging`),
+		`Warning logger lost an Error's message or stack.`);
+		assert(structuredEntries[1].error === null && structuredEntries[1].module === `birthday` &&
+			structuredEntries[1].meta?.guildId === `123`,
+		`Warning logger no longer accepts module and metadata options.`);
+	} finally {
+		Reflect.set(fs, `existsSync`, originalExistsSync);
+		Reflect.set(fs, `appendFileSync`, originalAppendFileSync);
+		console.warn = originalConsoleWarn;
+	}
+}
+
+function validateCronSchedulesAndErrors() {
+	const logger = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = logger.error;
+	const recordedErrors = [];
+	const config = readJson(`config`, `config.json`);
+	const cronPath = resolveProject(`utils`, `crons.js`);
+
+	try {
+		logger.error = (message, err, options) => recordedErrors.push({ message, err, options });
+		const createCronJobs = requireFresh(`utils`, `crons.js`);
+		const jobs = createCronJobs({});
+		for (const [name, field] of [
+			[`Twitch`, `twitchCron`],
+			[`Kick`, `kickCron`],
+			[`Birthday`, `birthdayCron`],
+			[`Status`, `statusCron`],
+			[`Auth`, `authCron`],
+		]) {
+			assert(jobs[name]?.cronTime?.source === config[field],
+				`${name} bot job no longer runs at its configured cron time.`);
+		}
+		assert(jobs.BirthdayMaintenance?.cronTime?.source === `7 * * * *` &&
+			jobs.Modmail?.cronTime?.source === `17 * * * *`,
+		`Birthday and Modmail maintenance are not staggered away from the top of the hour.`);
+		for (const [name, job] of Object.entries(jobs)) {
+			assert(typeof job.errorHandler === `function`, `${name} cron errors bypass the Hachi logger.`);
+			const failure = new Error(`smoke ${name} failure`);
+			job.errorHandler(failure);
+			const entry = recordedErrors.at(-1);
+			const expectedName = name === `BirthdayMaintenance` ? `Birthday maintenance` : name;
+			assert(entry?.message?.includes(expectedName) && entry.err === failure && entry.options?.module === `cron`,
+				`${name} cron errors lack the job name, original error, or cron module.`);
+		}
+	} finally {
+		logger.error = originalError;
+		delete require.cache[require.resolve(cronPath)];
+	}
+}
+
+function validateSqliteBusyRetryConfiguration() {
+	const { sequelize } = require(resolveProject(`database`, `dbObjects.js`));
+	const retry = sequelize.options.retry;
+	const matches = message => retry.match?.some(pattern => pattern.test(message));
+	assert(Number.isInteger(retry.max) && retry.max > 0 && retry.max <= 3 &&
+		matches(`SQLITE_BUSY: database is locked`) && matches(`database is locked`) &&
+		!matches(`permission denied`),
+	`SQLCipher lock failures must have a narrow, bounded Sequelize retry.`);
+}
+
+async function validateGracefulShutdownDrain() {
+	const { drainAndCloseRuntime } = requireFresh(`utils`, `gracefulShutdown.js`);
+	const calls = [];
+	const logger = {
+		info: () => null,
+		error: () => null,
+		warn: message => calls.push(message),
+	};
+	let finishEvent;
+	const activeEvent = new Promise(resolve => {
+		finishEvent = resolve;
+	});
+	let finishCron;
+	const cronCompletion = new Promise(resolve => {
+		finishCron = resolve;
+	});
+	const common = {
+		client: { destroy: async () => { calls.push(`discord closed`); } },
+		cronJobs: { Birthday: { stop: () => {
+			calls.push(`cron stopped`);
+			return cronCompletion;
+		} } },
+		logger,
+		replayWaiters: [() => Promise.resolve()],
+		stopAuthRefresh: () => Promise.resolve(),
+		stopEventSub: () => Promise.resolve(),
+		stopReadyTasks: () => Promise.resolve(),
+		stopLogCleanup: () => null,
+	};
+	const completed = drainAndCloseRuntime({
+		...common,
+		activeEvents: new Set([activeEvent]),
+		database: { close: async () => { calls.push(`database closed`); } },
+		drainTimeoutMs: 100,
+	});
+	await Promise.resolve();
+	assert(!calls.includes(`database closed`), `Shutdown closed SQLite while a Discord event was active.`);
+	finishEvent();
+	await Promise.resolve();
+	assert(!calls.includes(`database closed`), `Shutdown closed SQLite while a cron callback was active.`);
+	finishCron();
+	const result = await completed;
+	assert(result.drained && calls.indexOf(`database closed`) > calls.indexOf(`cron stopped`) &&
+		calls.indexOf(`discord closed`) > calls.indexOf(`database closed`),
+	`Shutdown did not drain jobs and close SQLite before Discord.`);
+
+	const timedOutCalls = [];
+	const stalledEvent = new Promise(resolve => {
+		// Keep the event pending to exercise the bounded shutdown path.
+		void resolve;
+	});
+	const timedOut = await drainAndCloseRuntime({
+		...common,
+		activeEvents: new Set([stalledEvent]),
+		client: { destroy: async () => { timedOutCalls.push(`discord closed`); } },
+		database: { close: async () => { timedOutCalls.push(`database closed`); } },
+		drainTimeoutMs: 10,
+	});
+	assert(!timedOut.drained && !timedOutCalls.includes(`database closed`) &&
+		timedOutCalls.includes(`discord closed`) && calls.some(message => message.includes(`timed out`)),
+	`Shutdown should leave SQLite open for process exit when active work exceeds its drain limit.`);
+}
+
 async function main() {
 	let dbObjects = null;
 
@@ -4774,7 +5033,10 @@ async function main() {
 	await test(`new streamer IDs reuse only safe gaps`, validateReusableChannelIds);
 	await test(`Modmail index rejects new duplicates but preserves legacy tickets`, validateOneOpenModmailTicketIndex);
 	await test(`SQLCipher adapter normalizes Sequelize bind values`, validateSqlcipherAdapterBindNormalization);
+	await test(`SQLCipher lock failures use a bounded database retry`, validateSqliteBusyRetryConfiguration);
+	await test(`shutdown drains active work before closing SQLite`, validateGracefulShutdownDrain);
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
+	await test(`forced SQLite cleanup releases a failed transaction's lock`, validateSqliteForcedConnectionCleanup);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
 	await test(`database migration and audit use an isolated schema`, auditIsolatedDatabase);
@@ -4784,8 +5046,11 @@ async function main() {
 	await test(`parallel app-token 401s refresh once without discarding a newer token`, validateUnauthorizedAppTokenRecovery);
 	await test(`configCheck validates isolated config and rejects bad cron expressions`, validateConfigCheckInIsolatedFixture);
 	await test(`log cleanup removes only old valid-date archives`, validateLogArchiveRetention);
+	await test(`warning logs retain Error details and metadata`, validateWarningErrorLogging);
+	await test(`cron errors name their jobs and configured schedules stay intact`, validateCronSchedulesAndErrors);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
+	await test(`replay outages suppress duplicate errors and log recovery`, validateReplayFailureLogging);
 	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
 	await test(`Twitch stream lookups batch logins and contain batch failures`, validateTwitchStreamBatchLookup);
 	await test(`stream announcement fetches distinguish deletion from transient errors`, validateStreamMessageFetch);

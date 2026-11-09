@@ -482,13 +482,15 @@ async function deleteExpiredLeftServers({ now = new Date() } = {}) {
 
 	const deletedGuildIds = await deleteGuildScopedRows(guildIds, cutoff);
 
-	info(`Deleted ${deletedGuildIds.length} server record(s) left for at least 7 days.`, {
-		meta: {
-			cutoff: cutoff.toISOString(),
-			guildIds: deletedGuildIds,
-		},
-		module: `server-lifecycle`,
-	});
+	if (deletedGuildIds.length) {
+		info(`Deleted ${deletedGuildIds.length} server record(s) left for at least 7 days.`, {
+			meta: {
+				cutoff: cutoff.toISOString(),
+				guildIds: deletedGuildIds,
+			},
+			module: `server-lifecycle`,
+		});
+	}
 
 	return {
 		deleted: deletedGuildIds.length,

@@ -619,8 +619,12 @@ function info(message, options = {}) {
 	return writeLog(message, null, { ...normalizeOptions(options), level: `INFO` });
 }
 
-function warn(message, options = {}) {
-	return writeLog(message, null, { ...normalizeOptions(options), level: `WARNING` });
+function warn(message, errorOrOptions = {}, options = {}) {
+	// Warning callers often have a retryable Error. Keep its stack while
+	// preserving the existing warn(message, options) call shape.
+	const warningError = errorOrOptions instanceof Error ? errorOrOptions : null;
+	const warningOptions = warningError ? options : errorOrOptions;
+	return writeLog(message, warningError, { ...normalizeOptions(warningOptions), level: `WARNING` });
 }
 
 function error(message, err = null, options = {}) {

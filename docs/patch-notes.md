@@ -4,13 +4,17 @@ These notes are written for server owners and moderators. They include changes
 that affect setup, security, day-to-day use, or visible bot behavior. For the
 full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hachi/blob/main/CHANGELOG.md).
 
-# Unreleased
+# v3.13.0 - 2026-11-09
 
-# v3.13.0 - 2026-11-08
+### Reliability
+
+- If a database transaction cannot commit or roll back, Hachi closes its connection instead of leaving the database locked until restart.
+- PM2 stops and `/restart` now allow active bot work a brief period to finish before the database closes.
 
 ### Birthdays
 
 - When Hachi observes a member leave, their birthday is removed from that server's posts and board while the record is kept for seven days. Rejoining within that period restores it. Hachi retries unavailable membership checks and board updates; an existing board stays visible until its replacement is posted.
+- Hourly retries for pending birthday boards and departed-member cleanup now run seven minutes past the hour.
 
 ### Server Setup
 
@@ -26,6 +30,7 @@ full developer history, see [CHANGELOG.md](https://github.com/FearlessKenji/Hach
 
 - Longer ticket transcripts include the full available message history and can download as numbered text files. Reopened stored tickets include later messages when closed again. Transcripts include attachment links and visible embed and sticker details; Hachi gives a clear error when a ticket exceeds the export limits.
 - Hachi reports failed close and reopen attempts and tries to restore the ticket's prior state and access.
+- Expired ticket cleanup now runs 17 minutes past the hour.
 
 ### Twitch Verification
 
