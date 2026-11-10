@@ -25,6 +25,7 @@ async function getChannelsByBroadcasterIds(userIds, clientID, authKey) {
 
 		try {
 			const res = await fetchProviderApi(url.toString(), {
+				appTokenProvider: `Kick`,
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

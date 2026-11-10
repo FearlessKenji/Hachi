@@ -7,6 +7,7 @@
 const Sequelize = require(`sequelize`);
 const path = require(`path`);
 const { isEncryptedDatabaseRuntimeEnabled } = require(`./dbEncryption.js`);
+const { installSqliteConnectionCleanup } = require(`./sqliteConnectionCleanup.js`);
 
 const dbPath = path.join(__dirname, `database.sqlite`);
 const encryptedRuntimeEnabled = isEncryptedDatabaseRuntimeEnabled(process.env.HACHI_DB_ENCRYPTION);
@@ -15,6 +16,13 @@ const sequelizeOptions = {
 	dialect: `sqlite`,
 	logging: false,
 	storage: dbPath,
+	// The SQLCipher adapter reports a busy writer as "database is locked" without
+	// Sequelize's usual SQLITE_BUSY prefix. Retry only that failed SQL statement;
+	// rerunning a whole birthday job could resend a Discord message.
+	retry: {
+		max: 3,
+		match: [/SQLITE_BUSY|database is locked/iu],
+	},
 };
 
 if (encryptedRuntimeEnabled) {
@@ -22,6 +30,7 @@ if (encryptedRuntimeEnabled) {
 }
 
 const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
+installSqliteConnectionCleanup(sequelize);
 
 // Models
 // Every model is registered against the shared Sequelize instance before any
@@ -29,6 +38,7 @@ const sequelize = new Sequelize(`database`, ``, ``, sequelizeOptions);
 // aware of the full table set on startup.
 const Servers = require(`./models/servers.js`)(sequelize, Sequelize.DataTypes);
 const AnnouncementDeliveryProgress = require(`./models/announcementDeliveryProgress.js`)(sequelize, Sequelize.DataTypes);
+const AuthRequestAttempts = require(`./models/authRequestAttempts.js`)(sequelize, Sequelize.DataTypes);
 const Channels = require(`./models/channels.js`)(sequelize, Sequelize.DataTypes);
 const StreamChannelIdentities = require(`./models/streamChannelIdentities.js`)(sequelize, Sequelize.DataTypes);
 const PendingStreamVods = require(`./models/pendingStreamVods.js`)(sequelize, Sequelize.DataTypes);
@@ -52,6 +62,10 @@ const BirthdayUsers = require(`./models/birthdayUsers.js`)(
 	Sequelize.DataTypes,
 );
 const BirthdayConfigs = require(`./models/birthdayConfigs.js`)(
+	sequelize,
+	Sequelize.DataTypes,
+);
+const BirthdayBoardRetiredMessages = require(`./models/birthdayBoardRetiredMessages.js`)(
 	sequelize,
 	Sequelize.DataTypes,
 );
@@ -256,6 +270,13 @@ BirthdayConfigs.belongsTo(Servers, {
 	onUpdate: `CASCADE`,
 });
 
+Servers.hasMany(BirthdayBoardRetiredMessages, {
+	foreignKey: `guildId`, sourceKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+BirthdayBoardRetiredMessages.belongsTo(Servers, {
+	foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE`,
+});
+
 Servers.hasMany(BirthdayCards, {
 	foreignKey: `guildId`,
 	sourceKey: `guildId`,
@@ -414,6 +435,7 @@ Servers.hasMany(ModmailTickets, { foreignKey: `guildId`, sourceKey: `guildId`, o
 ModmailTickets.belongsTo(Servers, { foreignKey: `guildId`, targetKey: `guildId`, onDelete: `RESTRICT`, onUpdate: `CASCADE` });
 
 module.exports = {
+	AuthRequestAttempts,
 	sequelize,
 	Servers,
 	AnnouncementDeliveryProgress,
@@ -426,6 +448,7 @@ module.exports = {
 	RulesVerificationMessages,
 	BirthdayUsers,
 	BirthdayConfigs,
+	BirthdayBoardRetiredMessages,
 	BirthdayCards,
 	CommandMonitorWhitelists,
 	LinkConfigs,

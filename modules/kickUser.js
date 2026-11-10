@@ -17,6 +17,7 @@ async function fetchUsers(userIds, clientID, authKey) {
 	}
 
 	const response = await fetchProviderApi(url.toString(), {
+		appTokenProvider: `Kick`,
 		headers: {
 			'Client-ID': clientID,
 			'Authorization': `Bearer ${authKey}`,

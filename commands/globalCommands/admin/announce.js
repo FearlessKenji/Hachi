@@ -11,6 +11,7 @@ const {
 } = require(`discord.js`);
 const config = require(`../../../config/config.json`);
 const { broadcastLatestPatchNotes } = require(`../../../utils/announcements.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 const { isConfiguredOwner } = require(`../../../utils/configValues.js`);
 const { error: logError, info } = require(`../../../utils/writeLog.js`);
 
@@ -90,6 +91,9 @@ module.exports = {
 	async execute(interaction) {
 		if (!isConfiguredOwner(config, interaction.user.id)) {
 			await interaction.reply({ content: `You are not authorized to use this command.`, flags: MessageFlags.Ephemeral });
+			return;
+		}
+		if (!await requireManageServer(interaction)) {
 			return;
 		}
 

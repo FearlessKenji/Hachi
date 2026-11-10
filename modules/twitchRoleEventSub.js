@@ -101,6 +101,17 @@ function createService(client) {
 	let reconnectTimer = null;
 	let pausedForNoConfigs = false;
 	let stopped = false;
+	const activeTasks = new Set();
+
+	function trackTask(task) {
+		const pending = Promise.resolve(task);
+		activeTasks.add(pending);
+		void pending.then(
+			() => activeTasks.delete(pending),
+			() => activeTasks.delete(pending),
+		);
+		return pending;
+	}
 
 	function clearReconnectTimer() {
 		if (reconnectTimer) {
@@ -116,7 +127,7 @@ function createService(client) {
 
 		reconnectTimer = setTimeout(() => {
 			reconnectTimer = null;
-			connectWhenConfigured();
+			trackTask(connectWhenConfigured());
 		}, RECONNECT_DELAY_MS);
 	}
 
@@ -286,7 +297,10 @@ function createService(client) {
 		});
 
 		ws.on(`message`, raw => {
-			handleMessage(ws, raw).catch(err => error(`Failed to handle Twitch EventSub message:`, err));
+			if (stopped) {
+				return;
+			}
+			trackTask(handleMessage(ws, raw).catch(err => error(`Failed to handle Twitch EventSub message:`, err)));
 		});
 
 		ws.on(`close`, () => {
@@ -330,7 +344,7 @@ function createService(client) {
 
 	function start() {
 		stopped = false;
-		connectWhenConfigured();
+		trackTask(connectWhenConfigured());
 	}
 
 	function stop() {
@@ -341,6 +355,9 @@ function createService(client) {
 			socket.close(1000, `Hachi shutting down`);
 			socket = null;
 		}
+		// Closing the socket prevents new messages; finish handlers that already
+		// started before Sequelize closes its connections.
+		return Promise.allSettled([...activeTasks]);
 	}
 
 	function restart() {
@@ -353,7 +370,7 @@ function createService(client) {
 		}
 
 		if (!stopped) {
-			connectWhenConfigured();
+			trackTask(connectWhenConfigured());
 		}
 	}
 
@@ -376,11 +393,12 @@ function startTwitchRoleEventSub(client) {
 
 function stopTwitchRoleEventSub() {
 	if (!activeService) {
-		return;
+		return Promise.resolve();
 	}
 
-	activeService.stop();
+	const stopped = activeService.stop();
 	activeService = null;
+	return stopped;
 }
 
 module.exports = {

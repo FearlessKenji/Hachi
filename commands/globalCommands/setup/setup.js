@@ -22,6 +22,7 @@ const {
 	sendLatestPatchNotesToGuild,
 } = require(`../../../utils/announcements.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 const SETUP_COLOR = 0xffb020;
 const textChannelTypes = [
@@ -245,6 +246,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		try {
 			const setupId = interaction.id;
 

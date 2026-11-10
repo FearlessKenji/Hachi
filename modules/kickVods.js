@@ -2,11 +2,42 @@
 //
 // Match Kick's past streams to the announcement's saved start time before
 // supplying a replay link. The newest listed video may belong to another stream.
-const { error, warn } = require(`../utils/writeLog.js`);
+const { error, info, warn } = require(`../utils/writeLog.js`);
 const { formatStreamTime } = require(`./streamUtils.js`);
 const { fetchProviderApi } = require(`./providerFetch.js`);
 const missingChannelWarnings = new Set();
 const securityPolicyWarnings = new Set();
+const REPLAY_ERROR_REPEAT_MS = 30 * 60 * 1000;
+const MAX_REPLAY_ERROR_KEYS = 200;
+const replayFailures = new Map();
+
+function logReplayFailure(channelName, err) {
+	const now = Date.now();
+	const previous = replayFailures.get(channelName);
+	if (previous && now - previous.lastLoggedAt < REPLAY_ERROR_REPEAT_MS) {
+		previous.suppressedCount++;
+		return;
+	}
+
+	const repeats = previous?.suppressedCount ? ` (${previous.suppressedCount} repeated failure(s) suppressed)` : ``;
+	error(`Failed to fetch Kick VoD for ${channelName}${repeats}:`, err);
+	// Each entry belongs to a configured broadcaster; cap retained failures in
+	// case many stale names accumulate across successive stream polls.
+	replayFailures.delete(channelName);
+	replayFailures.set(channelName, { lastLoggedAt: now, suppressedCount: 0 });
+	if (replayFailures.size > MAX_REPLAY_ERROR_KEYS) {
+		replayFailures.delete(replayFailures.keys().next().value);
+	}
+}
+
+function logReplayRecovery(channelName) {
+	const hadFailure = replayFailures.delete(channelName);
+	const hadMissingChannel = missingChannelWarnings.delete(channelName);
+	const hadSecurityBlock = securityPolicyWarnings.delete(channelName);
+	if (hadFailure || hadMissingChannel || hadSecurityBlock) {
+		info(`Kick VoD lookup recovered for ${channelName}.`);
+	}
+}
 
 function isSecurityPolicyBlock(status, text) {
 	return status === 403 && /security policy/iu.test(String(text || ``));
@@ -76,8 +107,6 @@ async function getLatest(channelName, startLabel = null, providerStartTime = nul
 			throw new Error(`HTTP ${res.status} - ${text}`);
 		}
 
-		missingChannelWarnings.delete(channelName);
-		securityPolicyWarnings.delete(channelName);
 		const data = await res.json();
 		const pastStreams = Array.isArray(data.previous_livestreams) ? data.previous_livestreams : [];
 		const exactStart = parseKickStartTime(providerStartTime);
@@ -100,10 +129,11 @@ async function getLatest(channelName, startLabel = null, providerStartTime = nul
 		const livestream = matchingStreams.length === 1 ? matchingStreams[0] : null;
 
 		if (!livestream?.video?.uuid) {
+			logReplayRecovery(channelName);
 			return null;
 		}
 
-		return {
+		const vod = {
 			title: livestream.session_title,
 			startTime: livestream.start_time || livestream.created_at || null,
 			url: `https://kick.com/${data.slug || channelName}/videos/${livestream.video.uuid}`,
@@ -112,8 +142,10 @@ async function getLatest(channelName, startLabel = null, providerStartTime = nul
 				livestream.video.thumbnail?.src ||
 				(typeof livestream.video.thumbnail === `string` ? livestream.video.thumbnail : null),
 		};
+		logReplayRecovery(channelName);
+		return vod;
 	} catch (err) {
-		error(`Failed to fetch Kick VoD for ${channelName}:`, err);
+		logReplayFailure(channelName, err);
 		return { retryable: true, url: null };
 	}
 }

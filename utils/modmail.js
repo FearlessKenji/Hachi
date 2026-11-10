@@ -11,16 +11,31 @@ const {
 } = require(`discord.js`);
 const { Op, Transaction } = require(`sequelize`);
 const { Buffer } = require(`node:buffer`);
+const { promisify } = require(`node:util`);
+const { gzip, gunzip } = require(`node:zlib`);
 const { ModmailConfigs, ModmailTickets, sequelize } = require(`../database/dbObjects.js`);
-const { error, info, warn } = require(`./writeLog.js`);
+const { error, info } = require(`./writeLog.js`);
 
 const MODMAIL_COLOR = 0x5865f2;
 const CLOSED_COLOR = 0xfee75c;
 const DELETE_DELAY_MS = 15 * 24 * 60 * 60 * 1000;
 const INCOMPLETE_TICKET_AGE_MS = 10 * 60 * 1000;
+const MAX_TRANSCRIPT_MESSAGES = 10_000;
+const MAX_TRANSCRIPT_BYTES = 24 * 1024 * 1024;
+const MAX_STORED_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+const TRANSCRIPT_PART_BYTES = 8 * 1024 * 1024;
+const MAX_TRANSCRIPT_PARTS = 25;
+const TRANSCRIPT_GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
+const COMPRESSED_TRANSCRIPT_PREFIX = `hachi-gzip-v1:`;
+const TRANSCRIPT_COMPRESSION_THRESHOLD_BYTES = 256 * 1024;
+const gzipAsync = promisify(gzip);
+const gunzipAsync = promisify(gunzip);
 const ENTRY_CHANNEL_CACHE_TTL_MS = 30 * 1000;
 const ENTRY_CHANNEL_CACHE_MAX_GUILDS = 1024;
 const entryChannelCache = new Map();
+// Component clicks for one ticket can arrive together. Serialize transitions so
+// a stale button cannot close, reopen, or store the same ticket twice.
+const activeTicketTransitions = new Set();
 const entryEveryoneAllow = [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory];
 const entryEveryoneDeny = [
 	PermissionFlagsBits.SendMessages,
@@ -180,8 +195,24 @@ async function getEntryChannelId(guildId) {
 	}
 }
 
+async function fetchGuildChannelIfPresent(guild, channelId) {
+	if (!channelId) {
+		return null;
+	}
+	try {
+		return await guild.channels.fetch(channelId);
+	} catch (err) {
+		// Only a confirmed missing channel justifies replacing a saved channel ID.
+		// A transient Discord error must leave the existing identity retryable.
+		if (Number(err?.code) === 10003) {
+			return null;
+		}
+		throw err;
+	}
+}
+
 async function ensureEntryPanel(guild, config) {
-	let channel = config.entryChannelId ? await guild.channels.fetch(config.entryChannelId).catch(() => null) : null;
+	let channel = await fetchGuildChannelIfPresent(guild, config.entryChannelId);
 
 	if (!channel) {
 		channel = await guild.channels.create({
@@ -202,9 +233,21 @@ async function ensureEntryPanel(guild, config) {
 		{ id: guild.members.me.id, allow: entryBotAllow },
 	], `Hachi Modmail managed-channel permissions`);
 
-	// Clear the saved ID before purging so MessageDelete does not interpret this
-	// intentional setup refresh as a panel that needs immediate restoration.
-	await config.update({ panelMessageId: null });
+	let panel = null;
+	if (config.panelMessageId) {
+		try {
+			panel = await channel.messages.fetch(config.panelMessageId);
+		} catch (err) {
+			if (Number(err?.code) !== 10008) {
+				throw err;
+			}
+		}
+	}
+	if (panel) {
+		// Repair the current panel in place. Its saved ID remains valid throughout
+		// the purge, and MessageDelete never sees an intentional panel deletion.
+		await panel.edit(buildEntryPanel());
+	}
 
 	// This channel is deliberately Hachi-managed. Purging guarantees the panel is
 	// the only message even when setup repairs a previously altered channel.
@@ -213,23 +256,34 @@ async function ensureEntryPanel(guild, config) {
 		messages = await channel.messages.fetch({ limit: 100 });
 		let deleted = 0;
 		for (const message of messages.values()) {
-			await message.delete()
-				.then(() => deleted += 1)
-				.catch(err => warn(`Failed to clear Modmail entry message ${message.id}: ${err.message}`));
+			if (message.id === panel?.id) {
+				continue;
+			}
+			await message.delete();
+			deleted++;
 		}
 		if (!deleted) {
 			break;
 		}
 	} while (messages.size === 100);
 
-	const panel = await channel.send(buildEntryPanel());
-	await config.update({ panelMessageId: panel.id });
+	if (!panel) {
+		const replacementPanel = await channel.send(buildEntryPanel());
+		// Retire the stale ID only after a complete purge and a replacement panel.
+		try {
+			await config.update({ panelMessageId: replacementPanel.id });
+		} catch (err) {
+			await replacementPanel.delete().catch(deleteError =>
+				error(`Could not remove an unsaved Modmail panel ${replacementPanel.id}:`, deleteError));
+			throw err;
+		}
+	}
 
 	return channel;
 }
 
 async function ensureInfrastructure(guild, settings) {
-	let category = settings.ticketCategoryId ? await guild.channels.fetch(settings.ticketCategoryId).catch(() => null) : null;
+	let category = await fetchGuildChannelIfPresent(guild, settings.ticketCategoryId);
 
 	if (!category || category.type !== ChannelType.GuildCategory) {
 		category = await guild.channels.create({ name: `Modmail Tickets`, type: ChannelType.GuildCategory, reason: `Hachi Modmail setup` });
@@ -478,32 +532,133 @@ async function getTicketContext(interaction, ticketId) {
 	return { config, ticket };
 }
 
+async function runTicketTransition(interaction, ticket, allowedStatuses, action) {
+	if (activeTicketTransitions.has(ticket.id)) {
+		return interaction.reply({ content: `This ticket is already being updated. Please try again shortly.`, ephemeral: true });
+	}
+
+	activeTicketTransitions.add(ticket.id);
+	try {
+		// The control may have been rendered before another action changed the row.
+		const currentTicket = await ModmailTickets.findByPk(ticket.id);
+		if (!currentTicket || currentTicket.guildId !== interaction.guild.id ||
+			currentTicket.channelId !== interaction.channel.id) {
+			return interaction.reply({ content: `This ticket control is no longer valid.`, ephemeral: true });
+		}
+		if (!allowedStatuses.includes(currentTicket.status)) {
+			return interaction.reply({ content: `This ticket has changed state. Use its latest controls.`, ephemeral: true });
+		}
+		return await action(currentTicket);
+	} finally {
+		activeTicketTransitions.delete(ticket.id);
+	}
+}
+
+async function restoreOpenerOverwrite(channel, openerId, previousOverwrite, reason) {
+	// An overwrite edit merges flags. The captured object restores the exact old
+	// flags; if none existed, remove the overwrite this transition just created.
+	if (previousOverwrite) {
+		await previousOverwrite.edit({}, reason);
+	} else {
+		try {
+			await channel.permissionOverwrites.delete(openerId, reason);
+		} catch (err) {
+			// A failed or timed-out edit may never have created the overwrite.
+			if (Number(err?.code) !== 10009) {
+				throw err;
+			}
+		}
+	}
+}
+
 async function closeTicket(interaction, ticket, controlMessageId) {
 	if (interaction.user.id === ticket.openerId) {
-		return interaction.update({ content: `The ticket opener cannot close this ticket.`, components: [] });
+		return interaction.reply({ content: `The ticket opener cannot close this ticket.`, ephemeral: true });
 	}
 
-	const config = await getConfig(interaction.guild.id);
-	const opener = await interaction.guild.members.fetch(ticket.openerId).catch(() => null);
+	// A stored ticket may need several transcript pages. Acknowledge the button
+	// before any Discord or database work, then edit the deferred confirmation.
+	await interaction.deferUpdate();
+	let accessChangeAttempted = false;
+	let previousOverwrite;
+	let closeSaved = false;
+	const previousState = {
+		closedAt: ticket.closedAt,
+		closedBy: ticket.closedBy,
+		deleteAt: ticket.deleteAt,
+		status: ticket.status,
+		transcript: ticket.transcript,
+	};
+	try {
+		const config = await getConfig(interaction.guild.id);
+		const opener = await interaction.guild.members.fetch(ticket.openerId).catch(() => null);
+		if (!opener || !memberHasConfiguredRole(opener, config)) {
+			previousOverwrite = interaction.channel.permissionOverwrites.cache.get(ticket.openerId);
+			// A timed-out Discord request may still have applied. Compensation must
+			// run even when the permission call itself reports an error.
+			accessChangeAttempted = true;
+			await interaction.channel.permissionOverwrites.edit(ticket.openerId,
+				{ ViewChannel: false, SendMessages: false }, { reason: `Modmail ticket closed` });
+		}
 
-	if (!opener || !memberHasConfiguredRole(opener, config)) {
-		await interaction.channel.permissionOverwrites.edit(ticket.openerId, { ViewChannel: false, SendMessages: false }, { reason: `Modmail ticket closed` });
+		// Reopening clears a stored snapshot. Rebuild it after revoking the opener's
+		// access so the saved history includes messages from this session.
+		const transcript = ticket.storedAt ?
+			await encodeStoredTranscript(await generateTranscript(interaction.channel, ticket)) :
+			undefined;
+		const now = new Date();
+		const [updated] = await ModmailTickets.update({
+			closedAt: now,
+			closedBy: interaction.user.id,
+			deleteAt: ticket.storedAt ? null : new Date(now.getTime() + DELETE_DELAY_MS),
+			status: ticket.storedAt ? `stored` : `closed`,
+			...(ticket.storedAt ? { transcript } : {}),
+		}, { where: { id: ticket.id, status: `open` } });
+		if (updated !== 1) {
+			throw new Error(`Modmail ticket ${ticket.id} changed state while closing.`);
+		}
+		closeSaved = true;
+		// Keep the old Close control until a replacement panel is confirmed.
+		// If this send fails, restore the database row and opener access below.
+		await interaction.channel.send(buildClosedPanel(ticket, interaction.user.id));
+	} catch (err) {
+		let restorationFailed = false;
+		if (closeSaved) {
+			try {
+				const [restored] = await ModmailTickets.update(previousState, {
+					where: { id: ticket.id, status: ticket.storedAt ? `stored` : `closed` },
+				});
+				restorationFailed = restored !== 1;
+			} catch (restoreError) {
+				restorationFailed = true;
+				error(`Could not roll back Modmail ticket ${ticket.id} after its closed panel failed:`, restoreError);
+			}
+		}
+		if (accessChangeAttempted && !restorationFailed) {
+			try {
+				await restoreOpenerOverwrite(interaction.channel, ticket.openerId, previousOverwrite,
+					`Modmail close failed; restoring ticket access`);
+			} catch (restoreError) {
+				restorationFailed = true;
+				error(`Could not restore opener access after Modmail close failed for ticket ${ticket.id}:`, restoreError);
+			}
+		}
+		error(`Could not close Modmail ticket ${ticket.id}:`, err);
+		return interaction.editReply({
+			content: restorationFailed ?
+				`Hachi could not restore the ticket state or opener access after closing failed. Contact the bot owner.` :
+				`The ticket could not be closed. ${err instanceof TranscriptLimitError ? err.message : `Please retry.`}`,
+			components: [],
+		});
 	}
 
-	const now = new Date();
-	await ticket.update({
-		closedAt: now,
-		closedBy: interaction.user.id,
-		deleteAt: ticket.storedAt ? null : new Date(now.getTime() + DELETE_DELAY_MS),
-		status: ticket.storedAt ? `stored` : `closed`,
-	});
 	if (controlMessageId) {
 		const controlMessage = await interaction.channel.messages.fetch(controlMessageId).catch(() => null);
 		await controlMessage?.edit({ components: [] }).catch(() => null);
 	}
 	await interaction.channel.setName(ticketName(ticket.ticketNumber, true), `Modmail ticket closed`).catch(() => null);
-	await interaction.update({ content: `Ticket closed.`, components: [] });
-	await interaction.channel.send(buildClosedPanel(ticket, interaction.user.id));
+	await interaction.editReply({ content: `Ticket closed.`, components: [] }).catch(replyError =>
+		error(`Could not update close confirmation for Modmail ticket ${ticket.id}:`, replyError));
 }
 
 async function reopenTicket(interaction, ticket) {
@@ -513,88 +668,289 @@ async function reopenTicket(interaction, ticket) {
 		closedBy: ticket.closedBy,
 		deleteAt: ticket.deleteAt,
 		status: ticket.status,
+		transcript: ticket.transcript,
 	};
 	// Claim the one-open-ticket slot before restoring access. The database index
 	// also rejects another process trying to create a ticket at the same time.
-	const reopened = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
-		const anotherOpenTicket = await ModmailTickets.findOne({
-			where: {
-				guildId: ticket.guildId,
-				openerId: ticket.openerId,
-				status: `open`,
-				id: { [Op.ne]: ticket.id },
-			},
-			transaction,
+	let anotherOpenTicketExists = false;
+	let reopened;
+	try {
+		reopened = await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+			const anotherOpenTicket = await ModmailTickets.findOne({
+				where: {
+					guildId: ticket.guildId,
+					openerId: ticket.openerId,
+					status: `open`,
+					id: { [Op.ne]: ticket.id },
+				},
+				transaction,
+			});
+			if (anotherOpenTicket) {
+				anotherOpenTicketExists = true;
+				return false;
+			}
+			const [changed] = await ModmailTickets.update(
+				{ closedAt: null, closedBy: null, deleteAt: null, status: `open`, transcript: null },
+				{ transaction, where: { id: ticket.id, status: ticket.status } },
+			);
+			return changed === 1;
 		});
-		if (anotherOpenTicket) {
-			return false;
-		}
-		await ticket.update({ closedAt: null, closedBy: null, deleteAt: null, status: `open` }, { transaction });
-		return true;
-	});
+	} catch (err) {
+		error(`Could not claim Modmail ticket ${ticket.id} for reopening:`, err);
+		return interaction.followUp({ content: `The ticket could not be reopened. Please retry.`, ephemeral: true });
+	}
 	if (!reopened) {
 		return interaction.followUp({
-			content: `The ticket opener already has another open ticket. Close it before reopening this one.`,
+			content: anotherOpenTicketExists ?
+				`The ticket opener already has another open ticket. Close it before reopening this one.` :
+				`This ticket changed state before it could be reopened. Use its latest controls.`,
 			ephemeral: true,
 		});
 	}
+	const previousOverwrite = interaction.channel.permissionOverwrites.cache.get(ticket.openerId);
+	let accessChangeAttempted = false;
 	try {
+		accessChangeAttempted = true;
 		await interaction.channel.permissionOverwrites.edit(ticket.openerId, {
 			ViewChannel: true,
 			SendMessages: true,
 			ReadMessageHistory: true,
 			AttachFiles: true,
 		}, { reason: `Modmail ticket reopened` });
+		// The old closed panel remains usable until the new Close control exists.
+		await interaction.channel.send({ content: `Ticket reopened by <@${interaction.user.id}>.`, allowedMentions: { parse: [] }, components: buildOpenControls(ticket.id) });
 	} catch (err) {
-		await ticket.update(previousState).catch(rollbackError =>
-			error(`Failed to restore Modmail ticket ${ticket.id} after a permission error:`, rollbackError));
-		throw err;
+		let restorationFailed;
+		try {
+			const [restored] = await ModmailTickets.update(previousState, { where: { id: ticket.id, status: `open` } });
+			restorationFailed = restored !== 1;
+		} catch (rollbackError) {
+			restorationFailed = true;
+			error(`Failed to restore Modmail ticket ${ticket.id} after reopening failed:`, rollbackError);
+		}
+		if (accessChangeAttempted && !restorationFailed) {
+			try {
+				await restoreOpenerOverwrite(interaction.channel, ticket.openerId, previousOverwrite,
+					`Modmail reopen failed; restoring prior access`);
+			} catch (restoreError) {
+				restorationFailed = true;
+				error(`Failed to restore Modmail ticket ${ticket.id} permissions after reopening failed:`, restoreError);
+			}
+		}
+		error(`Could not reopen Modmail ticket ${ticket.id}:`, err);
+		return interaction.followUp({
+			content: restorationFailed ?
+				`Hachi could not restore this ticket after reopening failed. Contact the bot owner.` :
+				`The ticket could not be reopened. Please retry.`,
+			ephemeral: true,
+		});
 	}
 	await interaction.channel.setName(ticketName(ticket.ticketNumber), `Modmail ticket reopened`).catch(() => null);
-	await interaction.message.edit({ components: [], embeds: [] });
-	await interaction.channel.send({ content: `Ticket reopened by <@${interaction.user.id}>.`, allowedMentions: { parse: [] }, components: buildOpenControls(ticket.id) });
+	await interaction.message.edit({ components: [], embeds: [] }).catch(err =>
+		error(`Could not retire old Modmail controls for reopened ticket ${ticket.id}:`, err));
 }
 
-async function fetchAllMessages(channel) {
-	const messages = [];
-	let before;
+class TranscriptLimitError extends Error {}
 
-	do {
-		const batch = await channel.messages.fetch({ before, limit: 100 });
-		messages.push(...batch.values());
-		before = batch.last()?.id;
-		if (batch.size < 100) {
-			break;
-		}
-	} while (before);
-
-	return messages.sort((a, b) => a.createdTimestamp - b.createdTimestamp);
+function formatTranscriptMessage(message) {
+	const details = [message.content || ``];
+	for (const attachment of message.attachments?.values() || []) {
+		details.push(`Attachment: ${attachment.url}`);
+	}
+	for (const embed of message.embeds || []) {
+		const embedDetails = [
+			embed.title,
+			embed.description,
+			embed.url,
+			...(embed.fields || []).map(field => `${field.name}: ${field.value}`),
+			embed.image?.url,
+			embed.thumbnail?.url,
+		].filter(Boolean);
+		details.push(`Embed: ${embedDetails.join(` | `) || `[no text]`}`);
+	}
+	for (const sticker of message.stickers?.values() || []) {
+		details.push(`Sticker: ${sticker.name} (${sticker.id})`);
+	}
+	return `[${message.createdAt.toISOString()}] ${message.author.tag || message.author.id} (${message.author.id}): ${details.filter(Boolean).join(` | `)}`;
 }
 
 async function generateTranscript(channel, ticket) {
-	const messages = await fetchAllMessages(channel);
-	const lines = [
+	const header = [
 		`Modmail ticket ${ticketName(ticket.ticketNumber)}`,
 		`Guild: ${channel.guild.name} (${channel.guild.id})`,
 		`Opened by: ${ticket.openerId}`,
 		`Opened: ${ticket.openedAt.toISOString()}`,
 		``,
-	];
+	].join(`\n`);
+	const pages = [];
+	let totalBytes = Buffer.byteLength(header, `utf8`);
+	let messageCount = 0;
+	let before;
+	const startedAt = Date.now();
 
-	for (const message of messages) {
-		const attachments = [...message.attachments.values()].map(item => item.url).join(` `);
-		lines.push(`[${message.createdAt.toISOString()}] ${message.author.tag} (${message.author.id}): ${message.content || ``}${attachments ? ` ${attachments}` : ``}`);
+	// Discord returns newest first. Keep only one fetched batch of message objects at a
+	// time, and prepend its formatted text so the finished transcript reads oldest first.
+	while (true) {
+		if (Date.now() - startedAt > TRANSCRIPT_GENERATION_TIMEOUT_MS) {
+			throw new TranscriptLimitError(`Transcript generation exceeded five minutes. No partial transcript was saved or sent; please retry.`);
+		}
+		const batch = await channel.messages.fetch({ before, limit: 100 });
+		if (Date.now() - startedAt > TRANSCRIPT_GENERATION_TIMEOUT_MS) {
+			throw new TranscriptLimitError(`Transcript generation exceeded five minutes. No partial transcript was saved or sent; please retry.`);
+		}
+		if (messageCount + batch.size > MAX_TRANSCRIPT_MESSAGES) {
+			throw new TranscriptLimitError(
+				`This transcript exceeds the ${MAX_TRANSCRIPT_MESSAGES.toLocaleString()}-message limit. ` +
+				`No partial transcript was saved or sent; ask the bot owner to export the ticket manually.`,
+			);
+		}
+		if (batch.size === 0) {
+			break;
+		}
+
+		const pageLines = [];
+		for (const message of [...batch.values()].reverse()) {
+			pageLines.push(formatTranscriptMessage(message));
+		}
+		const pageText = pageLines.join(`\n`);
+		totalBytes += Buffer.byteLength(pageText, `utf8`) + 1;
+		if (totalBytes > MAX_TRANSCRIPT_BYTES) {
+			throw new TranscriptLimitError(`This transcript exceeds the 24 MiB size limit. No partial transcript was saved or sent; ask the bot owner to export the ticket manually.`);
+		}
+		pages.unshift(pageText);
+		messageCount += batch.size;
+
+		if (batch.size < 100) {
+			break;
+		}
+		const nextBefore = batch.last()?.id;
+		if (!nextBefore || nextBefore === before) {
+			throw new Error(`Discord did not advance Modmail transcript pagination.`);
+		}
+		before = nextBefore;
 	}
 
-	return lines.join(`\n`);
+	return [header, ...pages].join(`\n`);
+}
+
+async function encodeStoredTranscript(transcript) {
+	const rawBytes = Buffer.byteLength(transcript, `utf8`);
+	let storedTranscript = transcript;
+	if (rawBytes > TRANSCRIPT_COMPRESSION_THRESHOLD_BYTES) {
+		// The existing TEXT column can hold a versioned compressed snapshot without a
+		// schema change. Older plain-text tickets remain readable.
+		const compressed = `${COMPRESSED_TRANSCRIPT_PREFIX}${(await gzipAsync(Buffer.from(transcript, `utf8`))).toString(`base64`)}`;
+		if (Buffer.byteLength(compressed, `utf8`) < rawBytes) {
+			storedTranscript = compressed;
+		}
+	}
+	if (Buffer.byteLength(storedTranscript, `utf8`) > MAX_STORED_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This transcript exceeds the 8 MiB stored-ticket limit after compression. The ticket was not stored; ask the bot owner to export it manually.`);
+	}
+	return storedTranscript;
+}
+
+async function decodeStoredTranscript(storedTranscript) {
+	if (!storedTranscript.startsWith(COMPRESSED_TRANSCRIPT_PREFIX)) {
+		// Pre-compression tickets were stored as plain text and may exceed today's
+		// snapshot limit. They remain downloadable up to the transcript output cap.
+		return storedTranscript;
+	}
+	if (Buffer.byteLength(storedTranscript, `utf8`) > MAX_STORED_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This stored transcript exceeds the supported 8 MiB snapshot limit. Ask the bot owner to export the ticket manually.`);
+	}
+	try {
+		const compressed = Buffer.from(storedTranscript.slice(COMPRESSED_TRANSCRIPT_PREFIX.length), `base64`);
+		return (await gunzipAsync(compressed, { maxOutputLength: MAX_TRANSCRIPT_BYTES })).toString(`utf8`);
+	} catch (err) {
+		error(`Could not decode a stored Modmail transcript:`, err);
+		throw new TranscriptLimitError(`The stored transcript could not be read. Ask the bot owner to inspect this ticket.`);
+	}
+}
+
+function splitTranscript(transcript, attachmentSizeLimit) {
+	const transcriptBytes = Buffer.from(transcript, `utf8`);
+	if (!transcriptBytes.length) {
+		throw new TranscriptLimitError(`This stored transcript is empty. Ask the bot owner to inspect this ticket.`);
+	}
+	if (transcriptBytes.length > MAX_TRANSCRIPT_BYTES) {
+		throw new TranscriptLimitError(`This transcript exceeds the 24 MiB size limit. Ask the bot owner to export the ticket manually.`);
+	}
+	// Leave room below Discord's per-interaction upload limit for request overhead.
+	const uploadLimit = Number.isSafeInteger(attachmentSizeLimit) ? attachmentSizeLimit - 1024 : TRANSCRIPT_PART_BYTES;
+	const partSizeLimit = Math.min(TRANSCRIPT_PART_BYTES, uploadLimit);
+	if (partSizeLimit < 1024) {
+		throw new TranscriptLimitError(`Discord's upload limit for this interaction is too small to deliver a transcript.`);
+	}
+	const parts = [];
+	for (let start = 0; start < transcriptBytes.length;) {
+		let end = Math.min(start + partSizeLimit, transcriptBytes.length);
+		if (end < transcriptBytes.length) {
+			const lastNewline = transcriptBytes.lastIndexOf(10, end - 1);
+			if (lastNewline >= end - Math.min(4096, Math.floor(partSizeLimit / 8))) {
+				end = lastNewline + 1;
+			} else {
+				// A long line can still be split without cutting a UTF-8 character.
+				while (end > start && (transcriptBytes[end] & 0xc0) === 0x80) {
+					end--;
+				}
+			}
+		}
+		parts.push(transcriptBytes.subarray(start, end));
+		if (parts.length > MAX_TRANSCRIPT_PARTS) {
+			throw new TranscriptLimitError(`Discord's upload limit would require more than ${MAX_TRANSCRIPT_PARTS} transcript attachments. No partial transcript was sent.`);
+		}
+		start = end;
+	}
+	return parts;
 }
 
 async function sendTranscript(interaction, ticket) {
 	await interaction.deferReply({ ephemeral: true });
-	const transcript = ticket.transcript || await generateTranscript(interaction.channel, ticket);
-	const attachment = new AttachmentBuilder(Buffer.from(transcript, `utf8`), { name: `${ticketName(ticket.ticketNumber)}.txt` });
+	let parts;
+	try {
+		let transcript;
+		try {
+			// A saved snapshot may predate a stored ticket's last reopen. Read the
+			// live channel whenever it exists so the download includes later messages.
+			transcript = await generateTranscript(interaction.channel, ticket);
+		} catch (err) {
+			if (Number(err?.code) !== 10003 || !ticket.transcript) {
+				throw err;
+			}
+			// A confirmed missing channel is the only reason to use its snapshot.
+			transcript = await decodeStoredTranscript(ticket.transcript);
+		}
+		parts = splitTranscript(transcript, interaction.attachmentSizeLimit);
+	} catch (err) {
+		if (err instanceof TranscriptLimitError) {
+			return interaction.editReply({ content: err.message });
+		}
+		// The interaction handler logs unexpected failures. Include the ticket
+		// so the operator can identify which transcript needs attention.
+		throw new Error(`Could not prepare Modmail transcript for ticket ${ticket.id}.`, { cause: err });
+	}
 
-	await interaction.editReply({ content: `Transcript for ${ticketName(ticket.ticketNumber)}.`, files: [attachment] });
+	const name = ticketName(ticket.ticketNumber);
+	let sentParts = 0;
+	try {
+		for (const [partIndex, part] of parts.entries()) {
+			const filename = parts.length === 1 ? `${name}.txt` : `${name}-part-${String(partIndex + 1).padStart(2, `0`)}.txt`;
+			const payload = {
+				content: parts.length === 1 ? `Transcript for ${name}.` : `Transcript for ${name}, part ${partIndex + 1} of ${parts.length}.`,
+				files: [new AttachmentBuilder(part, { name: filename })],
+			};
+			if (partIndex === 0) {
+				await interaction.editReply(payload);
+			} else {
+				await interaction.followUp({ ...payload, ephemeral: true });
+			}
+			sentParts++;
+		}
+	} catch (err) {
+		error(`Could not deliver Modmail transcript ${ticket.id}:`, err);
+		await interaction.editReply({ content: `Could not deliver the complete transcript (${sentParts} of ${parts.length} parts sent). Please retry.` });
+	}
 }
 
 async function storeTicket(interaction, ticket, config) {
@@ -609,18 +965,41 @@ async function storeTicket(interaction, ticket, config) {
 	}
 
 	await interaction.deferReply({ ephemeral: true });
+	let transcript;
+	try {
+		transcript = await encodeStoredTranscript(await generateTranscript(interaction.channel, ticket));
+	} catch (err) {
+		if (err instanceof TranscriptLimitError) {
+			return interaction.editReply({ content: err.message });
+		}
+		throw err;
+	}
 	await ticket.update({
 		deleteAt: null,
 		status: `stored`,
 		storedAt: new Date(),
 		storedBy: interaction.user.id,
-		transcript: await generateTranscript(interaction.channel, ticket),
+		transcript,
 	});
 	await interaction.editReply(`Stored ${ticketName(ticket.ticketNumber)}. Its automatic deletion has been cancelled.`);
 }
 
 async function deleteTicketChannel(interaction, ticket) {
 	await interaction.deferUpdate();
+	if (ticket.storedAt) {
+		try {
+			// Staff can add messages after closing. Refresh an archived snapshot
+			// before its channel is permanently removed from Discord.
+			const transcript = await encodeStoredTranscript(await generateTranscript(interaction.channel, ticket));
+			await ticket.update({ transcript });
+		} catch (err) {
+			error(`Could not preserve transcript before deleting stored Modmail ticket ${ticket.id}:`, err);
+			return interaction.editReply({
+				content: `The ticket was not deleted because its current transcript could not be saved. ${err instanceof TranscriptLimitError ? err.message : `Please retry.`}`,
+				components: [],
+			});
+		}
+	}
 	// Persist a retryable intent before deleting from Discord. A failed follow-up
 	// save cannot strand a stored ticket with a stale channel ID forever.
 	await ticket.update({ status: `delete_pending` });
@@ -666,18 +1045,27 @@ async function handleTicketComponent(interaction, ticketId, action, controlMessa
 	}
 
 	if (action === `confirm-close`) {
-		return closeTicket(interaction, ticket, controlMessageId);
+		return runTicketTransition(interaction, ticket, [`open`], currentTicket =>
+			closeTicket(interaction, currentTicket, controlMessageId));
 	}
 	if (action === `open`) {
-		return reopenTicket(interaction, ticket);
+		return runTicketTransition(interaction, ticket, [`closed`, `stored`], currentTicket =>
+			reopenTicket(interaction, currentTicket));
 	}
 	if (action === `transcript`) {
+		if (ticket.status !== `closed` && ticket.status !== `stored`) {
+			return interaction.reply({ content: `Close this ticket before downloading its transcript.`, ephemeral: true });
+		}
 		return sendTranscript(interaction, ticket);
 	}
 	if (action === `store`) {
-		return storeTicket(interaction, ticket, config);
+		return runTicketTransition(interaction, ticket, [`closed`], currentTicket =>
+			storeTicket(interaction, currentTicket, config));
 	}
 	if (action === `delete`) {
+		if (ticket.status !== `closed` && ticket.status !== `stored`) {
+			return interaction.reply({ content: `Close this ticket before deleting it.`, ephemeral: true });
+		}
 		return interaction.reply({
 			content: `Permanently delete this ticket channel?`,
 			components: [new ActionRowBuilder().addComponents(
@@ -688,7 +1076,8 @@ async function handleTicketComponent(interaction, ticketId, action, controlMessa
 		});
 	}
 	if (action === `confirm-delete`) {
-		return deleteTicketChannel(interaction, ticket);
+		return runTicketTransition(interaction, ticket, [`closed`, `stored`], currentTicket =>
+			deleteTicketChannel(interaction, currentTicket));
 	}
 	if (action === `cancel`) {
 		return interaction.update({ content: `Cancelled.`, components: [] });
@@ -733,8 +1122,13 @@ async function restoreDeletedPanel(message) {
 		return false;
 	}
 	const panel = await message.channel.send(buildEntryPanel());
-	config.panelMessageId = panel.id;
-	await config.save();
+	try {
+		await config.update({ panelMessageId: panel.id });
+	} catch (err) {
+		await panel.delete().catch(deleteError =>
+			error(`Could not remove an unsaved replacement Modmail panel ${panel.id}:`, deleteError));
+		throw err;
+	}
 	return true;
 }
 

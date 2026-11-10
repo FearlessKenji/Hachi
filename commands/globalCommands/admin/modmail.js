@@ -13,6 +13,7 @@ const {
 	StringSelectMenuOptionBuilder,
 } = require(`discord.js`);
 const { ModmailTickets } = require(`../../../database/dbObjects.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 const { Op } = require(`sequelize`);
 const {
 	createTicket,
@@ -195,6 +196,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const subcommand = interaction.options.getSubcommand();
 
 		if (subcommand === `setup`) {

@@ -1,10 +1,10 @@
 // Guild member join event.
 //
-// Raid protection watches new-member bursts. This event sends joins into the
-// raid detector so configured servers can quarantine, alert, and collect evidence
-// when a suspicious spike appears.
+// New joins feed raid protection and reactivate birthdays retained during the
+// seven-day departure grace period.
 const { Events } = require(`discord.js`);
 const { observeGuildMemberAdd } = require(`../utils/raidProtection.js`);
+const { markBirthdayMemberJoined } = require(`../utils/birthdays.js`);
 const { error } = require(`../utils/writeLog.js`);
 
 module.exports = {
@@ -20,6 +20,17 @@ module.exports = {
 					userId: member.id,
 				},
 				module: `raid`,
+			});
+		}
+
+		try {
+			await markBirthdayMemberJoined(member.client, member.guild.id, member.id, {
+				joinedAt: member.joinedAt || new Date(),
+			});
+		} catch (err) {
+			error(`Failed to restore birthday after a member rejoined:`, err, {
+				meta: { guildId: member.guild.id, userId: member.id },
+				module: `birthday`,
 			});
 		}
 	},

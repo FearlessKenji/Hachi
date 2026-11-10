@@ -6,7 +6,7 @@
 const fs = require(`node:fs`);
 const path = require(`node:path`);
 const crypto = require(`node:crypto`);
-const { Op } = require(`sequelize`);
+const { Op, Transaction } = require(`sequelize`);
 const { MessageFlags, PermissionFlagsBits } = require(`discord.js`);
 const { AnnouncementDeliveryProgress, Servers, sequelize } = require(`../database/dbObjects.js`);
 const { error, warn } = require(`./writeLog.js`);
@@ -218,18 +218,24 @@ async function getAnnouncementSettings(guildId) {
 	};
 }
 
-async function updateAnnouncementSettings(guildId, values) {
+async function updateAnnouncementChannel(guildId, channelId, { clearProgress = false } = {}) {
 	const normalizedGuildId = requireAnnouncementId(guildId, `Guild ID`);
-	const server = await Servers.findByPk(normalizedGuildId);
-
-	if (server) {
-		await server.update(values);
-		return getAnnouncementSettings(normalizedGuildId);
-	}
-
-	await Servers.create({
-		guildId: normalizedGuildId,
-		...values,
+	await sequelize.transaction({ type: Transaction.TYPES.IMMEDIATE }, async transaction => {
+		const server = await Servers.findByPk(normalizedGuildId, { transaction });
+		if (clearProgress || server?.hachiAnnouncementChannelId !== channelId) {
+			// A delivery checkpoint belongs to the old destination. Retire it
+			// before changing the saved channel ID, within the same transaction.
+			await AnnouncementDeliveryProgress.destroy({
+				transaction,
+				where: { guildId: normalizedGuildId },
+			});
+		}
+		const values = { hachiAnnouncementChannelId: channelId, ...CLEARED_WARNING_STATE };
+		if (server) {
+			await server.update(values, { transaction });
+		} else {
+			await Servers.create({ guildId: normalizedGuildId, ...values }, { transaction });
+		}
 	});
 	return getAnnouncementSettings(normalizedGuildId);
 }
@@ -237,26 +243,13 @@ async function updateAnnouncementSettings(guildId, values) {
 async function saveAnnouncementChannel(guildId, channelId) {
 	return serializeGuildAnnouncement(guildId, async () => {
 		const normalizedChannelId = normalizeAnnouncementId(channelId);
-		const existing = await getAnnouncementSettings(guildId);
-		const settings = await updateAnnouncementSettings(guildId, {
-			hachiAnnouncementChannelId: normalizedChannelId,
-			...CLEARED_WARNING_STATE,
-		});
-		if (existing.hachiAnnouncementChannelId !== normalizedChannelId) {
-			await AnnouncementDeliveryProgress.destroy({ where: { guildId: settings.guildId } });
-		}
-		return settings;
+		return updateAnnouncementChannel(guildId, normalizedChannelId);
 	});
 }
 
 async function clearAnnouncementChannel(guildId) {
 	return serializeGuildAnnouncement(guildId, async () => {
-		const settings = await updateAnnouncementSettings(guildId, {
-			hachiAnnouncementChannelId: null,
-			...CLEARED_WARNING_STATE,
-		});
-		await AnnouncementDeliveryProgress.destroy({ where: { guildId: settings.guildId } });
-		return settings;
+		return updateAnnouncementChannel(guildId, null, { clearProgress: true });
 	});
 }
 

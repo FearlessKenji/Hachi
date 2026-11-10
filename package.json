@@ -14,6 +14,7 @@
   "overrides": {
     "brace-expansion": "5.0.12",
     "js-yaml": "4.3.2",
+    "minimatch": "11.0.1",
     "undici": "6.29.1",
     "uuid": "^11.1.0"
   },
@@ -23,7 +24,7 @@
   },
   "name": "Hachi",
   "description": "This Discord bot will automatically send a message and tag the assigned role whenever a streamer went live.\r The notifications will update every 10 minutes(default) while the streamer is live.",
-  "version": "3.12.3",
+  "version": "3.13.0",
   "main": "index.js",
   "scripts": {
     "start": "node .",

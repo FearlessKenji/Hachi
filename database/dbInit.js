@@ -8,7 +8,42 @@ const { auditDatabaseStartup } = require(`./dbAudit.js`);
 const { info, warn } = require(`../utils/writeLog.js`);
 const path = require(`node:path`);
 const fs = require(`node:fs`);
-const { QueryTypes } = require(`sequelize`);
+const { DataTypes, QueryTypes } = require(`sequelize`);
+
+async function ensureBirthdayMemberLeaveColumn(database = sequelize) {
+	const queryInterface = database.getQueryInterface();
+	const tables = await queryInterface.showAllTables();
+	const birthdayColumns = tables.includes(`birthdayUsers`) ?
+		await queryInterface.describeTable(`birthdayUsers`) :
+		null;
+
+	if (birthdayColumns && !birthdayColumns.leftAt) {
+		// This nullable addition preserves existing birthdays without rebuilding the table.
+		await queryInterface.addColumn(`birthdayUsers`, `leftAt`, {
+			allowNull: true,
+			type: DataTypes.DATE,
+		});
+	}
+}
+
+async function ensureBirthdayBoardRevisionColumns(database = sequelize) {
+	const queryInterface = database.getQueryInterface();
+	const tables = await queryInterface.showAllTables();
+	if (!tables.includes(`birthdayConfigs`)) {
+		return;
+	}
+	const columns = await queryInterface.describeTable(`birthdayConfigs`);
+	for (const columnName of [`boardRevision`, `boardPublishedRevision`]) {
+		if (!columns[columnName]) {
+			// Existing boards begin clean; later membership changes advance the revision.
+			await queryInterface.addColumn(`birthdayConfigs`, columnName, {
+				allowNull: false,
+				defaultValue: 0,
+				type: DataTypes.INTEGER,
+			});
+		}
+	}
+}
 
 async function ensureOneOpenModmailTicketIndex(database = sequelize) {
 	// Existing installs may already have duplicate open tickets. Keep the bot
@@ -37,6 +72,8 @@ async function ensureOneOpenModmailTicketIndex(database = sequelize) {
 async function dbInit() {
 	const dbPath = path.resolve(`database/database.sqlite`);
 	const exists = fs.existsSync(dbPath);
+	await ensureBirthdayMemberLeaveColumn();
+	await ensureBirthdayBoardRevisionColumns();
 
 	// sequelize.sync creates missing tables for a brand-new database. Install the
 	// Modmail uniqueness guard after legacy duplicate review, then audit existing
@@ -52,4 +89,4 @@ async function dbInit() {
 	);
 }
 
-module.exports = { dbInit, ensureOneOpenModmailTicketIndex };
+module.exports = { dbInit, ensureBirthdayMemberLeaveColumn, ensureBirthdayBoardRevisionColumns, ensureOneOpenModmailTicketIndex };

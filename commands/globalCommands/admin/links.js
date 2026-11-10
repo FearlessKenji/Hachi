@@ -15,6 +15,7 @@ const {
 	syncBlockRule,
 } = require(`../../../utils/linkBlocking.js`);
 const { normalizeDomain, RECOMMENDED_FIX_RULES } = require(`../../../utils/socialLinks.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 const COLOR = 0xffb020;
 
@@ -216,6 +217,10 @@ module.exports = {
 		{ command: `/links block`, description: `manage AutoMod-backed blocked link sources.` },
 	] },
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const group = interaction.options.getSubcommandGroup();
 		const command = interaction.options.getSubcommand();
 		try {

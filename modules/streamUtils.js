@@ -4,7 +4,9 @@
 // channels, build embeds, fetch/edit messages, format role mentions, and load
 // server/channel state efficiently for each cron tick.
 const { EmbedBuilder } = require(`discord.js`);
+const { URL } = require(`node:url`);
 const { Servers, Channels } = require(`../database/dbObjects.js`);
+const { warn } = require(`../utils/writeLog.js`);
 
 const STREAM_TIME_ZONE = `America/New_York`;
 // Retry age begins when Hachi confirms the stream ended, not when it started.
@@ -105,11 +107,14 @@ function targetChannel(client, chan, server, selfChannelKey) {
 	};
 }
 
-function roleMention(chan, server, selfRoleKey) {
-	const roleId = chan.isSelf ?
+function notificationRoleId(chan, server, selfRoleKey) {
+	return chan.isSelf ?
 		server[selfRoleKey] :
 		server.affiliateRoleId;
+}
 
+function roleMention(chan, server, selfRoleKey) {
+	const roleId = notificationRoleId(chan, server, selfRoleKey);
 	return roleId ? `<@&${roleId}> ` : ``;
 }
 
@@ -136,17 +141,84 @@ async function fetchMessage(discordChannel, messageId) {
 	}
 }
 
-async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, onSend }) {
+function comparableImageUrl(value) {
+	if (!value) {
+		return null;
+	}
+	try {
+		const url = new URL(value);
+		// Preview URLs deliberately carry a fresh query value each poll. That is
+		// not a visible stream change and must not force a Discord edit.
+		url.searchParams.delete(`cacheBypass`);
+		return url.toString();
+	} catch {
+		return value;
+	}
+}
+
+function comparableLiveEmbed(embed) {
+	const data = typeof embed?.toJSON === `function` ? embed.toJSON() : embed;
+	if (!data) {
+		return null;
+	}
+	return {
+		title: data.title || null,
+		description: data.description || null,
+		url: data.url || null,
+		color: data.color ?? null,
+		fields: (data.fields || []).map(field => ({
+			name: field.name,
+			value: field.value,
+			inline: Boolean(field.inline),
+		})),
+		thumbnail: comparableImageUrl(data.thumbnail?.url),
+		image: comparableImageUrl(data.image?.url),
+		// Preserve a corrected start time while ignoring the changing edit time.
+		startedAt: data.footer?.text?.split(`. Last edited `)[0] || null,
+	};
+}
+
+async function syncMessage({ discordChannel, messageId, shouldEdit, content, embed, allowedRoleId, onSend }) {
 	const existingMessage = await fetchMessage(discordChannel, messageId);
+	// Provider text can contain Discord mention syntax. Only the configured
+	// notification role may ping when an alert is sent or refreshed.
+	const allowedMentions = { parse: [], roles: allowedRoleId ? [allowedRoleId] : [] };
 
 	if (existingMessage && shouldEdit) {
-		await existingMessage.edit({ content, embeds: [embed] });
+		// Keep the one-minute provider poll accurate without a Discord write when
+		// title, viewer count, category, role, and other visible fields are unchanged.
+		const sameContent = existingMessage.content === content;
+		const sameEmbed = JSON.stringify(comparableLiveEmbed(existingMessage.embeds?.[0])) ===
+			JSON.stringify(comparableLiveEmbed(embed));
+		if (!sameContent || !sameEmbed) {
+			await existingMessage.edit({ content, embeds: [embed], allowedMentions });
+		}
 		return existingMessage;
 	}
 
-	const message = await discordChannel.send({ content, embeds: [embed] });
-	await onSend(message);
+	const message = await discordChannel.send({ content, embeds: [embed], allowedMentions });
+	try {
+		await onSend(message);
+	} catch (err) {
+		// Discord and the database cannot commit atomically. Remove an alert
+		// whose ID was not saved so the next poll can safely send it again.
+		try {
+			await message.delete();
+		} catch (cleanupError) {
+			warn(`Failed to delete unsaved stream alert ${message.id}:`, cleanupError);
+		}
+		throw err;
+	}
 	return message;
+}
+
+function streamCategory(value) {
+	return typeof value === `string` && value.trim() ? value : `No Category`;
+}
+
+function streamViewerCount(value) {
+	const count = Number(value);
+	return Number.isSafeInteger(count) && count >= 0 ? count : 0;
 }
 
 function liveEmbed({
@@ -257,8 +329,11 @@ module.exports = {
 	groupChannels,
 	liveEmbed,
 	loadState,
+	notificationRoleId,
 	offlineEmbed,
 	roleMention,
+	streamCategory,
+	streamViewerCount,
 	syncMessage,
 	targetChannel,
 	vodWaitExpired,

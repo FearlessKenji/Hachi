@@ -53,7 +53,7 @@ async function fetchSlugGroup(slugs, headers) {
 
 	let response;
 	try {
-		response = await fetchProviderApi(url.toString(), { headers });
+		response = await fetchProviderApi(url.toString(), { headers, appTokenProvider: `Kick` });
 	} catch (err) {
 		error(`Failed to fetch Kick channels for ${slugs.length} slug(s):`, err);
 		return new Map(slugs.map(slug => [slug, emptyResult(slug, true)]));

@@ -10,6 +10,7 @@ const {
 } = require(`discord.js`);
 const { Buffer } = require(`node:buffer`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const MIN_IMAGE_DIMENSION = 64;
@@ -444,6 +445,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const subcommand = interaction.options.getSubcommand();
 
 		try {

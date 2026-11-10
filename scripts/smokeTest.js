@@ -1,9 +1,12 @@
 #!/usr/bin/env node
 
 const childProcess = require(`node:child_process`);
+const { Buffer } = require(`node:buffer`);
 const fs = require(`node:fs`);
+const Module = require(`node:module`);
 const os = require(`node:os`);
 const path = require(`node:path`);
+const { setImmediate: waitImmediate } = require(`node:timers/promises`);
 const { URL, URLSearchParams } = require(`node:url`);
 
 const projectRoot = path.resolve(__dirname, `..`);
@@ -267,13 +270,14 @@ function collectCommands() {
 }
 
 async function validateSetupHubOrdering() {
-	const { ButtonStyle } = require(`discord.js`);
+	const { ButtonStyle, PermissionFlagsBits } = require(`discord.js`);
 	const setup = requireFresh(`commands`, `globalCommands`, `setup`, `setup.js`);
 	let replyPayload = null;
 
 	await setup.execute({
 		id: `smoke-setup-order`,
 		guild: { id: `smoke-guild` },
+		memberPermissions: { has: permission => permission === PermissionFlagsBits.ManageGuild },
 		user: { id: `smoke-user` },
 		reply(payload) {
 			replyPayload = payload;
@@ -295,6 +299,14 @@ async function validateSetupHubOrdering() {
 	assert(buttons.map(button => button.label).join(`|`) === expectedOrder.join(`|`), `/setup buttons are not in the expected order.`);
 	assert(buttons[0]?.style === ButtonStyle.Primary, `Hachi Updates should be the primary setup button.`);
 	assert(buttons.slice(1).every(button => button.style === ButtonStyle.Secondary), `Non-primary setup buttons should use secondary style.`);
+	let deniedPayload = null;
+	await setup.execute({
+		guild: { id: `smoke-guild` },
+		memberPermissions: { has: () => false },
+		reply: async payload => { deniedPayload = payload; },
+	});
+	assert(deniedPayload?.content?.includes(`Manage Server`) && !deniedPayload.embeds,
+		`/setup allowed a member without Manage Server to open the administrative hub.`);
 }
 
 async function validateTwitchVerificationPanelPrivacyCopy() {
@@ -451,13 +463,36 @@ async function validateManagedTwitchVerificationPanelLifecycle() {
 		);
 		assert(warningCount === 4, `Managed-panel warning budget should refresh after 24 hours.`);
 
+		channels.set(`new-channel`, {
+			...makeChannel(`new-channel`),
+			messages: { fetch: async () => { throw new Error(`temporary fetch failure`); } },
+		});
+		panel.destroy = async () => lifecycle.push(`destroy-record`);
+		let removalFailed = false;
+		try {
+			await removeVerificationPanel(guild);
+		} catch {
+			removalFailed = true;
+		}
+		assert(removalFailed && panel.messageId === `new-message-2` && !lifecycle.includes(`destroy-record`),
+			`A transient managed-panel fetch error retired its saved message ID.`);
+		channels.set(`new-channel`, makeChannel(`new-channel`, {
+			delete: async () => { throw new Error(`temporary delete failure`); },
+		}));
+		removalFailed = false;
+		try {
+			await removeVerificationPanel(guild);
+		} catch {
+			removalFailed = true;
+		}
+		assert(removalFailed && panel.messageId === `new-message-2` && !lifecycle.includes(`destroy-record`),
+			`A transient managed-panel delete error retired its saved message ID.`);
 		const removalMessage = { delete: async () => lifecycle.push(`delete-removed`) };
 		channels.set(`new-channel`, makeChannel(`new-channel`, removalMessage));
-		panel.destroy = async () => lifecycle.push(`destroy-record`);
 		await removeVerificationPanel(guild);
 		assert(
-			lifecycle.slice(-2).join(`,`) === `destroy-record,delete-removed`,
-			`Removing a managed panel should clear ownership before deleting its message.`,
+			lifecycle.slice(-2).join(`,`) === `delete-removed,destroy-record`,
+			`Removing a managed panel should delete its message before retiring the saved ID.`,
 		);
 	} finally {
 		TwitchVerificationPanels.findByPk = originalFindByPk;
@@ -467,20 +502,27 @@ async function validateManagedTwitchVerificationPanelLifecycle() {
 
 async function validateAnnouncementChannelIdNormalization() {
 	const announcements = requireFresh(`utils`, `announcements.js`);
-	const { AnnouncementDeliveryProgress, Servers } = require(resolveProject(`database`, `dbObjects.js`));
+	const { AnnouncementDeliveryProgress, Servers, sequelize } = require(resolveProject(`database`, `dbObjects.js`));
 	const originalFindByPk = Servers.findByPk;
 	const originalFindOne = Servers.findOne;
 	const originalCreate = Servers.create;
 	const originalDestroyProgress = AnnouncementDeliveryProgress.destroy;
+	const originalTransaction = sequelize.transaction;
 	const writes = [];
+	const mutationOrder = [];
 
 	try {
-		AnnouncementDeliveryProgress.destroy = async () => 0;
+		sequelize.transaction = async (options, callback) => callback({});
+		AnnouncementDeliveryProgress.destroy = async () => {
+			mutationOrder.push(`checkpoint-deleted`);
+			return 0;
+		};
 		Servers.findByPk = async guildId => {
 			assert(typeof guildId === `string`, `Announcement guild lookup received a non-string guild ID.`);
 			return null;
 		};
 		Servers.create = async values => {
+			mutationOrder.push(`server-created`);
 			writes.push(values);
 			assert(typeof values.guildId === `string`, `Announcement settings create received a non-string guild ID.`);
 			assert(typeof values.hachiAnnouncementChannelId === `string`, `Announcement settings create received a non-string channel ID.`);
@@ -502,12 +544,15 @@ async function validateAnnouncementChannelIdNormalization() {
 
 		assert(settings.guildId === `smoke-guild-id`, `Announcement settings did not normalize object-shaped guild ID.`);
 		assert(settings.hachiAnnouncementChannelId === `smoke-channel-id`, `Announcement settings did not normalize object-shaped channel ID.`);
+		assert(mutationOrder.join(`,`) === `checkpoint-deleted,server-created`,
+			`Announcement channel ID changed before its delivery checkpoint was retired.`);
 		assert(announcements.normalizeAnnouncementId(123456789n) === `123456789`, `Announcement ID normalization did not handle bigint IDs.`);
 	} finally {
 		Servers.findByPk = originalFindByPk;
 		Servers.findOne = originalFindOne;
 		Servers.create = originalCreate;
 		AnnouncementDeliveryProgress.destroy = originalDestroyProgress;
+		sequelize.transaction = originalTransaction;
 	}
 }
 
@@ -1201,6 +1246,136 @@ async function validateProviderAppTokenRequests() {
 	}
 }
 
+async function validateDurableOAuthAttemptBudget() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const dbObjects = require(resolveProject(`database`, `dbObjects.js`));
+	const originalRegistry = {
+		AuthRequestAttempts: dbObjects.AuthRequestAttempts,
+		sequelize: dbObjects.sequelize,
+	};
+	const originalKey = process.env.HACHI_DB_KEY;
+	const originalKeyFile = process.env.HACHI_DB_KEY_FILE;
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-oauth-budget-`));
+	const databasePath = path.join(tempDir, `attempts.sqlite`);
+	const budgetPath = resolveProject(`auth`, `authAttemptBudget.js`);
+	let database;
+	try {
+		process.env.HACHI_DB_KEY = `smoke-oauth-budget-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		database = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`, dialectModule, logging: false, storage: databasePath,
+		});
+		dbObjects.AuthRequestAttempts = require(resolveProject(`database`, `models`, `authRequestAttempts.js`))(
+			database, Sequelize.DataTypes,
+		);
+		dbObjects.sequelize = database;
+		await database.sync();
+		const budget = requireFresh(`auth`, `authAttemptBudget.js`);
+		const attemptTime = new Date(`2026-11-08T12:00:00.000Z`);
+		const reservations = await Promise.all(Array.from({ length: 7 }, () =>
+			budget.reserveAuthAttempt(`Twitch`, attemptTime)));
+		assert(reservations.filter(result => result.allowed).length === 6 &&
+			reservations.filter(result => !result.allowed).length === 1,
+		`Concurrent OAuth requests exceeded six attempts in one rolling hour.`);
+		const restartedBudget = requireFresh(`auth`, `authAttemptBudget.js`);
+		assert(!(await restartedBudget.reserveAuthAttempt(`Twitch`, attemptTime)).allowed &&
+			(await restartedBudget.reserveAuthAttempt(`Kick`, attemptTime)).allowed,
+		`OAuth retry budget was lost on restart or mixed independent providers.`);
+		assert((await restartedBudget.reserveAuthAttempt(`Twitch`, new Date(attemptTime.getTime() + 60 * 60 * 1000 + 1))).allowed,
+			`Expired OAuth attempts still blocked a later rolling hour.`);
+	} finally {
+		delete require.cache[require.resolve(budgetPath)];
+		Object.assign(dbObjects, originalRegistry);
+		if (database) {
+			await database.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, originalKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, originalKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateUnauthorizedAppTokenRecovery() {
+	const authTokens = require(resolveProject(`auth`, `authTokens.js`));
+	const budget = require(resolveProject(`auth`, `authAttemptBudget.js`));
+	const tokenRequester = require(resolveProject(`auth`, `fetchAuthToken.js`));
+	const logger = require(resolveProject(`utils`, `writeLog.js`));
+	const refreshPath = resolveProject(`auth`, `refreshAuthTokens.js`);
+	const providerFetchPath = resolveProject(`modules`, `providerFetch.js`);
+	const original = {
+		fetch: global.fetch,
+		invalidateAuthToken: authTokens.invalidateAuthToken,
+		updateAuthTokens: authTokens.updateAuthTokens,
+		reserveAuthAttempt: budget.reserveAuthAttempt,
+		fetchAuthToken: tokenRequester.fetchAuthToken,
+		info: logger.info,
+		warn: logger.warn,
+	};
+	let currentToken = `rejected-token`;
+	let requestCount = 0;
+	let resolveTokenRequest;
+	const recoveryMessages = [];
+	try {
+		logger.info = message => recoveryMessages.push(message);
+		logger.warn = () => null;
+		authTokens.invalidateAuthToken = (_key, rejectedToken) => {
+			if (currentToken !== rejectedToken) {
+				return false;
+			}
+			currentToken = null;
+			return true;
+		};
+		authTokens.updateAuthTokens = values => {
+			currentToken = values.twitchAuthToken;
+		};
+		budget.reserveAuthAttempt = async () => ({ allowed: true, waitMs: 0 });
+		tokenRequester.fetchAuthToken = async () => {
+			requestCount++;
+			return new Promise(resolve => {
+				resolveTokenRequest = resolve;
+			});
+		};
+		const refresh = requireFresh(`auth`, `refreshAuthTokens.js`);
+		const { fetchProviderApi } = requireFresh(`modules`, `providerFetch.js`);
+		global.fetch = async () => ({ status: 401 });
+		const requestOptions = {
+			appTokenProvider: `Twitch`,
+			headers: { Authorization: `Bearer rejected-token` },
+		};
+		await Promise.all([
+			fetchProviderApi(`https://example.com/first`, requestOptions),
+			fetchProviderApi(`https://example.com/second`, requestOptions),
+		]);
+		await waitImmediate();
+		assert(currentToken === null && requestCount === 1 && typeof resolveTokenRequest === `function`,
+			`Parallel app-token 401 responses did not trigger one deduplicated refresh.`);
+		const recovery = refresh.updateTwitch();
+		resolveTokenRequest(`replacement-token`);
+		await recovery;
+		assert(currentToken === `replacement-token`, `OAuth recovery did not install its replacement token.`);
+		assert(recoveryMessages.length === 1 && /Twitch OAuth.*recovered/iu.test(recoveryMessages[0]),
+			`A deduplicated 401 recovery did not log exactly one token recovery.`);
+		await fetchProviderApi(`https://example.com/stale`, requestOptions);
+		global.fetch = async () => ({ status: 503 });
+		await fetchProviderApi(`https://example.com/unavailable`, {
+			appTokenProvider: `Twitch`, headers: { Authorization: `Bearer replacement-token` },
+		});
+		assert(currentToken === `replacement-token` && requestCount === 1,
+			`A stale 401 or provider 5xx invalidated a newer app token.`);
+	} finally {
+		Reflect.set(global, `fetch`, original.fetch);
+		authTokens.invalidateAuthToken = original.invalidateAuthToken;
+		authTokens.updateAuthTokens = original.updateAuthTokens;
+		budget.reserveAuthAttempt = original.reserveAuthAttempt;
+		tokenRequester.fetchAuthToken = original.fetchAuthToken;
+		logger.info = original.info;
+		logger.warn = original.warn;
+		delete require.cache[require.resolve(refreshPath)];
+		delete require.cache[require.resolve(providerFetchPath)];
+	}
+}
+
 function validateSecretEncryptionHelpers() {
 	const secrets = requireFresh(`config`, `secretEncryption.js`);
 	const key = secrets.generateSecretKey();
@@ -1423,6 +1598,54 @@ async function validateEncryptedSequelizeRuntime() {
 		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
 		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
 
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateSqliteForcedConnectionCleanup() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const { installSqliteConnectionCleanup } = requireFresh(`database`, `sqliteConnectionCleanup.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-forced-sqlite-cleanup-`));
+	const dbPath = path.join(tempDir, `runtime.sqlite`);
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	let database = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-forced-cleanup-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		database = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		installSqliteConnectionCleanup(database);
+		await database.query(`CREATE TABLE sample (id INTEGER PRIMARY KEY, value TEXT NOT NULL)`);
+
+		// Simulate Sequelize's failed-COMMIT cleanup with an uncommitted writer.
+		// Closing that connection must release its file lock and roll back the row.
+		const transactionId = `smoke-failed-commit`;
+		const writer = await database.connectionManager.getConnection({ uuid: transactionId });
+		writer.uuid = transactionId;
+		await adapterRun(writer, `BEGIN IMMEDIATE TRANSACTION`);
+		await adapterRun(writer, `INSERT INTO sample (value) VALUES (?)`, [`uncommitted`]);
+		await database.connectionManager.destroyConnection(writer);
+
+		assert(writer.open === false, `Failed SQLite transaction connection remained open.`);
+		assert(!database.connectionManager.connections[transactionId],
+			`Failed SQLite transaction connection remained cached.`);
+		const rows = await database.query(`SELECT COUNT(*) AS count FROM sample`, {
+			type: Sequelize.QueryTypes.SELECT,
+		});
+		assert(Number(rows[0]?.count) === 0, `Failed SQLite transaction was not rolled back on forced cleanup.`);
+	} finally {
+		if (database) {
+			await database.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
 		fs.rmSync(tempDir, { force: true, recursive: true });
 	}
 }
@@ -2057,13 +2280,16 @@ async function validateKickVodLookup() {
 	const log = require(resolveProject(`utils`, `writeLog.js`));
 	const originalWarn = log.warn;
 	const originalError = log.error;
+	const originalInfo = log.info;
 	const warnings = [];
 	const errors = [];
+	const recoveryMessages = [];
 	const vodModulePath = resolveProject(`modules`, `kickVods.js`);
 
 	try {
 		log.warn = message => warnings.push(message);
 		log.error = (message, err) => errors.push({ message, err });
+		log.info = message => recoveryMessages.push(message);
 		const { getLatest } = requireFresh(`modules`, `kickVods.js`);
 		const missingChannelBody = `No query results for model [App\\Models\\Channel].`;
 
@@ -2101,6 +2327,7 @@ async function validateKickVodLookup() {
 			};
 		};
 		const vod = await getLatest(`current_kick_channel`);
+		assert(recoveryMessages.length === 0, `An unrelated Kick VoD lookup logged a false recovery.`);
 		assert(requestedUrl === `https://kick.com/api/v1/channels/current_kick_channel`, `Kick VoD lookup used the wrong channel endpoint.`);
 		assert(vod?.url === `https://kick.com/current_kick_channel/videos/test-vod`, `Kick VoD lookup did not return the replay link.`);
 		assert(vod?.title === `Test stream`, `Kick VoD lookup lost the replay title.`);
@@ -2141,7 +2368,50 @@ async function validateKickVodLookup() {
 		global.fetch = originalFetch;
 		log.warn = originalWarn;
 		log.error = originalError;
+		log.info = originalInfo;
 		delete require.cache[require.resolve(vodModulePath)];
+	}
+}
+
+async function validateReplayFailureLogging() {
+	const originalFetch = global.fetch;
+	const log = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = log.error;
+	const originalInfo = log.info;
+	const errors = [];
+	const recoveries = [];
+	const twitchPath = resolveProject(`modules`, `twitchVods.js`);
+	const kickPath = resolveProject(`modules`, `kickVods.js`);
+
+	try {
+		log.error = (message, err) => errors.push({ message, err });
+		log.info = message => recoveries.push(message);
+		const twitchVods = requireFresh(`modules`, `twitchVods.js`);
+		const kickVods = requireFresh(`modules`, `kickVods.js`);
+		global.fetch = async () => ({ ok: false, status: 503, text: async () => `provider unavailable` });
+		for (let attempt = 0; attempt < 3; attempt++) {
+			assert((await twitchVods.getForStream(`broadcaster`, `stream`, `client`, `token`))?.retryable,
+				`Twitch VoD failure was not retryable.`);
+			assert((await kickVods.getLatest(`broadcaster`))?.retryable,
+				`Kick VoD failure was not retryable.`);
+		}
+		assert(errors.length === 2 && errors.every(entry => entry.err instanceof Error),
+			`Repeated replay outages should log once per provider lookup with the original errors.`);
+
+		global.fetch = async url => url.includes(`twitch.tv`) ?
+			{ ok: true, json: async () => ({ data: [] }) } :
+			{ ok: true, json: async () => ({ previous_livestreams: [] }) };
+		await twitchVods.getForStream(`broadcaster`, `stream`, `client`, `token`);
+		await kickVods.getLatest(`broadcaster`);
+		assert(recoveries.length === 2 && recoveries.some(message => message.includes(`Twitch`)) &&
+			recoveries.some(message => message.includes(`Kick`)),
+		`Replay lookups did not log one recovery per previously failing provider.`);
+	} finally {
+		Reflect.set(global, `fetch`, originalFetch);
+		log.error = originalError;
+		log.info = originalInfo;
+		delete require.cache[require.resolve(twitchPath)];
+		delete require.cache[require.resolve(kickPath)];
 	}
 }
 
@@ -2327,6 +2597,66 @@ function createKickSessionStore() {
 	};
 }
 
+async function validateStreamUpdateSuppression() {
+	const { liveEmbed, syncMessage } = requireFresh(`modules`, `streamUtils.js`);
+	const embedOptions = {
+		provider: `Twitch`, color: 0x9146FF, name: `Streamer`, title: `Still live`,
+		url: `https://www.twitch.tv/streamer`, category: `Noita`, viewers: 11,
+		image: `https://example.com/preview.jpg?cacheBypass=1`, startedAt: `2026-11-08T12:00:00Z`,
+	};
+	const oldEmbed = liveEmbed(embedOptions).toJSON();
+	oldEmbed.footer.text = oldEmbed.footer.text.replace(/Last edited .+\.$/u, `Last edited 11/8/2026, 7:00 AM EST.`);
+	const edits = [];
+	const message = {
+		id: `saved-alert`,
+		content: `<@&notify-role> Streamer just went live`,
+		embeds: [oldEmbed],
+		edit: async payload => {
+			edits.push(payload);
+			message.content = payload.content;
+			message.embeds = payload.embeds.map(embed => embed.toJSON());
+		},
+	};
+	const channel = { messages: { cache: new Map([[message.id, message]]) } };
+	const sync = embed => syncMessage({
+		discordChannel: channel,
+		messageId: message.id,
+		shouldEdit: true,
+		content: message.content,
+		embed,
+		allowedRoleId: `notify-role`,
+		onSend: () => { throw new Error(`An existing alert should not be resent.`); },
+	});
+	await sync(liveEmbed({ ...embedOptions, image: `https://example.com/preview.jpg?cacheBypass=2` }));
+	assert(edits.length === 0, `An unchanged live alert was edited only for its footer or preview query.`);
+	await sync(liveEmbed({ ...embedOptions, viewers: 12 }));
+	assert(edits.length === 1 && edits[0].allowedMentions.roles.join(`,`) === `notify-role` &&
+		edits[0].allowedMentions.parse.length === 0,
+	`A changed viewer count did not update the alert with configured-role-only mentions.`);
+}
+
+async function validateReplayWorkerBounds() {
+	const { processReplayRows, selectReplayRows } = requireFresh(`modules`, `replayWorker.js`);
+	const rows = Array.from({ length: 100 }, (_, index) => ({ id: index + 1 }));
+	const firstBatch = selectReplayRows(rows, 40);
+	const secondBatch = selectReplayRows(rows, firstBatch.at(-1).id);
+	assert(firstBatch.length === 40 && firstBatch[0].id === 41 && secondBatch[0].id === 81 &&
+		secondBatch.at(-1).id === 20,
+	`Replay batches did not limit work and rotate past older failing rows.`);
+	let active = 0;
+	let highestActive = 0;
+	const processed = [];
+	await processReplayRows(firstBatch, async row => {
+		active++;
+		highestActive = Math.max(highestActive, active);
+		await waitImmediate();
+		processed.push(row.id);
+		active--;
+	});
+	assert(processed.length === 40 && highestActive === 4,
+		`Replay processing did not enforce its four-request concurrency cap.`);
+}
+
 async function validateTwitchPendingVodUpdate() {
 	const twitchStreams = require(resolveProject(`modules`, `twitchStreams.js`));
 	const twitchVods = require(resolveProject(`modules`, `twitchVods.js`));
@@ -2443,7 +2773,11 @@ async function validateTwitchPendingVodUpdate() {
 		PendingStreamVods.destroy = pendingStore.destroy;
 		log.error = (messageText, reason) => errors.push({ messageText, reason });
 
-		const { getTwitch } = requireFresh(`modules`, `getTwitch.js`);
+		const twitchModule = requireFresh(`modules`, `getTwitch.js`);
+		const getTwitch = async client => {
+			await twitchModule.getTwitch(client);
+			await twitchModule.waitForPendingReplayWork();
+		};
 		const client = {
 			guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) },
 			channels: { cache: new Map([[`twitch-discord-channel-id`, discordChannel]]) },
@@ -2515,15 +2849,19 @@ async function validateTwitchPendingVodUpdate() {
 		// A temporary Users lookup failure still has the existing Search Channels
 		// fallback for the profile image and a matching broadcaster ID.
 		twitchIdentity.getTwitchUsers = async () => new Map();
-		const { getTwitch: getTwitchWithoutUsers } = requireFresh(`modules`, `getTwitch.js`);
+		const twitchWithoutUsersModule = requireFresh(`modules`, `getTwitch.js`);
+		const getTwitchWithoutUsers = async pollClient => {
+			await twitchWithoutUsersModule.getTwitch(pollClient);
+			await twitchWithoutUsersModule.waitForPendingReplayWork();
+		};
 		await getTwitchWithoutUsers(client);
 		assert(channelSearches === 1,
 			`The Twitch channel fallback was not used when the batched Users lookup was unavailable.`);
 		streamData = { ...streamData, viewer_count: null };
 		await getTwitchWithoutUsers(client);
-		assert(errors.some(item => item.messageText.includes(`Failed to process Twitch channel`) &&
-			item.messageText.includes(`row 1`) && item.messageText.includes(server.guildId)),
-		`A rejected Twitch channel job did not identify the affected row and guild.`);
+		assert(liveSyncs.at(-1)?.embed.toJSON().fields.find(field => field.name === `Viewers`)?.value === `0` &&
+			!errors.some(item => item.messageText.includes(`Failed to process Twitch channel`)),
+		`A missing Twitch viewer count did not fall back to zero.`);
 	} finally {
 		twitchStreams.getStreams = original.getStreams;
 		twitchVods.getForStream = original.getForStream;
@@ -2684,7 +3022,11 @@ async function validateKickChannelRouting() {
 		KickLiveSessions.destroy = kickSessionStore.destroy;
 		log.warn = messageText => warnings.push(messageText);
 
-		const { getKick } = requireFresh(`modules`, `getKick.js`);
+		const kickModule = requireFresh(`modules`, `getKick.js`);
+		const getKick = async client => {
+			await kickModule.getKick(client);
+			await kickModule.waitForPendingReplayWork();
+		};
 		const client = {
 			guilds: { cache: new Map([[server.guildId, { name: `test guild` }]]) },
 			channels: { cache: new Map([[`discord-channel-id`, discordChannel]]) },
@@ -3073,6 +3415,535 @@ async function validateConcurrentStreamIdentityWrites() {
 	}
 }
 
+async function validateServerCleanupDependencyOrder() {
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-server-cleanup-`));
+	const databasePath = path.join(tempDir, `cleanup.sqlite`);
+	const registryPath = resolveProject(`database`, `dbObjects.js`);
+	const birthdayPath = resolveProject(`utils`, `birthdays.js`);
+	const lifecyclePath = resolveProject(`utils`, `serverLifecycle.js`);
+	const liveRegistry = require(registryPath);
+	const originalRegistry = { ...liveRegistry };
+	const originalEncryptionMode = process.env.HACHI_DB_ENCRYPTION;
+	const originalKey = process.env.HACHI_DB_KEY;
+	const originalKeyFile = process.env.HACHI_DB_KEY_FILE;
+	const originalFileOperations = {
+		lstat: fs.promises.lstat,
+		mkdir: fs.promises.mkdir,
+		readdir: fs.promises.readdir,
+		rename: fs.promises.rename,
+		rm: fs.promises.rm,
+	};
+	let isolatedRegistry;
+	let evidenceLocation = `original`;
+	let pendingDirectoryExists = false;
+	let renameFailure = true;
+	let purgeFailure = true;
+
+	try {
+		process.env.HACHI_DB_ENCRYPTION = `active`;
+		process.env.HACHI_DB_KEY = `smoke-server-cleanup-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		// Load the real model registry and all its foreign keys, changing only its
+		// SQLite storage path to this disposable encrypted database.
+		const fixtureModule = new Module(registryPath, module);
+		fixtureModule.filename = registryPath;
+		fixtureModule.paths = Module._nodeModulePaths(path.dirname(registryPath));
+		const moduleRequire = fixtureModule.require.bind(fixtureModule);
+		fixtureModule.require = request => {
+			if (request !== `path`) {
+				return moduleRequire(request);
+			}
+			const fixturePath = Object.create(path);
+			fixturePath.join = (...parts) => {
+				if (parts.at(-1) === `database.sqlite`) {
+					return databasePath;
+				}
+				return path.join(...parts);
+			};
+			return fixturePath;
+		};
+		fixtureModule._compile(fs.readFileSync(registryPath, `utf8`), registryPath);
+		isolatedRegistry = fixtureModule.exports;
+		assert(isolatedRegistry.sequelize.options.storage === databasePath,
+			`Server cleanup fixture did not isolate its database path.`);
+		Object.assign(liveRegistry, isolatedRegistry);
+		await isolatedRegistry.sequelize.sync();
+		const expiredGuildId = `smoke-expired-guild`;
+		const retainedGuildId = `smoke-retained-guild`;
+		const now = new Date(`2026-11-08T12:00:00.000Z`);
+		const leftAt = new Date(`2026-10-01T12:00:00.000Z`);
+		await isolatedRegistry.Servers.bulkCreate([
+			{ guildId: expiredGuildId, leftAt },
+			{ guildId: retainedGuildId },
+		]);
+		await isolatedRegistry.BirthdayConfigs.bulkCreate([
+			{ guildId: expiredGuildId, channelId: `old-board`, hour: 12, timezone: `UTC` },
+			{ guildId: retainedGuildId, channelId: `new-board`, hour: 12, timezone: `UTC` },
+		]);
+		await isolatedRegistry.BirthdayUsers.bulkCreate([
+			{ guildId: expiredGuildId, userId: `orphan`, month: 12, day: 1 },
+			{ guildId: expiredGuildId, userId: `shared`, month: 12, day: 1 },
+			{ guildId: retainedGuildId, userId: `shared`, month: 12, day: 1 },
+		]);
+		for (const userId of [`orphan`, `shared`]) {
+			await isolatedRegistry.BirthdayCards.create({
+				guildId: expiredGuildId, userId, year: 2026,
+				url: `https://recocards.com/card/${userId}`, createdAt: now,
+			});
+		}
+		await isolatedRegistry.BirthdayCards.bulkCreate([
+			{
+				guildId: expiredGuildId, userId: `legacy-orphan`, year: 2026,
+				url: `https://recocards.com/card/legacy-orphan`, createdAt: now,
+			},
+			{
+				guildId: null, deliveryGuildId: expiredGuildId, userId: `delivery-orphan`, year: 2026,
+				url: `https://recocards.com/card/delivery-orphan`, createdAt: now,
+			},
+		]);
+		const streamChannel = await isolatedRegistry.Channels.create({
+			guildId: expiredGuildId, channelName: `smoke_streamer`, twitchNotif: true, kickNotif: true,
+		});
+		await isolatedRegistry.StreamChannelIdentities.create({
+			channelId: streamChannel.id, provider: `twitch`, providerUserId: `streamer-id`, currentName: `smoke_streamer`,
+		});
+		await isolatedRegistry.PendingStreamVods.create({
+			channelId: streamChannel.id, provider: `twitch`, discordChannelId: `alerts`,
+			messageId: `old-alert`, endedAt: now,
+		});
+		await isolatedRegistry.KickLiveSessions.create({ channelId: streamChannel.id, messageId: `kick-alert`, startTime: now });
+		await isolatedRegistry.AnnouncementDeliveryProgress.create({ guildId: expiredGuildId, progressJson: `{}` });
+		await isolatedRegistry.LinkConfigs.create({ guildId: expiredGuildId });
+		await isolatedRegistry.LinkFixRules.create({
+			guildId: expiredGuildId, sourceDomain: `example.com`, targetDomain: `embed.example.com`, createdAt: now,
+		});
+		await isolatedRegistry.LinkBlockRules.create({ guildId: expiredGuildId, domain: `blocked.example`, createdAt: now });
+		await isolatedRegistry.TwitchVerificationPanels.create({ guildId: expiredGuildId, channelId: `panel-channel` });
+		await isolatedRegistry.ModmailTickets.create({
+			guildId: expiredGuildId, ticketNumber: 1, openerId: `member`, openedAt: now,
+		});
+		const reactionPanel = await isolatedRegistry.ReactionRoleMessages.create({
+			guildId: expiredGuildId, channelId: `role-channel`, messageId: `role-panel`, title: `Roles`, description: `Choose`,
+		});
+		await isolatedRegistry.ReactionRoleItems.create({
+			guildId: expiredGuildId, reactionRoleMessageId: reactionPanel.id, roleId: `role`, label: `Role`,
+		});
+		const incident = await isolatedRegistry.RaidIncidents.create({
+			guildId: expiredGuildId, triggerType: `joins`, startedAt: now,
+		});
+		await isolatedRegistry.RaidIncidentUsers.create({ incidentId: incident.id, guildId: expiredGuildId, userId: `member` });
+		await isolatedRegistry.RaidIncidentMessages.create({
+			incidentId: incident.id, guildId: expiredGuildId, messageId: `raid-message`,
+			channelId: `raid-channel`, userId: `member`, createdAt: now,
+		});
+		await isolatedRegistry.RaidIncidentFiles.create({
+			incidentId: incident.id, guildId: expiredGuildId, messageId: `raid-message`,
+			attachmentId: `attachment`, filename: `evidence.txt`,
+		});
+		delete require.cache[require.resolve(birthdayPath)];
+		const lifecycle = requireFresh(`utils`, `serverLifecycle.js`);
+		const evidenceRoot = resolveProject(`data`, `evidence`);
+		const pendingRoot = path.resolve(evidenceRoot, `.pending-delete`);
+		const originalEvidencePath = path.resolve(evidenceRoot, expiredGuildId);
+		const stagedEvidencePath = path.resolve(pendingRoot, expiredGuildId);
+		const directoryStats = { isDirectory: () => true, isSymbolicLink: () => false };
+		const missingDirectory = () => {
+			const err = new Error(`Directory missing in isolated evidence fixture.`);
+			err.code = `ENOENT`;
+			throw err;
+		};
+		Reflect.set(fs.promises, `lstat`, async target => {
+			if (target === evidenceRoot) {
+				return directoryStats;
+			}
+			if (target === pendingRoot) {
+				return pendingDirectoryExists ? directoryStats : missingDirectory();
+			}
+			if (target === originalEvidencePath) {
+				return evidenceLocation === `original` ? directoryStats : missingDirectory();
+			}
+			if (target === stagedEvidencePath) {
+				return evidenceLocation === `staged` ? directoryStats : missingDirectory();
+			}
+			return originalFileOperations.lstat(target);
+		});
+		Reflect.set(fs.promises, `mkdir`, async (target, options) => {
+			if (target === pendingRoot) {
+				pendingDirectoryExists = true;
+				return;
+			}
+			return originalFileOperations.mkdir(target, options);
+		});
+		Reflect.set(fs.promises, `rename`, async (source, destination) => {
+			if (source === originalEvidencePath && destination === stagedEvidencePath) {
+				if (renameFailure) {
+					throw new Error(`simulated evidence staging failure`);
+				}
+				evidenceLocation = `staged`;
+				return;
+			}
+			if (source === stagedEvidencePath && destination === originalEvidencePath) {
+				evidenceLocation = `original`;
+				return;
+			}
+			return originalFileOperations.rename(source, destination);
+		});
+		Reflect.set(fs.promises, `readdir`, async (target, options) => {
+			if (target === pendingRoot) {
+				return evidenceLocation === `staged` ?
+					[{ name: expiredGuildId, isDirectory: () => true }] :
+					[];
+			}
+			return originalFileOperations.readdir(target, options);
+		});
+		Reflect.set(fs.promises, `rm`, async (target, options) => {
+			if (target === stagedEvidencePath) {
+				if (purgeFailure) {
+					throw new Error(`simulated staged evidence purge failure`);
+				}
+				evidenceLocation = `removed`;
+				return;
+			}
+			return originalFileOperations.rm(target, options);
+		});
+		let failed = false;
+		try {
+			await lifecycle.deleteExpiredLeftServers({ now });
+		} catch (err) {
+			failed = err.message === `simulated evidence staging failure`;
+		}
+		assert(failed && evidenceLocation === `original` && await isolatedRegistry.Servers.findByPk(expiredGuildId) &&
+			await isolatedRegistry.BirthdayCards.count({ where: { userId: `orphan` } }) === 1 &&
+			await isolatedRegistry.Channels.count({ where: { guildId: expiredGuildId } }) === 1,
+		`Failed evidence staging did not roll back dependent rows and keep the master server ID.`);
+		renameFailure = false;
+		const removed = await lifecycle.deleteExpiredLeftServers({ now });
+		assert(removed.deleted === 1 && !await isolatedRegistry.Servers.findByPk(expiredGuildId) &&
+			await isolatedRegistry.Servers.findByPk(retainedGuildId) && evidenceLocation === `staged`,
+		`Expired server cleanup did not remove only the departed master row.`);
+		purgeFailure = false;
+		await lifecycle.reconcileServerRows({
+			guilds: { cache: new Map([[retainedGuildId, { id: retainedGuildId, name: `Retained guild` }]]) },
+		}, { now });
+		assert(evidenceLocation === `removed`, `Startup did not finish purging staged evidence after a committed deletion.`);
+		assert(await isolatedRegistry.BirthdayCards.count({ where: { userId: [`orphan`, `legacy-orphan`, `delivery-orphan`] } }) === 0 &&
+			(await isolatedRegistry.BirthdayCards.findOne({ where: { userId: `shared` } })).guildId === retainedGuildId &&
+			await isolatedRegistry.LinkFixRules.count({ where: { guildId: expiredGuildId } }) === 0 &&
+			await isolatedRegistry.ReactionRoleItems.count({ where: { guildId: expiredGuildId } }) === 0 &&
+			await isolatedRegistry.PendingStreamVods.count({ where: { channelId: streamChannel.id } }) === 0,
+		`Server cleanup left dependent rows behind or deleted a shared birthday card.`);
+
+		await isolatedRegistry.Servers.create({ guildId: `smoke-rejoined-guild`, leftAt });
+		await isolatedRegistry.LinkConfigs.create({ guildId: `smoke-rejoined-guild` });
+		const originalFindAll = isolatedRegistry.Servers.findAll;
+		Reflect.set(isolatedRegistry.Servers, `findAll`, async function findAllWithRejoin(options) {
+			const rows = await originalFindAll.call(this, options);
+			if (!options?.transaction && Array.isArray(rows) &&
+				rows.some(row => row.guildId === `smoke-rejoined-guild`)) {
+				await isolatedRegistry.Servers.update({ leftAt: null }, { where: { guildId: `smoke-rejoined-guild` } });
+			}
+			return rows;
+		});
+		try {
+			const rejoined = await lifecycle.deleteExpiredLeftServers({ now });
+			assert(rejoined.deleted === 0 && await isolatedRegistry.Servers.findByPk(`smoke-rejoined-guild`) &&
+				await isolatedRegistry.LinkConfigs.findByPk(`smoke-rejoined-guild`),
+			`A guild that rejoined before the cleanup transaction lost its master or child row.`);
+		} finally {
+			Reflect.set(isolatedRegistry.Servers, `findAll`, originalFindAll);
+		}
+		const leavingGuildId = `smoke-leaving-guild`;
+		await isolatedRegistry.Servers.create({ guildId: leavingGuildId });
+		await isolatedRegistry.BirthdayConfigs.create({
+			guildId: leavingGuildId, channelId: `leaving-board`, hour: 12, timezone: `UTC`,
+		});
+		await isolatedRegistry.BirthdayUsers.bulkCreate([
+			{ guildId: leavingGuildId, userId: `transfer-test`, month: 12, day: 1 },
+			{ guildId: retainedGuildId, userId: `transfer-test`, month: 12, day: 1 },
+		]);
+		await isolatedRegistry.BirthdayCards.create({
+			guildId: leavingGuildId, userId: `transfer-test`, year: 2026,
+			url: `https://recocards.com/card/transfer-test`, createdAt: now,
+		});
+		const previousCardUpdate = isolatedRegistry.BirthdayCards.prototype.update;
+		Reflect.set(isolatedRegistry.BirthdayCards.prototype, `update`, async () => {
+			throw new Error(`simulated server card transfer failure`);
+		});
+		let leaveFailed = false;
+		try {
+			await lifecycle.markServerLeft({ id: leavingGuildId, name: `Leaving guild` }, { now });
+		} catch (err) {
+			leaveFailed = err.message === `simulated server card transfer failure`;
+		} finally {
+			Reflect.set(isolatedRegistry.BirthdayCards.prototype, `update`, previousCardUpdate);
+		}
+		assert(leaveFailed && !(await isolatedRegistry.Servers.findByPk(leavingGuildId)).leftAt &&
+			(await isolatedRegistry.BirthdayCards.findOne({ where: { userId: `transfer-test` } })).guildId === leavingGuildId,
+		`A failed server leave card transfer committed the leave timestamp or changed card ownership.`);
+	} finally {
+		for (const [operation, originalOperation] of Object.entries(originalFileOperations)) {
+			Reflect.set(fs.promises, operation, originalOperation);
+		}
+		Object.assign(liveRegistry, originalRegistry);
+		delete require.cache[require.resolve(birthdayPath)];
+		delete require.cache[require.resolve(lifecyclePath)];
+		if (isolatedRegistry?.sequelize) {
+			await isolatedRegistry.sequelize.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_ENCRYPTION`, originalEncryptionMode);
+		restoreEnvValue(`HACHI_DB_KEY`, originalKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, originalKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
+async function validateBirthdayMemberRetention() {
+	const Sequelize = require(`sequelize`);
+	const dialectModule = requireFresh(`database`, `sqlcipherSqlite3.js`);
+	const dbObjects = require(resolveProject(`database`, `dbObjects.js`));
+	const { ensureBirthdayMemberLeaveColumn } = requireFresh(`database`, `dbInit.js`);
+	const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `hachi-birthday-retention-`));
+	const dbPath = path.join(tempDir, `birthdays.sqlite`);
+	const original = Object.fromEntries([
+		`BirthdayBoardRetiredMessages`, `BirthdayCards`, `BirthdayConfigs`, `BirthdayUsers`, `Servers`, `sequelize`,
+	].map(key => [key, dbObjects[key]]));
+	const previousKey = process.env.HACHI_DB_KEY;
+	const previousKeyFile = process.env.HACHI_DB_KEY_FILE;
+	const birthdayPath = resolveProject(`utils`, `birthdays.js`);
+	let database = null;
+
+	try {
+		process.env.HACHI_DB_KEY = `smoke-birthday-retention-${Date.now()}`;
+		delete process.env.HACHI_DB_KEY_FILE;
+		database = new Sequelize(`database`, ``, ``, {
+			dialect: `sqlite`,
+			dialectModule,
+			logging: false,
+			storage: dbPath,
+		});
+		for (const [key, fileName] of [
+			[`Servers`, `servers.js`],
+			[`BirthdayUsers`, `birthdayUsers.js`],
+			[`BirthdayConfigs`, `birthdayConfigs.js`],
+			[`BirthdayBoardRetiredMessages`, `birthdayBoardRetiredMessages.js`],
+			[`BirthdayCards`, `birthdayCards.js`],
+		]) {
+			dbObjects[key] = require(resolveProject(`database`, `models`, fileName))(database, Sequelize.DataTypes);
+		}
+		dbObjects.sequelize = database;
+		await database.query(`CREATE TABLE birthdayUsers (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			guildId VARCHAR(255) NOT NULL,
+			userId VARCHAR(255) NOT NULL,
+			month INTEGER NOT NULL,
+			day INTEGER NOT NULL,
+			lastUpcomingReminderDate VARCHAR(255),
+			lastBirthdayAnnouncementDate VARCHAR(255)
+		)`);
+		await ensureBirthdayMemberLeaveColumn(database);
+		await database.sync();
+		assert((await database.getQueryInterface().describeTable(`birthdayUsers`)).leftAt,
+			`Birthday membership retention column was not created.`);
+		assert((await database.getQueryInterface().showIndex(`birthdayUsers`))
+			.some(index => index.name === `birthdayUsersLeftAt`),
+		`Birthday membership retention index was not created.`);
+		const birthdays = requireFresh(`utils`, `birthdays.js`);
+		const { DateTime } = require(`luxon`);
+		const client = { guilds: { cache: new Map(), fetch: async () => null } };
+		const userId = `birthday-member`;
+		const year = new Date().getUTCFullYear() + 1;
+		const boardGuild = {
+			members: { cache: new Map([[userId, { displayName: `Birthday member` }]]) },
+		};
+		const boardNow = DateTime.fromISO(`${year}-11-20T12:00:00`, { zone: `UTC` });
+
+		await dbObjects.Servers.bulkCreate([{ guildId: `first` }, { guildId: `second` }]);
+		await dbObjects.BirthdayConfigs.bulkCreate([
+			{ guildId: `first`, channelId: `board-first`, hour: 12, timezone: `UTC` },
+			{ guildId: `second`, channelId: `board-second`, hour: 13, timezone: `UTC` },
+		]);
+		await dbObjects.BirthdayUsers.bulkCreate([
+			{ guildId: `first`, userId, month: 12, day: 1 },
+			{ guildId: `second`, userId, month: 12, day: 1 },
+		]);
+		await dbObjects.BirthdayCards.create({
+			createdAt: new Date(),
+			guildId: `first`,
+			userId,
+			year,
+			url: `https://recocards.com/card/test`,
+		});
+		const firstLeave = new Date(`2026-11-01T12:00:00.000Z`);
+		const originalCardUpdate = dbObjects.BirthdayCards.prototype.update;
+		dbObjects.BirthdayCards.prototype.update = async () => {
+			throw new Error(`simulated card transfer failure`);
+		};
+		let cardTransferFailed = false;
+		try {
+			await birthdays.markBirthdayMemberLeft(client, `first`, userId, { now: firstLeave });
+		} catch (err) {
+			cardTransferFailed = err.message === `simulated card transfer failure`;
+		} finally {
+			Reflect.set(dbObjects.BirthdayCards.prototype, `update`, originalCardUpdate);
+		}
+		assert(cardTransferFailed &&
+			!(await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId } })).leftAt &&
+			(await dbObjects.BirthdayConfigs.findByPk(`first`)).boardRevision === 0,
+		`A failed birthday-card transfer committed the departure or board revision.`);
+
+		assert(await birthdays.markBirthdayMemberLeft(client, `first`, userId, { now: firstLeave }),
+			`Leaving a server did not retain its birthday with a timestamp.`);
+		assert((await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId } })).leftAt,
+			`Departed birthday was deleted before its grace period.`);
+		assert((await dbObjects.BirthdayCards.findOne({ where: { userId, year } })).guildId === `second`,
+			`Global card ownership did not transfer to the remaining server.`);
+		const pendingBoard = await dbObjects.BirthdayConfigs.findByPk(`first`);
+		assert(pendingBoard.boardRevision === 1 && pendingBoard.boardPublishedRevision === 0,
+			`An unavailable Discord board did not retain its retryable membership revision.`);
+		const boardMessages = new Map();
+		let boardSendFails = true;
+		let oldBoardDeleteFails = true;
+		const boardChannel = {
+			messages: { fetch: async messageId => boardMessages.get(messageId) || null },
+			send: async () => {
+				if (boardSendFails) {
+					throw new Error(`simulated board send failure`);
+				}
+				const message = {
+					id: `birthday-board-${boardMessages.size + 1}`,
+					edit: async () => null,
+					delete: async () => {
+						if (oldBoardDeleteFails) {
+							throw new Error(`simulated old board deletion failure`);
+						}
+						boardMessages.delete(message.id);
+					},
+				};
+				boardMessages.set(message.id, message);
+				return message;
+			},
+		};
+		client.guilds.cache.set(`first`, {
+			id: `first`, name: `First guild`,
+			channels: { cache: new Map([[`board-first`, boardChannel]]), fetch: async () => boardChannel },
+			members: { cache: new Map() },
+		});
+		await birthdays.retryPendingBirthdayBoardWork(client);
+		assert((await dbObjects.BirthdayConfigs.findByPk(`first`)).boardPublishedRevision === 0,
+			`A failed board send incorrectly cleared its pending revision.`);
+		boardSendFails = false;
+		await birthdays.retryPendingBirthdayBoardWork(client);
+		const firstBoardConfig = await dbObjects.BirthdayConfigs.findByPk(`first`);
+		assert(firstBoardConfig.boardPublishedRevision === firstBoardConfig.boardRevision &&
+			firstBoardConfig.boardMessageId === `birthday-board-1`,
+		`A successful board retry did not publish the pending revision.`);
+		boardSendFails = true;
+		let replacementFailed = false;
+		try {
+			await birthdays.refreshBirthdayBoard(client, firstBoardConfig, boardNow, { scheduled: true });
+		} catch (err) {
+			replacementFailed = err.message === `simulated board send failure`;
+		}
+		assert(replacementFailed && boardMessages.has(`birthday-board-1`) &&
+			(await dbObjects.BirthdayConfigs.findByPk(`first`)).boardMessageId === `birthday-board-1`,
+		`A failed scheduled board replacement removed the current board.`);
+		boardSendFails = false;
+		await birthdays.refreshBirthdayBoard(client, firstBoardConfig, boardNow, { scheduled: true });
+		assert((await dbObjects.BirthdayConfigs.findByPk(`first`)).boardMessageId === `birthday-board-2` &&
+			await dbObjects.BirthdayBoardRetiredMessages.count({ where: { guildId: `first` } }) === 1,
+		`A replacement board was not saved before queuing failed old-board deletion.`);
+		oldBoardDeleteFails = false;
+		await birthdays.retryPendingBirthdayBoardWork(client);
+		assert(await dbObjects.BirthdayBoardRetiredMessages.count({ where: { guildId: `first` } }) === 0 &&
+			!boardMessages.has(`birthday-board-1`),
+		`Retired birthday board cleanup did not retry after a deletion failure.`);
+		client.guilds.cache.delete(`first`);
+		assert((await birthdays.getUpcomingBirthdayEntries(boardGuild, {
+			guildId: `first`, timezone: `UTC`,
+		}, { now: boardNow })).length === 0,
+		`A departed member remained on the server's upcoming birthday board.`);
+		assert(await birthdays.markBirthdayMemberJoined(client, `first`, userId, {
+			joinedAt: new Date(`2026-11-03T12:00:00.000Z`),
+			now: new Date(`2026-11-10T12:00:00.000Z`),
+		}), `A timely rejoin did not restore the saved birthday.`);
+		assert(!(await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId } })).leftAt,
+			`A restored birthday still appeared departed.`);
+		assert((await birthdays.getUpcomingBirthdayEntries(boardGuild, {
+			guildId: `first`, timezone: `UTC`,
+		}, { now: boardNow })).length === 1,
+		`A timely rejoin did not restore the upcoming birthday board entry.`);
+		await birthdays.markBirthdayMemberLeft(client, `first`, userId, {
+			now: new Date(`2026-11-04T12:00:00.000Z`),
+		});
+		await birthdays.markBirthdayMemberLeft(client, `second`, userId, {
+			now: new Date(`2026-11-05T12:00:00.000Z`),
+		});
+		await birthdays.purgeExpiredBirthdayDepartures({ now: new Date(`2026-11-11T12:00:00.000Z`) });
+		assert(await dbObjects.BirthdayCards.count({ where: { userId, year } }) === 1,
+			`A shared card was removed while another server's grace period remained.`);
+		await birthdays.purgeExpiredBirthdayDepartures({ now: new Date(`2026-11-12T12:00:00.000Z`) });
+		assert(await dbObjects.BirthdayUsers.count({ where: { userId } }) === 0,
+			`Expired server-scoped birthdays were retained.`);
+		assert(await dbObjects.BirthdayCards.count({ where: { userId, year } }) === 0,
+			`The orphaned global card survived the last server's grace period.`);
+		await dbObjects.BirthdayUsers.create({ guildId: `first`, userId: `late-member`, month: 12, day: 1 });
+		await dbObjects.BirthdayCards.create({
+			createdAt: new Date(),
+			guildId: `first`,
+			userId: `late-member`,
+			year,
+			url: `https://recocards.com/card/late`,
+		});
+		await birthdays.markBirthdayMemberLeft(client, `first`, `late-member`, {
+			now: new Date(`2026-11-01T12:00:00.000Z`),
+		});
+		assert(!await birthdays.markBirthdayMemberJoined(client, `first`, `late-member`, {
+			joinedAt: new Date(`2026-11-09T12:00:00.000Z`),
+			now: new Date(`2026-11-09T12:00:00.000Z`),
+		}), `A rejoin after seven days restored expired birthday data.`);
+		assert(await dbObjects.BirthdayUsers.count({ where: { userId: `late-member` } }) === 0 &&
+			await dbObjects.BirthdayCards.count({ where: { userId: `late-member` } }) === 0,
+		`A late rejoin left expired birthday or card data behind.`);
+
+		const batchUserIds = Array.from({ length: 110 }, (_, index) => `batch-member-${index}`);
+		await dbObjects.BirthdayUsers.bulkCreate(batchUserIds.map(batchUserId => ({
+			guildId: `first`, userId: batchUserId, month: 12, day: 1,
+		})));
+		const fetchSizes = [];
+		client.guilds.cache.set(`first`, {
+			channels: { cache: new Map(), fetch: async () => null },
+			members: {
+				cache: new Map(),
+				fetch: async ({ user: userIds }) => {
+					fetchSizes.push(userIds.length);
+					return new Map(userIds.filter(id => id !== batchUserIds[0]).map(id => [id, { id, joinedAt: new Date() }]));
+				},
+			},
+		});
+		const verified = await birthdays.reconcileStoredBirthdayMemberships(client);
+		assert(fetchSizes.join(`,`) === `100,10` && verified.left === 1 && verified.unverified === 0,
+			`Birthday membership reconciliation did not batch requests or mark a confirmed absence.`);
+		assert((await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId: batchUserIds[0] } })).leftAt,
+			`A confirmed absent birthday member was not suspended.`);
+		client.guilds.cache.get(`first`).members.fetch = async () => {
+			throw new Error(`temporary member gateway failure`);
+		};
+		const unverified = await birthdays.reconcileStoredBirthdayMemberships(client);
+		assert(unverified.unverified === 110 &&
+			!(await dbObjects.BirthdayUsers.findOne({ where: { guildId: `first`, userId: batchUserIds[1] } })).leftAt,
+		`A failed member batch was treated as proof of departure.`);
+	} finally {
+		Object.assign(dbObjects, original);
+		delete require.cache[require.resolve(birthdayPath)];
+		if (database) {
+			await database.close().catch(() => null);
+		}
+		restoreEnvValue(`HACHI_DB_KEY`, previousKey);
+		restoreEnvValue(`HACHI_DB_KEY_FILE`, previousKeyFile);
+		fs.rmSync(tempDir, { force: true, recursive: true });
+	}
+}
+
 function validateStreamListProviderNames() {
 	const { buildChannelList } = requireFresh(`commands`, `globalCommands`, `utility`, `stream.js`);
 	const channels = [{
@@ -3337,7 +4208,11 @@ async function validateKickSharedProfilesAcrossGuilds() {
 		KickLiveSessions.findAll = async () => [];
 		PendingStreamVods.findAll = async () => [];
 		log.error = (message, reason) => errors.push({ message, reason });
-		const { getKick } = requireFresh(`modules`, `getKick.js`);
+		const kickModule = requireFresh(`modules`, `getKick.js`);
+		const getKick = async client => {
+			await kickModule.getKick(client);
+			await kickModule.waitForPendingReplayWork();
+		};
 		await getKick({ guilds: { cache: new Map([
 			[`guild-one`, { name: `Guild One` }],
 			[`guild-two`, { name: `Guild Two` }],
@@ -3358,12 +4233,14 @@ async function validateKickSharedProfilesAcrossGuilds() {
 			item.content.includes(`current_slug just went live`)) &&
 			errors.some(item => item.message.includes(`Failed to fetch Kick user profiles`)),
 		`Kick suppressed live alerts after a failed profile batch.`);
-		providerChannel = { ...providerChannel, category: null };
+		providerChannel = { ...providerChannel, category: null, stream: { ...providerChannel.stream, viewer_count: null } };
 		await getKick({ guilds: { cache: new Map() } });
-		assert(errors.filter(item => item.message.includes(`Failed to process Kick channel`)).length === 2 &&
-			errors.some(item => item.message.includes(`row 201`) && item.message.includes(`guild-one`)) &&
-			errors.some(item => item.message.includes(`row 202`) && item.message.includes(`guild-two`)),
-		`A rejected Kick channel job did not identify the affected row and guild.`);
+		assert(announcements.length === 8 && announcements.slice(6).every(item => {
+			const fields = item.embed.toJSON().fields;
+			return fields.find(field => field.name === `Playing`)?.value === `No Category` &&
+				fields.find(field => field.name === `Viewers`)?.value === `0`;
+		}) && !errors.some(item => item.message.includes(`Failed to process Kick channel`)),
+		`Missing Kick category and viewer count did not use the configured fallbacks.`);
 	} finally {
 		kickStreams.getStreams = original.getStreams;
 		kickUser.getUsersByIds = original.getUsersByIds;
@@ -3428,6 +4305,228 @@ function validateModmailContracts() {
 	assert(button.custom_id === `modmail:create`, `Modmail create-ticket button is not persistently routable.`);
 	assert(ticketName(1) === `ticket-0001`, `Modmail ticket numbering format is invalid.`);
 	assert(roles.effectiveRoleIds.join(`,`) === `allowed,shared,ping`, `Ping roles were not merged into effective Modmail access.`);
+}
+
+async function validateModmailTranscriptDelivery() {
+	const { Collection, PermissionFlagsBits } = require(`discord.js`);
+	const { ModmailConfigs, ModmailTickets } = require(`../database/dbObjects.js`);
+	const { handleTicketComponent } = requireFresh(`utils`, `modmail.js`);
+	const originalFindTicket = ModmailTickets.findByPk;
+	const originalCount = ModmailTickets.count;
+	const originalFindConfig = ModmailConfigs.findByPk;
+	const ticket = {
+		id: 73,
+		guildId: `transcript-guild`,
+		channelId: `transcript-channel`,
+		openerId: `opener`,
+		ticketNumber: 73,
+		openedAt: new Date(`2026-01-01T00:00:00.000Z`),
+		status: `closed`,
+		storedAt: null,
+		transcript: null,
+		update: async values => Object.assign(ticket, values),
+	};
+	let messageRows = [];
+	const channel = {
+		id: ticket.channelId,
+		guild: { id: ticket.guildId, name: `Transcript guild` },
+		messages: {
+			fetch: async ({ before, limit }) => new Collection(messageRows
+				.filter(message => !before || Number(message.id) < Number(before))
+				.slice(0, limit)
+				.map(message => [message.id, message])),
+		},
+	};
+	const makeMessage = number => ({
+		id: String(number),
+		createdAt: new Date(`2026-01-01T00:00:00.000Z`),
+		author: { id: `author`, tag: `Author` },
+		content: `message-${number}`,
+		attachments: new Collection(),
+	});
+	const createInteraction = attachmentSizeLimit => {
+		const replies = [];
+		return {
+			attachmentSizeLimit,
+			channel,
+			guild: channel.guild,
+			member: { permissions: { has: permission => permission === PermissionFlagsBits.Administrator } },
+			user: { id: `staff` },
+			replies,
+			deferReply: async () => null,
+			editReply: async payload => { replies.push(payload); },
+			followUp: async payload => { replies.push(payload); },
+			reply: async payload => { replies.push(payload); },
+		};
+	};
+	const attachmentBytes = interaction => Buffer.concat(interaction.replies
+		.filter(reply => reply.files?.length)
+		.map(reply => reply.files[0].attachment));
+
+	try {
+		ModmailTickets.findByPk = async () => ticket;
+		ModmailTickets.count = async () => 0;
+		ModmailConfigs.findByPk = async () => ({ maxStoredTickets: 50 });
+
+		messageRows = Array.from({ length: 150 }, (_, index) => makeMessage(150 - index));
+		const pagedInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(pagedInteraction, ticket.id, `transcript`);
+		const pagedText = attachmentBytes(pagedInteraction).toString(`utf8`);
+		assert(pagedText.includes(`message-1`) && pagedText.includes(`message-150`) &&
+			pagedText.indexOf(`message-1\n`) < pagedText.indexOf(`message-150`),
+		`Modmail transcript pagination omitted or misordered messages after the first page.`);
+
+		Object.assign(ticket, { transcript: `Legacy snapshot before later messages` });
+		messageRows = [{ ...makeMessage(1), content: `é🌟`.repeat(750) }];
+		const multipartInteraction = createInteraction(3072);
+		await handleTicketComponent(multipartInteraction, ticket.id, `transcript`);
+		const multipartFiles = multipartInteraction.replies.filter(reply => reply.files?.length);
+		assert(multipartFiles.length > 1 &&
+			attachmentBytes(multipartInteraction).toString(`utf8`).includes(messageRows[0].content) &&
+			!attachmentBytes(multipartInteraction).toString(`utf8`).includes(ticket.transcript) &&
+			multipartFiles.every(reply => !reply.files[0].attachment.toString(`utf8`).includes(`�`)),
+		`Live Modmail transcript parts did not reconstruct as valid UTF-8 or used a stale snapshot.`);
+
+		messageRows = [{ ...makeMessage(1), content: `é`.repeat(40_000) }];
+		const tooManyParts = createInteraction(3072);
+		await handleTicketComponent(tooManyParts, ticket.id, `transcript`);
+		assert(tooManyParts.replies.length === 1 &&
+			!tooManyParts.replies[0].files &&
+			/more than 25 transcript attachments/u.test(tooManyParts.replies[0].content),
+		`An oversized Modmail transcript sent partial files instead of a clear limit error.`);
+
+		Object.assign(ticket, { storedAt: null, transcript: null });
+		messageRows.splice(0, messageRows.length, { ...makeMessage(1), content: `compressible content `.repeat(15_000) });
+		const storeInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(storeInteraction, ticket.id, `store`);
+		assert(ticket.transcript?.startsWith(`hachi-gzip-v1:`) && ticket.status === `stored`,
+			`Large Modmail transcript was not stored as a readable compressed snapshot.`);
+		const storedInteraction = createInteraction(16 * 1024 * 1024);
+		await handleTicketComponent(storedInteraction, ticket.id, `transcript`);
+		assert(attachmentBytes(storedInteraction).toString(`utf8`).includes(messageRows[0].content),
+			`A compressed Modmail transcript did not round-trip through download.`);
+	} finally {
+		ModmailTickets.findByPk = originalFindTicket;
+		ModmailTickets.count = originalCount;
+		ModmailConfigs.findByPk = originalFindConfig;
+	}
+}
+
+async function validateStoredModmailReopenAndClose() {
+	const { Collection, PermissionFlagsBits } = require(`discord.js`);
+	const { ModmailConfigs, ModmailTickets, sequelize } = require(`../database/dbObjects.js`);
+	const { handleTicketComponent } = requireFresh(`utils`, `modmail.js`);
+	const original = {
+		findByPk: ModmailTickets.findByPk,
+		findOne: ModmailTickets.findOne,
+		update: ModmailTickets.update,
+		findConfig: ModmailConfigs.findByPk,
+		transaction: sequelize.transaction,
+	};
+	const ticket = {
+		id: 74, guildId: `stored-guild`, channelId: `stored-channel`, openerId: `opener`,
+		ticketNumber: 74, openedAt: new Date(`2026-01-01T00:00:00.000Z`),
+		status: `stored`, storedAt: new Date(`2026-01-02T00:00:00.000Z`),
+		transcript: `Old archived snapshot`, closedAt: new Date(`2026-01-02T00:00:00.000Z`),
+	};
+	const makeMessage = (id, content) => ({
+		id: String(id), createdAt: new Date(`2026-01-01T00:00:00.000Z`),
+		author: { id: `author`, tag: `Author` }, content, attachments: new Collection(),
+	});
+	const messages = [makeMessage(1, `original conversation`)];
+	const sentControls = [];
+	let overwriteRestorations = 0;
+	let failedCloseUpdate = false;
+	let failedClosedPanel = false;
+	let failedReopenPanel = false;
+	const priorOverwrite = { edit: async () => {
+		overwriteRestorations++;
+	} };
+	const channel = {
+		id: ticket.channelId,
+		guild: { id: ticket.guildId, name: `Stored guild`, members: { fetch: async () => null } },
+		permissionOverwrites: {
+			cache: new Map([[ticket.openerId, priorOverwrite]]),
+			edit: async () => null,
+		},
+		messages: {
+			fetch: async ({ before, limit }) => new Collection(messages
+				.filter(message => !before || Number(message.id) < Number(before))
+				.slice(0, limit).map(message => [message.id, message])),
+		},
+		setName: async () => null,
+		send: async payload => {
+			if (failedReopenPanel && payload.content?.startsWith(`Ticket reopened`)) {
+				throw new Error(`simulated reopened panel failure`);
+			}
+			if (failedClosedPanel && !payload.content) {
+				throw new Error(`simulated closed panel failure`);
+			}
+			sentControls.push(payload);
+		},
+	};
+	const createInteraction = () => {
+		const replies = [];
+		return {
+			attachmentSizeLimit: 16 * 1024 * 1024,
+			channel, guild: channel.guild,
+			member: { permissions: { has: permission => permission === PermissionFlagsBits.Administrator } },
+			user: { id: `staff` }, message: { edit: async () => null }, replies,
+			deferUpdate: async () => null, deferReply: async () => null,
+			editReply: async payload => { replies.push(payload); },
+			followUp: async payload => { replies.push(payload); },
+			reply: async payload => { replies.push(payload); },
+		};
+	};
+	try {
+		ModmailTickets.findByPk = async () => ticket;
+		ModmailTickets.findOne = async () => null;
+		ModmailTickets.update = async (values, options) => {
+			if (failedCloseUpdate && values.status === `stored`) {
+				throw new Error(`simulated ticket write failure`);
+			}
+			if (options.where.status !== ticket.status) {
+				return [0];
+			}
+			Object.assign(ticket, values);
+			return [1];
+		};
+		ModmailConfigs.findByPk = async () => ({ maxStoredTickets: 50 });
+		sequelize.transaction = async (_options, task) => task({});
+		await handleTicketComponent(createInteraction(), ticket.id, `open`);
+		assert(ticket.status === `open` && ticket.transcript === null && sentControls.length === 1,
+			`Reopening a stored ticket did not invalidate its snapshot or create Close controls.`);
+		messages.unshift(makeMessage(2, `later conversation`));
+		await handleTicketComponent(createInteraction(), ticket.id, `confirm-close`);
+		assert(ticket.status === `stored` && ticket.transcript.includes(`later conversation`) && sentControls.length === 2,
+			`Reclosing a stored ticket did not save its complete new history and closed controls.`);
+		const download = createInteraction();
+		await handleTicketComponent(download, ticket.id, `transcript`);
+		assert(download.replies.some(reply => reply.files?.[0]?.attachment.toString(`utf8`).includes(`later conversation`)),
+			`A reclosed stored ticket downloaded a stale transcript.`);
+		failedReopenPanel = true;
+		await handleTicketComponent(createInteraction(), ticket.id, `open`);
+		assert(ticket.status === `stored` && ticket.transcript.includes(`later conversation`) &&
+			overwriteRestorations === 1,
+		`A failed reopened-panel send lost the archived transcript or left the opener's permissions changed.`);
+		failedReopenPanel = false;
+		await handleTicketComponent(createInteraction(), ticket.id, `open`);
+		failedCloseUpdate = true;
+		await handleTicketComponent(createInteraction(), ticket.id, `confirm-close`);
+		assert(ticket.status === `open` && overwriteRestorations === 2,
+			`A failed close database write did not restore the opener's prior permissions.`);
+		failedCloseUpdate = false;
+		failedClosedPanel = true;
+		await handleTicketComponent(createInteraction(), ticket.id, `confirm-close`);
+		assert(ticket.status === `open` && overwriteRestorations === 3,
+			`A failed closed-panel send stranded the ticket in closed state or denied access.`);
+	} finally {
+		ModmailTickets.findByPk = original.findByPk;
+		ModmailTickets.findOne = original.findOne;
+		ModmailTickets.update = original.update;
+		ModmailConfigs.findByPk = original.findConfig;
+		sequelize.transaction = original.transaction;
+	}
 }
 
 async function validateModmailCleanupRetry() {
@@ -3748,6 +4847,160 @@ async function validateLogArchiveRetention() {
 	}
 }
 
+function validateWarningErrorLogging() {
+	const logsPath = resolveProject(`logs`);
+	const originalExistsSync = fs.existsSync;
+	const originalAppendFileSync = fs.appendFileSync;
+	const originalConsoleWarn = console.warn;
+	const structuredEntries = [];
+
+	try {
+		// Keep the logger's writes in memory; smoke checks must never touch
+		// a running installation's log files.
+		Reflect.set(fs, `existsSync`, filePath =>
+			(typeof filePath === `string` && (filePath === logsPath || filePath.startsWith(`${logsPath}${path.sep}`))) ||
+			originalExistsSync(filePath));
+		Reflect.set(fs, `appendFileSync`, (filePath, content, options) => {
+			if (filePath === path.join(logsPath, new Date().toISOString().slice(0, 10), `structured.log`)) {
+				structuredEntries.push(JSON.parse(content));
+				return;
+			}
+			if (typeof filePath === `string` && filePath.startsWith(`${logsPath}${path.sep}`)) {
+				return;
+			}
+			originalAppendFileSync(filePath, content, options);
+		});
+		console.warn = () => null;
+		const logger = requireFresh(`utils`, `writeLog.js`);
+		logger.warn(`Birthday board update failed.`, new Error(`database is locked`));
+		logger.warn(`Birthday board retry queued.`, { module: `birthday`, meta: { guildId: `123` } });
+		assert(structuredEntries.length === 2 &&
+			structuredEntries[0].level === `WARNING` &&
+			structuredEntries[0].error?.message === `database is locked` &&
+			structuredEntries[0].error?.stack?.includes(`validateWarningErrorLogging`),
+		`Warning logger lost an Error's message or stack.`);
+		assert(structuredEntries[1].error === null && structuredEntries[1].module === `birthday` &&
+			structuredEntries[1].meta?.guildId === `123`,
+		`Warning logger no longer accepts module and metadata options.`);
+	} finally {
+		Reflect.set(fs, `existsSync`, originalExistsSync);
+		Reflect.set(fs, `appendFileSync`, originalAppendFileSync);
+		console.warn = originalConsoleWarn;
+	}
+}
+
+function validateCronSchedulesAndErrors() {
+	const logger = require(resolveProject(`utils`, `writeLog.js`));
+	const originalError = logger.error;
+	const recordedErrors = [];
+	const config = readJson(`config`, `config.json`);
+	const cronPath = resolveProject(`utils`, `crons.js`);
+
+	try {
+		logger.error = (message, err, options) => recordedErrors.push({ message, err, options });
+		const createCronJobs = requireFresh(`utils`, `crons.js`);
+		const jobs = createCronJobs({});
+		for (const [name, field] of [
+			[`Twitch`, `twitchCron`],
+			[`Kick`, `kickCron`],
+			[`Birthday`, `birthdayCron`],
+			[`Status`, `statusCron`],
+			[`Auth`, `authCron`],
+		]) {
+			assert(jobs[name]?.cronTime?.source === config[field],
+				`${name} bot job no longer runs at its configured cron time.`);
+		}
+		assert(jobs.BirthdayMaintenance?.cronTime?.source === `7 * * * *` &&
+			jobs.Modmail?.cronTime?.source === `17 * * * *`,
+		`Birthday and Modmail maintenance are not staggered away from the top of the hour.`);
+		for (const [name, job] of Object.entries(jobs)) {
+			assert(typeof job.errorHandler === `function`, `${name} cron errors bypass the Hachi logger.`);
+			const failure = new Error(`smoke ${name} failure`);
+			job.errorHandler(failure);
+			const entry = recordedErrors.at(-1);
+			const expectedName = name === `BirthdayMaintenance` ? `Birthday maintenance` : name;
+			assert(entry?.message?.includes(expectedName) && entry.err === failure && entry.options?.module === `cron`,
+				`${name} cron errors lack the job name, original error, or cron module.`);
+		}
+	} finally {
+		logger.error = originalError;
+		delete require.cache[require.resolve(cronPath)];
+	}
+}
+
+function validateSqliteBusyRetryConfiguration() {
+	const { sequelize } = require(resolveProject(`database`, `dbObjects.js`));
+	const retry = sequelize.options.retry;
+	const matches = message => retry.match?.some(pattern => pattern.test(message));
+	assert(Number.isInteger(retry.max) && retry.max > 0 && retry.max <= 3 &&
+		matches(`SQLITE_BUSY: database is locked`) && matches(`database is locked`) &&
+		!matches(`permission denied`),
+	`SQLCipher lock failures must have a narrow, bounded Sequelize retry.`);
+}
+
+async function validateGracefulShutdownDrain() {
+	const { drainAndCloseRuntime } = requireFresh(`utils`, `gracefulShutdown.js`);
+	const calls = [];
+	const logger = {
+		info: () => null,
+		error: () => null,
+		warn: message => calls.push(message),
+	};
+	let finishEvent;
+	const activeEvent = new Promise(resolve => {
+		finishEvent = resolve;
+	});
+	let finishCron;
+	const cronCompletion = new Promise(resolve => {
+		finishCron = resolve;
+	});
+	const common = {
+		client: { destroy: async () => { calls.push(`discord closed`); } },
+		cronJobs: { Birthday: { stop: () => {
+			calls.push(`cron stopped`);
+			return cronCompletion;
+		} } },
+		logger,
+		replayWaiters: [() => Promise.resolve()],
+		stopAuthRefresh: () => Promise.resolve(),
+		stopEventSub: () => Promise.resolve(),
+		stopReadyTasks: () => Promise.resolve(),
+		stopLogCleanup: () => null,
+	};
+	const completed = drainAndCloseRuntime({
+		...common,
+		activeEvents: new Set([activeEvent]),
+		database: { close: async () => { calls.push(`database closed`); } },
+		drainTimeoutMs: 100,
+	});
+	await Promise.resolve();
+	assert(!calls.includes(`database closed`), `Shutdown closed SQLite while a Discord event was active.`);
+	finishEvent();
+	await Promise.resolve();
+	assert(!calls.includes(`database closed`), `Shutdown closed SQLite while a cron callback was active.`);
+	finishCron();
+	const result = await completed;
+	assert(result.drained && calls.indexOf(`database closed`) > calls.indexOf(`cron stopped`) &&
+		calls.indexOf(`discord closed`) > calls.indexOf(`database closed`),
+	`Shutdown did not drain jobs and close SQLite before Discord.`);
+
+	const timedOutCalls = [];
+	const stalledEvent = new Promise(resolve => {
+		// Keep the event pending to exercise the bounded shutdown path.
+		void resolve;
+	});
+	const timedOut = await drainAndCloseRuntime({
+		...common,
+		activeEvents: new Set([stalledEvent]),
+		client: { destroy: async () => { timedOutCalls.push(`discord closed`); } },
+		database: { close: async () => { timedOutCalls.push(`database closed`); } },
+		drainTimeoutMs: 10,
+	});
+	assert(!timedOut.drained && !timedOutCalls.includes(`database closed`) &&
+		timedOutCalls.includes(`discord closed`) && calls.some(message => message.includes(`timed out`)),
+	`Shutdown should leave SQLite open for process exit when active work exceeds its drain limit.`);
+}
+
 async function main() {
 	let dbObjects = null;
 
@@ -3765,6 +5018,8 @@ async function main() {
 	await test(`/raid audit filters non-risky explicit allows`, validateRaidAuditExplicitAllowFiltering);
 	await test(`component handlers have routable customId prefixes`, assertComponentHandlersAreRoutable);
 	await test(`Modmail panels, numbering, and role access expose valid contracts`, validateModmailContracts);
+	await test(`Modmail transcripts page, compress, and split without losing text`, validateModmailTranscriptDelivery);
+	await test(`stored Modmail tickets refresh transcripts and recover failed closes`, validateStoredModmailReopenAndClose);
 	await test(`failed Modmail channel deletion remains retryable`, validateModmailCleanupRetry);
 	await test(`Modmail entry-channel cache preserves deletion safety`, validateModmailEntryChannelCache);
 	await test(`partial patch-note delivery resumes without duplicating messages`, validatePatchNotePartialDelivery);
@@ -3778,23 +5033,35 @@ async function main() {
 	await test(`new streamer IDs reuse only safe gaps`, validateReusableChannelIds);
 	await test(`Modmail index rejects new duplicates but preserves legacy tickets`, validateOneOpenModmailTicketIndex);
 	await test(`SQLCipher adapter normalizes Sequelize bind values`, validateSqlcipherAdapterBindNormalization);
+	await test(`SQLCipher lock failures use a bounded database retry`, validateSqliteBusyRetryConfiguration);
+	await test(`shutdown drains active work before closing SQLite`, validateGracefulShutdownDrain);
 	await test(`encrypted Sequelize runtime opens SQLCipher databases`, validateEncryptedSequelizeRuntime);
+	await test(`forced SQLite cleanup releases a failed transaction's lock`, validateSqliteForcedConnectionCleanup);
 	await test(`database encryption conversion preserves SQLite data`, validateDatabaseEncryptionConversion);
 	await test(`encrypted tool database helpers remain promise-based`, validateToolDatabaseConnectionPromises);
 	await test(`database migration and audit use an isolated schema`, auditIsolatedDatabase);
 	await test(`secret encryption helpers round-trip env values`, validateSecretEncryptionHelpers);
 	await test(`Twitch and Kick app tokens use form-encoded request bodies`, validateProviderAppTokenRequests);
+	await test(`OAuth request limits persist across concurrent calls and restarts`, validateDurableOAuthAttemptBudget);
+	await test(`parallel app-token 401s refresh once without discarding a newer token`, validateUnauthorizedAppTokenRecovery);
 	await test(`configCheck validates isolated config and rejects bad cron expressions`, validateConfigCheckInIsolatedFixture);
 	await test(`log cleanup removes only old valid-date archives`, validateLogArchiveRetention);
+	await test(`warning logs retain Error details and metadata`, validateWarningErrorLogging);
+	await test(`cron errors name their jobs and configured schedules stay intact`, validateCronSchedulesAndErrors);
 	await test(`pure utility helpers return expected values`, validatePureHelpers);
 	await test(`Kick VoD lookup handles missing channels without error floods`, validateKickVodLookup);
+	await test(`replay outages suppress duplicate errors and log recovery`, validateReplayFailureLogging);
 	await test(`Kick HTTP 404 slugs stay unresolved without repeated errors`, validateKickMissingSlugResponse);
 	await test(`Twitch stream lookups batch logins and contain batch failures`, validateTwitchStreamBatchLookup);
 	await test(`stream announcement fetches distinguish deletion from transient errors`, validateStreamMessageFetch);
+	await test(`unchanged live alerts skip Discord edits while viewer changes remain visible`, validateStreamUpdateSuppression);
+	await test(`replay work rotates through bounded batches with limited concurrency`, validateReplayWorkerBounds);
 	await test(`Twitch announcements end before replay availability and preserve end times`, validateTwitchPendingVodUpdate);
 	await test(`Kick VoD lookup uses resolved slugs and preserves missing-channel state`, validateKickChannelRouting);
 	await test(`stream renames preserve one alias and independent provider names`, validateStreamNameMonitoring);
 	await test(`concurrent Twitch identity capture persists every channel`, validateConcurrentStreamIdentityWrites);
+	await test(`expired server cleanup removes dependents before IDs and preserves rejoins`, validateServerCleanupDependencyOrder);
+	await test(`birthday departures retain, restore, and purge server data and orphaned cards`, validateBirthdayMemberRetention);
 	await test(`/stream list shows independent Twitch and Kick names on one row`, validateStreamListProviderNames);
 	await test(`Kick and Twitch resolve renamed accounts by stable provider ID`, validateProviderIdentityLookups);
 	await test(`Kick channel slugs batch without cross-matching or retry storms`, validateKickSlugBatching);

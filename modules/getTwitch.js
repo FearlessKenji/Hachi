@@ -11,13 +11,17 @@ const { getTwitchUsers } = require(`./twitchIdentity.js`);
 const twitchStreams = require(`./twitchStreams.js`);
 const twitchVods = require(`./twitchVods.js`);
 const { getIdentityMap, recordStreamName } = require(`./streamNameMonitor.js`);
+const { processReplayRows, selectReplayRows } = require(`./replayWorker.js`);
 const authTokens = require(`../auth/authTokens.js`);
 const {
 	fetchMessage,
 	liveEmbed,
 	loadState,
+	notificationRoleId,
 	offlineEmbed,
 	roleMention,
+	streamCategory,
+	streamViewerCount,
 	syncMessage,
 	targetChannel,
 	vodWaitExpired,
@@ -25,6 +29,8 @@ const {
 const twitchClientId = process.env.twitchClientId;
 const provider = `Twitch`;
 const endedContent = `The Twitch stream has ended.`;
+let pendingReplayWork = null;
+let lastReplayRowId = 0;
 
 function hasCompletedTwitchVod(message) {
 	return message?.content === endedContent && message.embeds?.[0]?.fields?.some(field =>
@@ -167,7 +173,7 @@ async function processPendingTwitchVod(pending, client, twitchAuthToken, vodLook
 		await existingMessage.edit({ content: endedContent, embeds: [embed] });
 		await PendingStreamVods.destroy({ where: { id: pending.id } });
 	} catch (err) {
-		if (Number(err?.code) === 10008) {
+		if (Number(err?.code) === 10008 || Number(err?.code) === 10003) {
 			await PendingStreamVods.destroy({ where: { id: pending.id } });
 			return;
 		}
@@ -178,9 +184,13 @@ async function processPendingTwitchVod(pending, client, twitchAuthToken, vodLook
 async function processPendingTwitchVods(client, twitchAuthToken) {
 	// Include rows from older streams even if their channel is live again.
 	const pendingVods = await PendingStreamVods.findAll({ where: { provider }, raw: true });
+	const replayRows = selectReplayRows(pendingVods, lastReplayRowId);
+	if (replayRows.length) {
+		lastReplayRowId = replayRows.at(-1).id;
+	}
 	const vodLookups = new Map();
-	await Promise.all(pendingVods.map(pending =>
-		processPendingTwitchVod(pending, client, twitchAuthToken, vodLookups)));
+	await processReplayRows(replayRows, pending =>
+		processPendingTwitchVod(pending, client, twitchAuthToken, vodLookups));
 }
 
 /**
@@ -200,8 +210,13 @@ async function getTwitch(client) {
 	await Promise.all(twitchChannels.map(async chan => {
 		const user = twitchUsers.get(chan.id);
 		if (user) {
+			const savedIdentity = identityMap.get(chan.id);
+			const observedName = user.login.toLowerCase();
+			if (savedIdentity?.providerUserId === user.id && savedIdentity.currentName === observedName) {
+				return;
+			}
 			try {
-				await recordStreamName(chan, `twitch`, user.id, user.login.toLowerCase());
+				await recordStreamName(chan, `twitch`, user.id, observedName);
 			} catch (err) {
 				error(`Failed to record Twitch account identity for ${chan.channelName}:`, err);
 			}
@@ -290,21 +305,27 @@ async function getTwitch(client) {
 			const displayName = streamInfo.user_name || searchedChannel?.display_name || twitchUser?.display_name || login;
 			const profileImageUrl = twitchUser?.profile_image_url || searchedChannel?.thumbnail_url || null;
 			const streamUrl = `https://www.twitch.tv/${broadcasterLogin}`;
+			const categoryName = streamCategory(streamInfo.game_name);
+			const viewerCount = streamViewerCount(streamInfo.viewer_count);
+			const streamTitle = typeof streamInfo.title === `string` && streamInfo.title.trim() ?
+				streamInfo.title :
+				`Live now`;
 			const sendEmbed = liveEmbed({
 				provider,
 				color: 0x9146FF,
 				name: displayName,
-				title: streamInfo.title,
+				title: streamTitle,
 				url: streamUrl,
-				category: streamInfo.game_name,
-				viewers: streamInfo.viewer_count,
+				category: categoryName,
+				viewers: viewerCount,
 				thumbnail: profileImageUrl,
 				image: `https://static-cdn.jtvnw.net/previews-ttv/live_user_${broadcasterLogin}-640x360.jpg?cacheBypass=${Date.now()}`,
 				discordUrl: chan.discordUrl,
 				startedAt: streamInfo.started_at,
 			});
+			const allowedRoleId = notificationRoleId(chan, server, `selfTwitchRoleId`);
 			const roleText = roleMention(chan, server, `selfTwitchRoleId`);
-			const content = `${roleText}${displayName} just went live on Twitch streaming ${streamInfo.game_name}!`;
+			const content = `${roleText}${displayName} just went live on Twitch streaming ${categoryName}!`;
 
 			try {
 				await syncMessage({
@@ -313,6 +334,7 @@ async function getTwitch(client) {
 					shouldEdit: chan.twitchStreamId === streamInfo.id,
 					content,
 					embed: sendEmbed,
+					allowedRoleId,
 					onSend: message => Channels.update(
 						{ twitchMessageId: message.id, twitchStreamId: streamInfo.id },
 						{ where: { id: chan.id } },
@@ -332,7 +354,16 @@ async function getTwitch(client) {
 		}
 	}
 
-	await processPendingTwitchVods(client, twitchAuthToken);
+	// Do not keep the live poll open for slow replay retries. Only one bounded
+	// replay worker runs per provider, while rows remain durable in SQLite.
+	if (!pendingReplayWork) {
+		pendingReplayWork = processPendingTwitchVods(client, twitchAuthToken)
+			.catch(err => error(`Failed to process pending Twitch replays:`, err))
+			.finally(() => { pendingReplayWork = null; });
+	}
 }
 
-module.exports = { getTwitch };
+module.exports = {
+	getTwitch,
+	waitForPendingReplayWork: () => pendingReplayWork || Promise.resolve(),
+};

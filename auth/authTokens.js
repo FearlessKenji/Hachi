@@ -21,7 +21,18 @@ function updateAuthTokens(tokens) {
 	};
 }
 
+function invalidateAuthToken(tokenKey, rejectedToken) {
+	// An older in-flight API response must not discard a token that was already
+	// refreshed by another request.
+	if (!rejectedToken || authTokens[tokenKey] !== rejectedToken) {
+		return false;
+	}
+	authTokens = { ...authTokens, [tokenKey]: null };
+	return true;
+}
+
 module.exports = {
 	getAuthTokens,
+	invalidateAuthToken,
 	updateAuthTokens,
 };

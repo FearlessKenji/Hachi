@@ -18,6 +18,7 @@ const {
 } = require(`discord.js`);
 const { CommandMonitorWhitelists, Servers } = require(`../../../database/dbObjects.js`);
 const { error: logError } = require(`../../../utils/writeLog.js`);
+const { requireManageServer } = require(`../../../utils/commandPermissions.js`);
 
 const SECURITY_COLOR = 0xffb020;
 const textChannelTypes = [
@@ -492,6 +493,10 @@ module.exports = {
 	},
 
 	async execute(interaction) {
+		if (!await requireManageServer(interaction)) {
+			return;
+		}
+
 		const group = interaction.options.getSubcommandGroup(false);
 		const subcommand = interaction.options.getSubcommand();
 

@@ -24,6 +24,7 @@ async function getStreams(channelNames, clientID, authKey) {
 
 		try {
 			const response = await fetchProviderApi(`https://api.twitch.tv/helix/streams?${query}`, {
+				appTokenProvider: `Twitch`,
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,

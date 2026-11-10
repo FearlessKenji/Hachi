@@ -11,6 +11,7 @@ async function getChannel(channelName, clientID, authKey) {
 		const res = await fetchProviderApi(
 			`https://api.twitch.tv/helix/search/channels?query=${channelName}`,
 			{
+				appTokenProvider: `Twitch`,
 				headers: {
 					'Client-ID': clientID,
 					'Authorization': `Bearer ${authKey}`,
